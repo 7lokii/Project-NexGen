@@ -1,0 +1,10 @@
+fastapi>=0.110
+uvicorn[standard]>=0.29
+httpx>=0.27
+pytest>=8.0
+telethon>=1.35
+python-dotenv>=1.0
+MetaTrader5>=5.0; platform_system == "Windows"
+
+# Nota: pacote Windows-only (liga ao terminal MT5 local). Instalação completa
+# do projeto:  pip install -r requirements.txt

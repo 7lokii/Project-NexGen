@@ -1,0 +1,1620 @@
+<!DOCTYPE html>
+<html lang="pt" data-theme="cyberpunk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Project NexGen — Dashboard</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2307080f'/%3E%3Crect x='4' y='4' width='56' height='56' rx='11' fill='none' stroke='%2300f0ff' stroke-width='3'/%3E%3Ctext x='32' y='46' font-family='Arial Black, Arial' font-size='36' font-weight='900' fill='%2300f0ff' text-anchor='middle'%3EN%3C/text%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@600;800&family=Chakra+Petch:wght@400;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<nav class="term-menu" id="termMenu" aria-label="Navegação">
+  <span class="term-menu-label">▚ NAV</span>
+  <a class="term-menu-item main" data-page="principal" href="/"><span class="cur">▸</span>PRINCIPAL<span class="sub">conta MT5 · estratégia ativa</span><span class="best"></span></a>
+  <span class="term-menu-label term-drop-toggle" id="dropEstrategiasToggle" role="button" tabindex="0" aria-expanded="true">▚ ESTRATÉGIAS <span class="drop-caret">▾</span></span>
+  <div class="term-drop" id="dropEstrategias">
+    <a class="term-menu-item" data-page="teste-nova_gestao" href="/teste?s=nova_gestao"><span class="cur">▸</span>TP1..TP5 + gestão<span class="sub">principal · referência</span><span class="best"></span></a>
+    <a class="term-menu-item" data-page="teste-tp2_protect" href="/teste?s=tp2_protect"><span class="cur">▸</span>Sair no TP2 + protect only<span class="sub">só protect do grupo</span><span class="best"></span></a>
+    <a class="term-menu-item" data-page="teste-auto_3" href="/teste?s=auto_3"><span class="cur">▸</span>Auto 3 TPs<span class="sub">3 pernas</span><span class="best"></span></a>
+    <a class="term-menu-item" data-page="teste-auto_escada_3" href="/teste?s=auto_escada_3"><span class="cur">▸</span>Auto 3 TPs + escada<span class="sub">Fase 2 · escada + trailing</span><span class="best"></span></a>
+    <a class="term-menu-item" data-page="teste-auto_escada_3_hibrida" href="/teste?s=auto_escada_3_hibrida"><span class="cur">▸</span>Auto 3 TPs + escada + protect híbrido<span class="sub">paper · proteção mecânica + grupo</span><span class="best"></span></a>
+    <a class="term-menu-item" data-page="teste-auto_escada_5" href="/teste?s=auto_escada_5"><span class="cur">▸</span>Auto 5 TPs + escada + confirmação<span class="sub">5 pernas + confirmação</span><span class="best"></span></a>
+  </div>
+  <span class="term-menu-label">▚ SISTEMA</span>
+  <a class="term-menu-item" data-page="diagnostico" href="/diagnostico"><span class="cur">▸</span>DIAGNÓSTICO<span class="sub">MT5 · listener · BD</span></a>
+  <a class="term-menu-item" data-page="help" href="/help"><span class="cur">▸</span>HELP<span class="sub">estratégias · conceitos</span></a>
+</nav>
+<aside class="term-right" id="termRight" aria-label="Conta e sessão">
+  <div class="ts-head">
+    <p class="term-menu-label">▚ STATE</p>
+    <button id="btnTermRightCollapse" class="ts-toggle" title="Colapsar/expandir terminal" aria-label="Colapsar terminal">‹</button>
+  </div>
+  <div class="hdr-badges" id="hdrBadges">
+    <span id="modeBadge" class="badge manual">manual</span>
+    <span id="strategyBadge" class="badge violet" style="display:none" title="Estratégia ativa da conta principal"></span>
+    <span id="execBadge" class="badge mt5-dry" style="display:none"></span>
+    <span id="marketBadge" class="badge manual">🎲 simulação</span>
+    <span id="killBadge" class="badge paused" style="display:none">PAUSADO</span>
+  </div>
+  <div class="term-side" id="termSide" aria-label="Estado do sistema">
+    <div class="ts-head">
+      <p class="term-menu-label">▚ MARKET</p>
+      <button id="btnTermCollapse" class="ts-toggle" title="Colapsar/expandir terminal" aria-label="Colapsar terminal">‹</button>
+    </div>
+    <span id="priceStrip" class="price-strip"></span>
+  </div>
+  <div class="ts-meta">
+    <span class="online-users" id="onlineUsers" title="Utilizadores com a dashboard aberta">👥 —</span>
+    <span class="clock" id="clock">—</span>
+  </div>
+  <span class="hdr-actions">
+    <button id="btnKill" class="danger">🛑 Kill switch</button>
+    <button id="btnLogout" class="ghost" style="display:none" title="Terminar sessão">Sair</button>
+  </span>
+</aside>
+<div class="bg-reticle" aria-hidden="true"></div>
+<div id="dashBoot"><div class="dash-boot-inner">
+  <div class="boot-title">PROJECT NEXGEN</div>
+  <pre id="dashBootText"></pre>
+</div></div>
+<div class="wrap">
+  <header>
+    <button id="btnMenu" class="ghost" title="Menu: testes · diagnóstico" aria-label="Abrir menu">☰</button>
+    <div class="brand">
+      <h1 data-text="🤖 Project NexGen">🤖 Project NexGen</h1>
+      <span class="sub" id="subTitle">copy-trading · execução real (demo MT5)</span>
+    </div>
+    <div class="spacer"></div>
+    <button id="btnMenuStatus" class="ghost" title="Estado do sistema" aria-label="Abrir estado">▦</button>
+  </header>
+
+  <div class="statusbar" id="statusBar">
+    <span class="dot" id="stDot"></span>
+    <span id="stText">A ligar…</span>
+    <span class="st-sep"></span>
+    <span id="stLast">—</span>
+  </div>
+  <div id="paperRaceWarn" style="display:none" class="paper-warn"></div>
+
+  <div id="paperRaceMini" class="paper-race-mini" style="display:none">
+    <div class="lbl" style="display:flex;align-items:center;gap:8px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:2px 0 4px">
+      <span>🏁 Corrida paralela (paper) — quem está a ganhar</span>
+      <select id="paperRaceHours" title="Horizonte da curva (histórico de saldo)" style="margin-left:auto;font-size:11px;background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:2px 5px">
+        <option value="24">24h</option>
+        <option value="168">7 dias</option>
+        <option value="720">30 dias</option>
+      </select>
+    </div>
+    <div class="race-row" style="display:flex;gap:10px;align-items:stretch">
+      <canvas id="paperRaceMiniChart" width="760" height="84" style="flex:1;min-width:0;height:84px;background:var(--panel2);border:1px solid var(--border);border-radius:var(--r-md)"></canvas>
+      <div id="paperRaceMiniLegend" class="mini-stats" style="min-width:200px;margin:0"></div>
+    </div>
+  </div>
+
+  <div id="phase2Panel" class="card" style="display:none;margin-bottom:14px">
+    <div class="lbl" style="display:flex;align-items:center;gap:8px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:0 0 6px">
+      <span>🧪 Fase 2 — auto-gestão em corrida paper (ESTRATEGIAS.md Parte VIII)</span>
+    </div>
+    <div class="mini-stats" id="phase2Stats"></div>
+    <div id="phase2Candidates" style="display:flex;flex-direction:column;gap:6px;margin-top:8px"></div>
+    <div class="lbl" style="font-size:11px;color:var(--muted);margin:10px 0 4px">Progresso para os critérios de aprovação — N ≥ 20 · PF ≥ 1.5 · P&L ≥ 50% · DD ≤ 125% (gate estrito 3/3)</div>
+    <div style="height:8px;background:var(--panel2);border:1px solid var(--border);border-radius:6px;overflow:hidden">
+      <i id="phase2ProgressFill" style="display:block;height:100%;width:0%;background:linear-gradient(90deg,#8437C9,#9A4FE8);transition:width .4s ease"></i>
+    </div>
+    <div id="phase2Verdict" style="margin-top:8px;font-size:12px"></div>
+    <div id="phase2Promote" style="margin-top:10px;display:none">
+      <button id="btnPhase2Promote" class="primary" style="border-color:var(--green);color:var(--green)" title="Passa a conta principal (MT5 real) a usar a auto_escada_3 — arranca a Fase 3 (grava o snapshot da auditoria de SL/divergências)">⬆️ Promover a principal (Fase 3)</button>
+    </div>
+    <div class="lbl" style="font-size:11px;color:var(--muted);margin:10px 0 4px">Ritmo de sinais/dia (60 dias) — a tendência que alimenta o ETA da Fase 3</div>
+    <div id="phase2PaceCurve" style="display:flex;align-items:flex-end;gap:2px;height:36px"></div>
+    <div class="muted" style="font-size:11px;margin-top:4px"><span style="color:#9A4FE8">▮</span> auto_escada_3 · <span style="color:var(--blue)">▮</span> nova_gestao (referência)</div>
+  </div>
+
+  <div id="phase3Panel" class="card" style="display:none;margin-bottom:14px">
+    <div class="lbl" style="display:flex;align-items:center;gap:8px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:0 0 6px">
+      <span>🚀 Fase 3 — pronto a arrancar (ESTRATEGIAS.md Parte X)</span>
+    </div>
+    <div class="mini-stats" id="phase3Stats"></div>
+    <div class="lbl" style="font-size:11px;color:var(--muted);margin:10px 0 4px">Checklist dos gates do spec</div>
+    <div id="phase3Checklist" style="display:flex;flex-direction:column;gap:4px;font-size:12px"></div>
+    <div id="phase3Verdict" style="margin-top:8px;font-size:12px"></div>
+    <div id="phase3Validation" style="margin-top:8px;font-size:12px;display:none"></div>
+    <details id="phase3History" style="margin-top:8px;display:none">
+      <summary style="cursor:pointer;font-size:12px;color:var(--muted)">📚 Histórico de janelas de validação · <span id="phase3HistoryCount">0</span></summary>
+      <div id="phase3HistoryList" style="margin-top:6px;font-size:12px;line-height:1.6"></div>
+      <div class="lbl" style="font-size:11px;color:var(--muted);margin:8px 0 2px">🎯 Alterações de alvo (20 → 15)</div>
+      <div id="phase3TargetLog" style="font-size:12px;line-height:1.6"></div>
+    </details>
+    <div id="phase3Promote" style="margin-top:10px;display:none">
+      <button id="btnPhase3Promote" class="primary" style="border-color:var(--green);color:var(--green)" title="Passa a conta principal (MT5 real) a usar a auto_escada_3 — arranca a Fase 3">⬆️ Promover a principal (Fase 3)</button>
+    </div>
+    <details id="phase3Audit" style="margin-top:10px">
+      <summary style="cursor:pointer;font-size:12px;color:var(--muted)">🔬 Auditoria de SL (target → valid → applied) · <span id="phase3AuditCount">0</span> trades</summary>
+      <div class="scroll" style="margin-top:8px"><table id="autoSlTable">
+        <thead><tr><th>Trade</th><th>Perna</th><th>Quando</th><th>Razão</th><th>Target</th><th>Valid</th><th>Clamp</th><th>Retcode</th><th>Aplicado</th></tr></thead>
+        <tbody></tbody>
+      </table></div>
+    </details>
+    <details id="phase3Sweep" style="margin-top:8px">
+      <summary style="cursor:pointer;font-size:12px;color:var(--muted)">📊 Sweep do trail (estudo 18/08) — por que o ATR ficou desligado</summary>
+      <div style="margin-top:8px;font-size:12px;line-height:1.5">
+        <p class="muted" style="margin:0 0 6px">Histórico completo (578 sinais) · saldo 1000 € · kill 6% — <b>auto_escada_3</b>:</p>
+        <table style="width:100%"><tbody>
+          <tr><td class="muted">baseline (trail fixo 2.0)</td><td class="win">PF 2.13 · +7 014 € · DD 38%</td></tr>
+          <tr><td class="muted">atr_k=1.0 · p=14</td><td class="loss">PF 1.42 · +2 483 € · DD 113%</td></tr>
+          <tr><td class="muted">atr_k=2.0 · p=14</td><td class="loss">PF 0.64 · −2 053 €</td></tr>
+          <tr><td class="muted">trail fino 1.6/1.8/2.0/2.2/2.4</td><td>PF 2.37 / 2.24 / <b>2.13</b> / 2.04 / 2.00 · DD 35–42%</td></tr>
+        </tbody></table>
+        <p class="muted" style="margin:6px 0 0">O ATR do ouro (velas 1h/M1) é muito maior que o recuo de ~8 pips — o chão ATR alarga o trail e devolve o lucro ao BE.
+        O trail fixo mostra um plateau MONOTÓNICO (sem pico isolado): 2.0 é interior (vizinhos 1.8/2.2 a ~5% de PF), coincide com a paciência do grupo (1.0–2.3 distâncias de TP2) e continua a resposta.</p>
+      </div>
+    </details>
+    <div id="phase3Snapshot" style="margin-top:8px;font-size:12px;display:none"></div>
+  </div>
+
+  <div class="stats">
+    <div class="stat" title="Valor atual da conta (saldo + P&L aberto)"><div class="lbl">💰 Equity</div><div class="val" id="equity">—</div></div>
+    <div class="stat" title="Saldo da conta (equity sem P&L aberto)"><div class="lbl">🏦 Balance</div><div class="val" id="balance">—</div></div>
+    <div class="stat" title="Lucro/prejuízo das posições abertas agora"><div class="lbl">📊 P&L aberto</div><div class="val" id="openPnl">—</div></div>
+    <div class="stat" title="Resultado de hoje (trades fechadas)"><div class="lbl">📈 P&L hoje</div><div class="val" id="todayPnl">—</div></div>
+    <div class="stat" title="Posições abertas neste momento"><div class="lbl">🧾 Trades abertas</div><div class="val" id="openTrades">—</div></div>
+    <div class="stat" title="Sinais a aguardar aprovação (modo manual)"><div class="lbl">⏳ Sinais pendentes</div><div class="val" id="pendingSignals">—</div></div>
+  </div>
+
+  <div class="controls">
+    <div class="ctl">
+      <span class="lbl">Modo</span>
+      <div class="seg" id="modeSeg">
+        <button id="btnManual" class="active">Manual</button>
+        <button id="btnAuto">Auto</button>
+      </div>
+    </div>
+    <div class="ctl">
+      <span class="lbl tooltip" title="Risco POR TRADE: é a % do total da conta que perdes se o SL bater nesta trade. Não é o capital usado (a margem é menor).">Risco por trade</span>
+      <div style="display:flex;align-items:center;gap:8px;">
+        <input type="range" id="riskSlider" min="0.1" max="5" step="0.1" value="1">
+        <span class="val" id="riskVal">1.0%</span>
+      </div>
+    </div>
+    <div class="ctl">
+      <span class="lbl">Limites</span>
+      <div style="display:flex;flex-direction:column;gap:3px;">
+        <span class="val" style="font-size:12px;color:var(--muted)" id="limitsLbl">—</span>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span class="lbl tooltip" style="font-size:11px;font-weight:400" title="Quanto tempo o bot espera pelas edições do Telegram antes de executar o sinal. Menos = executa mais depressa (mas menos tempo para o grupo corrigir).">janela edição</span>           <input type="range" id="editWinSlider" min="1" max="120" step="1" value="8" style="width:90px">
+          <span class="val" id="editWinVal">30s</span>
+        </div>
+      </div>
+    </div>
+    <div class="ctl" style="margin-left:auto;flex-direction:row;gap:8px;align-items:flex-end;">
+      <button id="btnSummary">📊 Resumo diário</button>
+    </div>
+  </div>
+
+  <button id="btnRiskToggle" class="risk-toggle" type="button" title="Mostrar/esconder o detalhe do risco por trade">⚙️ Detalhes de risco <span class="chev">▾</span></button>
+  <div class="controls" id="autoPreview" style="margin-top:-4px">
+    <div style="flex:1;min-width:280px">
+      <span class="lbl" style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">
+        🎯 O que o risco por trade significa <span id="riskModeTag" class="badge auto" style="margin-left:6px">auto</span>
+      </span>
+      <div style="font-size:12px;color:var(--muted);margin:4px 0 8px;line-height:1.45">
+        <b style="color:var(--text)">% do total da conta</b> que está em risco <b style="color:var(--text)">por trade</b> — é o que <b style="color:var(--red)">perdes se o SL bater</b> (a margem usada é menor).
+      </div>
+      <div class="risk-preview">
+        <div class="risk-chip" title="Se o SL bater nesta trade, perdes este valor = % do total da conta. Não é a margem usada (é menor)."><div class="rc-lbl">Perda se o SL bater</div><div class="rc-val" id="rcPerTrade">—</div></div>
+        <div class="risk-chip" title="O lote que esse risco% representa (ex.: 5% da conta) numa trade típica de XAUUSD — total e por perna. Depende da distância do SL: quanto mais longe o SL, menos lotes (e vice-versa)."><div class="rc-lbl">Lotes ≈ do risco%</div><div class="rc-val" id="rcLots">—</div></div>
+        <div class="risk-chip" title="O valor em risco é dividido pelas N pernas (TP1..TP5) — cada perna expõe esta fração"><div class="rc-lbl">Por perna (TP1..TP5)</div><div class="rc-val" id="rcPerLeg">—</div></div>
+        <div class="risk-chip" title="Limite de perda diária — se o P&L de hoje chegar aqui, o kill switch pausa tudo"><div class="rc-lbl">Limite diário</div><div class="rc-val" id="rcDaily">—</div></div>
+        <div class="risk-chip rc-warn" title="P&L de hoje vs limite diário — perda perto do limite pausa tudo"><div class="rc-lbl">P&L hoje</div><div class="rc-val" id="rcToday">—</div></div>
+      </div>
+    </div>
+    <div class="mode-hint" id="modeHint" style="flex:1;min-width:260px"></div>
+  </div>
+
+  <div class="tabs">
+    <button class="active" data-tab="sinais">📥 Sinais<span class="tab-count" id="tabCountSinais" style="display:none"></span></button>
+    <button data-tab="posicoes">💼 Posições<span class="tab-count" id="tabCountPosicoes" style="display:none"></span></button>
+    <button data-tab="historico">📜 Histórico</button>
+    <button data-tab="relatorio">📊 Relatório</button>
+    <button data-tab="ignoradas">🚫 Ignoradas<span class="tab-count" id="tabCountIgnoradas" style="display:none"></span></button>
+  </div>
+
+  <div class="layout">
+    <main>
+      <!-- Sinais -->
+      <div id="tab-sinais" class="card">
+        <h2>Histórico de sinais recebidos
+          <select id="groupFilter"><option value="">Todos os grupos</option></select>
+        </h2>
+        <div class="scroll"><table id="signalsTable">
+          <thead><tr><th>Quando</th><th>Grupo</th><th>Símbolo</th><th>Dir</th><th>Entrada</th><th>SL</th><th>TPs</th><th>Estado</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table></div>
+      </div>
+
+      <!-- Posições -->
+      <div id="tab-posicoes" class="card" style="display:none">
+        <h2>Posições abertas</h2>
+        <div id="mt5Positions" class="card" style="display:none;margin-bottom:12px"></div>
+        <div class="scroll"><table id="positionsTable">
+          <thead><tr><th>Perna</th><th>Símbolo</th><th>Dir</th><th>Lotes</th><th>Entrada</th><th>SL</th><th>TP</th><th>P&L</th></tr></thead>
+          <tbody></tbody>
+        </table></div>
+      </div>
+
+      <!-- Histórico de trades -->
+      <div id="tab-historico" class="card" style="display:none">
+        <h2>Histórico de trades</h2>
+        <div class="scroll"><table id="tradesTable">
+          <thead><tr><th>Aberto</th><th>Símbolo</th><th>Dir</th><th title="Lotes por perna (TP1..TP5), separados por +">Lotes (por perna)</th><th>Entrada</th><th>TPs</th><th>Estado</th><th title="Razão do fecho + contrafactual sem gestão (variante TP1..TP5 da corrida paper)">Saída / sem gestão</th><th>P&L</th></tr></thead>
+          <tbody></tbody>
+        </table></div>
+      </div>
+
+      <!-- Relatório -->
+      <div id="tab-relatorio" class="card" style="display:none">
+        <h2>Relatório de qualidade
+          <select id="reportDays">
+            <option value="7">últimos 7 dias</option>
+            <option value="30">últimos 30 dias</option>
+            <option value="90">últimos 90 dias</option>
+          </select>
+        </h2>
+        <div class="mini-stats">
+          <div class="mini"><div class="lbl">Sinais recebidos</div><div class="val" id="rSignals">—</div></div>
+          <div class="mini"><div class="lbl">Trades fechadas</div><div class="val" id="rTrades">—</div></div>
+          <div class="mini"><div class="lbl">Win rate</div><div class="val" id="rWinRate">—</div></div>
+          <div class="mini"><div class="lbl">P&L</div><div class="val" id="rPnl">—</div></div>
+          <div class="mini"><div class="lbl">Profit factor</div><div class="val" id="rPF">—</div></div>
+          <div class="mini"><div class="lbl">R:R médio (TP1..TP5)</div><div class="val" id="rRR" style="font-size:14px">—</div></div>
+          <div class="mini"><div class="lbl">Drawdown máx</div><div class="val" id="rDD" style="font-size:15px">—</div></div>
+        </div>
+        <canvas id="equityChart" width="760" height="200" style="width:100%;height:200px;background:var(--panel2);border:1px solid var(--border);border-radius:10px;margin-bottom:12px"></canvas>
+        <div class="lbl" style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:14px 0 6px">P&L por dia (barras) · win rate (linha)</div>
+        <canvas id="dailyChart" width="760" height="150" style="width:100%;height:150px;background:var(--panel2);border:1px solid var(--border);border-radius:10px;margin-bottom:12px"></canvas>
+        <div class="scroll"><table id="reportGroupsTable">
+          <thead><tr><th>Grupo</th><th>Sinais</th><th>Trades</th><th>Wins</th><th>Win rate</th><th>P&L</th></tr></thead>
+          <tbody></tbody>
+        </table></div>
+        <section id="operationalMetricsPanel" class="card" style="margin-top:20px;background:var(--panel2)">
+          <h2>🩺 Saúde operacional (Item 10)</h2>
+          <p class="muted" style="margin:0 0 8px;font-size:13px">
+            Métricas persistentes de exceções, spread MT5, reconexões e modifies de SL recusados.
+            A tendência só é interpretável depois de pelo menos <b>2 semanas</b> de observações.
+          </p>
+          <div id="operationalMetricsStats" class="mini-stats"></div>
+          <div class="lbl" style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:10px 0 6px">Spread médio por símbolo e mês</div>
+          <div class="scroll"><table id="operationalSpreadTable">
+            <thead><tr><th>Mês</th><th>Símbolo</th><th>Observações</th><th>Médio (pips)</th><th>Mín</th><th>Máx</th></tr></thead>
+            <tbody></tbody>
+          </table></div>
+          <div class="lbl" style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:14px 0 6px">MT5 por semana</div>
+          <div class="scroll"><table id="operationalMt5Table">
+            <thead><tr><th>Semana</th><th>Reconexões</th><th>Falhas</th><th>Quedas</th><th>Modifies</th><th>Recusados</th><th>Taxa recusa</th></tr></thead>
+            <tbody></tbody>
+          </table></div>
+          <details style="margin-top:10px">
+            <summary style="cursor:pointer;font-size:12px;color:var(--muted)">⚠️ Exceções recentes · <span id="operationalExceptionCount">0</span></summary>
+            <div class="scroll" style="margin-top:8px"><table id="operationalExceptionsTable">
+              <thead><tr><th>Quando</th><th>Tipo</th><th>Contexto</th><th>Mensagem</th></tr></thead>
+              <tbody></tbody>
+            </table></div>
+          </details>
+        </section>
+        <h2 style="margin-top:20px">⚖️ Divergências auto vs referência (Fase 2)</h2>
+        <p class="muted" style="margin:0 0 8px;font-size:13px">
+          A <b>auto_escada_3</b> vs a <b>nova_gestao</b> no mesmo sinal: saídas com
+          razão/P&L diferentes, ou a referência fechou por gestão do grupo e a auto
+          continua a correr. O P&L de cada lado liga o backtest ao vivo (ESTRATEGIAS.md Parte X).
+        </p>
+        <div class="scroll"><table id="divergencesTable">
+          <thead><tr><th>Quando</th><th>Símbolo</th><th>Auto (saída)</th><th>Auto P&L</th><th>Referência (saída)</th><th>Referência P&L</th><th>Motivo</th></tr></thead>
+          <tbody></tbody>
+        </table></div>
+        <section id="protectLatencyPanel" class="card" style="margin-top:20px;display:block;background:var(--panel2)">
+          <h2>⏱️ Protect híbrido — latência auto vs grupo</h2>
+          <p class="muted" style="margin:0 0 8px;font-size:13px">Quando a mensagem <b>protect</b> chega, compara a proteção mecânica da híbrida com o nível do grupo. O backtest não escreve na BD; paper/MT5 ficam auditados aqui.</p>
+          <div id="protectLatencyStats" class="mini-stats"></div>
+          <div class="scroll"><table id="protectLatencyTable">
+            <thead><tr><th>Data</th><th>Sinal</th><th>Motor</th><th>Vencedor</th><th>Δ pips</th><th>Δ segundos</th><th>Perna 1</th></tr></thead>
+            <tbody></tbody>
+          </table></div>
+        </section>
+        <h2 style="margin-top:20px">⚡ Real vs backtest (slippage + timing)</h2>
+        <p class="muted" style="margin:0 0 8px;font-size:13px">
+          Cada trade <b>real</b> fechada na conta demo vs o backtest do mesmo sinal na
+          estratégia principal: diferença de <b>entrada</b> (preço real vs o fill do
+          sim: entrada do sinal ± spread/2 ± slippage), diferença de <b>saída</b>
+          (fecho real vs o nível esperado pela razão: TP_k/SL), <b>atraso</b>
+          sinal→abertura (o sim assume 60s) e o P&L de cada lado. Vazio até a conta
+          demo fechar as primeiras trades.
+        </p>
+        <div class="scroll"><table id="realVsBtTable">
+          <thead><tr><th>Fecho</th><th>Símbolo</th><th>Entrada real</th><th>Fill do sim</th><th>Δ entrada</th><th>Δ saída</th><th>Razão</th><th>P&L real</th><th>P&L backtest</th><th>Atraso</th></tr></thead>
+          <tbody></tbody>
+        </table></div>
+        <h2 style="margin-top:20px">🔄 Auto paper vs Auto MT5 (Fase 3)</h2>
+        <p class="muted" style="margin:0 0 8px;font-size:13px">
+          Quando uma estratégia <b>auto</b> for promovida a principal (Fase 3), cada trade
+          <b>real</b> fechada no MT5 é comparada com a trade de <b>papel</b> da mesma
+          estratégia no mesmo sinal (a corrida paper continua em paralelo): mesma decisão
+          de saída, <b>Δ preço</b> de fecho (fills reais vs sim, em pips), <b>Δ timing</b>
+          (papel vs real, em minutos) e o P&L de cada lado — o divergence report paper↔MT5
+          do ESTRATEGIAS.md Parte X. Vazio até a Fase 3 arrancar.
+        </p>
+        <div class="scroll"><table id="paperVsRealTable">
+          <thead><tr><th>Fecho real</th><th>Símbolo</th><th>Saída real</th><th>Saída paper</th><th>Δ preço</th><th>Δ timing</th><th>P&L real</th><th>P&L paper</th><th>Mesma saída?</th></tr></thead>
+          <tbody></tbody>
+        </table></div>
+      </div>
+
+      <!-- Auditoria: mensagens ignoradas -->
+      <div id="tab-ignoradas" class="card" style="display:none">
+        <h2>🚫 Mensagens ignoradas
+          <span style="display:inline-flex;gap:8px;align-items:center">
+            <input id="ignoredSearch" type="text" placeholder="🔍 filtrar…"
+              style="background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:7px 12px;font-size:12.5px;width:180px;outline:none">
+            <select id="ignoredDays" style="background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:7px 8px;font-size:12.5px">
+              <option value="1">últimas 24h</option>
+              <option value="7" selected>últimos 7 dias</option>
+              <option value="30">últimos 30 dias</option>
+              <option value="0">tudo</option>
+            </select>
+            <button id="btnIgnoredRefresh" class="primary">🔄 Atualizar</button>
+          </span>
+        </h2>
+        <p class="muted" style="margin:0 0 8px;font-size:13px">
+          Conversa do grupo que o bot decidiu <b>não registar</b> (não são sinais
+          nem instruções de gestão). Só é visível aqui, para auditoria — nunca
+          entra na pipeline nem na janela de edição.
+        </p>
+        <div class="muted" id="ignoredCountTxt" style="font-size:12px;margin-bottom:8px"></div>
+        <div class="scroll"><table id="ignoredTable">
+          <thead><tr><th>Quando</th><th>Origem</th><th>Mensagem</th></tr></thead>
+          <tbody></tbody>
+        </table></div>
+      </div>
+
+    </main>
+
+    <aside>
+      <div class="card">
+        <h2>Notificações</h2>
+        <div class="feed" id="feed"><div class="empty">Sem eventos ainda.</div></div>
+      </div>
+    </aside>
+  </div>
+  <div class="footer">🤖 <b>Project NexGen</b> · copy-trading · execução real (demo MT5) · conta <b id="acctFooter">—</b> · <span id="acctServerFooter">MetaQuotes-Demo</span></div>
+</div>
+
+<script src="common.js"></script>
+<script>
+/* =========================================================
+   Página PRINCIPAL — tabs, feed, corrida paralela.
+   (os helpers/WS/badges/statusbar vivem em common.js)
+   ========================================================= */
+
+let groupFilter = "";
+
+/* -------------------------------------------------- conteúdo (snapshot) */
+function pageRender(s) {
+  const a = s.account, c = s.config;
+  window._lastSnap = s;
+  $("equity").textContent = cur(a.equity);
+  $("balance").textContent = cur(a.balance);
+  const op = $("openPnl"); op.textContent = money(a.open_pnl); op.className = "val " + cls(a.open_pnl);
+  const tp = $("todayPnl"); tp.textContent = money(a.realized_today); tp.className = "val " + cls(a.realized_today);
+  if (_prevBalance !== null && a.balance !== _prevBalance) {
+    const el = $("balance");
+    el.classList.remove("flash-up", "flash-down");
+    void el.offsetWidth;
+    el.classList.add(a.balance > _prevBalance ? "flash-up" : "flash-down");
+  }
+  _prevBalance = a.balance;
+  $("openTrades").textContent = a.open_trades;
+  $("pendingSignals").textContent = (s.signals || []).filter(x => x.status === "pending").length;
+
+  renderPaperRaceWarn(s);
+  renderMt5Positions(s.mt5_positions, (s.execution && s.execution.account || {}).currency);
+
+  $("btnManual").className = c.mode === "manual" ? "active" : "";
+  $("btnAuto").className = c.mode === "auto" ? "auto-active" : "";
+
+  renderGroupFilter(s.signals);
+  renderSignals(s.signals);
+  renderPositions(s.positions);
+  renderTrades(s.trades);
+  renderFeed(s.notifications);
+  renderRiskPreview(s);
+  renderModeHint(s);
+  renderPhase2(s);
+  renderPhase3(s);
+  updateTabCounts(s);
+}
+
+/* painel da Fase 2: auto_escada_3 vs referência nova_gestao — saldo, PF,
+   sinais resolvidos e progresso para os critérios (ESTRATEGIAS.md Parte VIII: N≥20 · PF≥1.5) */
+function renderPhase2(s) {
+  const box = $("phase2Panel");
+  if (!box) return;
+  const accts = (s.paper || {}).accounts || [];
+  const auto = accts.find(a => a.strategy_id === "auto_escada_3");
+  const ref = accts.find(a => a.strategy_id === "nova_gestao");
+  if (!auto || !ref) { box.style.display = "none"; return; }
+  box.style.display = "";
+  const n = auto.closed || 0;
+  const pf = auto.profit_factor;
+  const refPf = ref.profit_factor;
+  const pfOk = pf !== null && pf !== undefined && pf >= 1.5;
+  // gate estrito 3/3 (ESTRATEGIAS.md Parte X), igual ao painel Fase 3:
+  // PF ≥ 1.5 · P&L ≥ 50% da referência · DD ≤ 125% da referência. P&L/DD são
+  // tri-state: null quando ainda não há dados (0 trades fechadas) — o gate
+  // nunca dá ✓ com a corrida vazia.
+  const autoPnl = auto.pnl || 0, refPnl = ref.pnl || 0;
+  const hasPnlData = (auto.closed || 0) > 0 || (ref.closed || 0) > 0;
+  const pnlPct = refPnl !== 0 ? (autoPnl / refPnl) * 100 : (autoPnl >= 0 ? 100 : 0);
+  const pnlOk = hasPnlData ? (autoPnl >= 0.5 * refPnl) : null;
+  const dd = window._phase3dd || {};
+  const autoDd = dd.auto_escada_3, refDd = dd.nova_gestao;
+  // DD só é significativo com trades fechadas (a curva é plana até lá — 0%)
+  const hasDdData = hasPnlData && (autoDd != null || refDd != null);
+  const ddOk = hasDdData ? (autoDd == null || refDd == null || autoDd <= refDd * 1.25) : null;
+  const fail = n >= 10 && pf !== null && pf !== undefined && pf < 1.0;
+  const gateOk = pfOk && pnlOk === true && ddOk === true;
+  const ok = n >= 20 && gateOk;
+  $("phase2Stats").innerHTML =
+    `<div class="mini"><div class="lbl">Auto escada 3 · saldo</div><div class="val">${cur(auto.balance)}</div></div>` +
+    `<div class="mini"><div class="lbl">Referência · saldo</div><div class="val">${cur(ref.balance)}</div></div>` +
+    `<div class="mini"><div class="lbl">Auto · PF</div><div class="val ${pfOk ? "win" : ""}">${pf === null || pf === undefined ? "—" : pf.toFixed(2)}</div></div>` +
+    `<div class="mini"><div class="lbl">Ref · PF</div><div class="val">${refPf === null || refPf === undefined ? "—" : refPf.toFixed(2)}</div></div>` +
+    `<div class="mini"><div class="lbl">P&L auto vs ref</div><div class="val ${pnlOk === true ? "win" : pnlOk === false ? "loss" : ""}" title="auto ${cur(autoPnl)} vs referência ${cur(refPnl)}">${!hasPnlData ? "—" : fmt(pnlPct, 0) + "%"}</div></div>` +
+    `<div class="mini"><div class="lbl">DD auto vs ref</div><div class="val ${ddOk === false ? "loss" : ""}" title="drawdown máx. 30d (curva de saldo)">${!hasDdData ? "—" : (autoDd == null ? "—" : fmt(autoDd, 0) + "%") + " vs " + (refDd == null ? "—" : fmt(refDd, 0) + "%")}</div></div>` +
+    `<div class="mini"><div class="lbl">Sinais resolvidos (N)</div><div class="val">${n} <span class="muted" style="font-size:11px">/ 20</span></div></div>` +
+    `<div class="mini"><div class="lbl">WR</div><div class="val">${auto.win_rate == null ? "—" : auto.win_rate + "%"}</div></div>`;
+  const hybrid = accts.find(a => a.strategy_id === "auto_escada_3_hibrida");
+  const candBox = $("phase2Candidates");
+  if (candBox) {
+    const renderCandidate = (account, id, label, color) => {
+      if (!account) return "";
+      const cn = Number(account.closed || 0);
+      const cpf = account.profit_factor;
+      const cpnl = Number(account.pnl || 0);
+      const cHasData = cn > 0 || Number(ref.closed || 0) > 0;
+      const cpnlPct = Number(ref.pnl || 0) !== 0
+        ? cpnl / Number(ref.pnl) * 100 : (cpnl >= 0 ? 100 : 0);
+      const cdd = dd[id], cddOk = cHasData && cdd != null && refDd != null
+        ? cdd <= refDd * 1.25 : null;
+      const cgate = cn >= 20 && cpf != null && cpf >= 1.5
+        && cHasData && cpnl >= Number(ref.pnl || 0) * 0.5
+        && cddOk === true;
+      return `<div class="phase2-candidate" data-strategy="${id}" style="border:1px solid var(--border);border-radius:8px;padding:7px 9px;background:var(--panel2)">` +
+        `<b style="color:${color}">${esc(label)}</b>` +
+        ` <span class="muted">· N ${cn}/20 · PF ${cpf == null ? "—" : fmt(cpf, 2)} · saldo ${cur(account.balance)}</span>` +
+        `<span class="muted"> · P&L vs ref ${cHasData ? fmt(cpnlPct, 0) + "%" : "—"} · DD ${cdd == null ? "—" : fmt(cdd, 1) + "%"}${refDd == null ? "" : " vs " + fmt(refDd, 1) + "%"}</span>` +
+        `<span class="${cgate ? "win" : "muted"}"> · ${cgate ? "✅ critérios 3/3" : "validação em curso — não elegível para promoção automática"}</span>` +
+        `</div>`;
+    };
+    candBox.innerHTML = renderCandidate(
+      hybrid, "auto_escada_3_hibrida", "Auto escada 3 híbrida", "#c084fc"
+    );
+  }
+  // mini-curva do ritmo de sinais/dia (60 dias) — auto vs referência lado a
+  // lado (a cadência das duas contas; tendência que alimenta o ETA)
+  const curve = $("phase2PaceCurve");
+  if (curve) {
+    const eta2 = s.fase3_eta;
+    const daily = (eta2 && eta2.pace_daily) || [];
+    const mx = daily.reduce((m, d) => Math.max(m, d.n || 0, d.n_ref || 0), 1);
+    curve.innerHTML = daily.map(d =>
+      `<span title="${esc(d.day)}: auto ${d.n} · ref ${d.n_ref} sinais" style="flex:1;min-width:3px;display:flex;flex-direction:column;justify-content:flex-end;gap:1px;height:100%">` +
+      `<i style="display:block;height:${Math.max(2, Math.round((d.n || 0) / mx * 100))}%;background:linear-gradient(180deg,#8437C9,#9A4FE8);border-radius:1px;opacity:${d.n ? 1 : 0.18}"></i>` +
+      `<i style="display:block;height:${Math.max(2, Math.round((d.n_ref || 0) / mx * 100))}%;background:var(--blue);border-radius:1px;opacity:${d.n_ref ? 0.85 : 0.18}"></i>` +
+      `</span>`
+    ).join("");
+  }
+  $("phase2ProgressFill").style.width = Math.min(100, Math.round(n / 20 * 100)) + "%";
+  let verdict, vcls;
+  if (fail) {
+    verdict = `⚠️ <b>Falência precoce</b>: PF ${pf.toFixed(2)} < 1.0 com ${n} sinais — o ESTRATEGIAS.md Parte X manda parar a corrida e reavaliar.`;
+    vcls = "loss";
+  } else if (ok) {
+    verdict = `✅ <b>Critérios de aprovação atingidos</b> (gate estrito 3/3: N=${n} ≥ 20 · PF ${pf.toFixed(2)} ≥ 1.5 · P&L ${fmt(pnlPct, 0)}% · DD ≤ 125%) — decidir a Fase 3 (MT5 real).`;
+    vcls = "win";
+  } else {
+    const falta = Math.max(0, 20 - n);
+    const nCriterios = (pfOk ? 1 : 0) + (pnlOk === true ? 1 : 0) + (ddOk === true ? 1 : 0);
+    const pnlTxt = pnlOk === null ? "—" : (pnlOk ? "✓" : "✗");
+    const ddTxt = ddOk === null ? "—" : (ddOk ? "✓" : "✗");
+    verdict = `Em curso: faltam <b>${falta}</b> sinais${falta ? "" : " (N completo)"} · gate estrito 3/3 (PF ${pfOk ? "✓" : "✗"} · P&L ${pnlTxt} · DD ${ddTxt}) — ${nCriterios}/3 critérios cumpridos.`;
+    vcls = "muted";
+  }
+  $("phase2Verdict").innerHTML = `<div class="${vcls}">${verdict}</div>`;
+  // ⬆️ promoção direta da Fase 2 quando o gate estrito 3/3 está cumprido
+  // (mesma ação do painel Fase 3 — POST /api/config {strategy})
+  const p2Promote = $("phase2Promote");
+  if (p2Promote) {
+    p2Promote.style.display = (ok && (s.config || {}).strategy !== "auto_escada_3") ? "" : "none";
+  }
+}
+
+/* painel da Fase 3: checklist dos gates do ESTRATEGIAS.md Parte X (N≥20 ·
+   P&L≥50% · DD≤125% + janela de validação), com os instrumentos —
+   divergence paper↔MT5, real vs backtest e auditoria de SL — num só sítio */
+function renderPhase3(s) {
+  const box = $("phase3Panel");
+  if (!box) return;
+  const accts = (s.paper || {}).accounts || [];
+  const auto = accts.find(a => a.strategy_id === "auto_escada_3");
+  const ref = accts.find(a => a.strategy_id === "nova_gestao");
+  if (!auto || !ref) { box.style.display = "none"; return; }
+  box.style.display = "";
+  const target = (s.config || {}).fase3_target || 20;
+  const n = auto.closed || 0;
+  const pf = auto.profit_factor;
+  const pfOk = pf !== null && pf !== undefined && pf >= 1.5;
+  const refPf = ref.profit_factor;
+  const autoPnl = auto.pnl || 0, refPnl = ref.pnl || 0;
+  const hasPnlData = (auto.closed || 0) > 0 || (ref.closed || 0) > 0;
+  const pnlPct = refPnl !== 0 ? (autoPnl / refPnl) * 100 : (autoPnl >= 0 ? 100 : 0);
+  const pnlOk = hasPnlData ? (autoPnl >= 0.5 * refPnl) : null;
+  // drawdown de cada conta a partir da curva (estado persistido no painel
+  // pelos instrumentos — refreshPhase3Instruments()); sem dados → "—"
+  const dd = window._phase3dd || {};
+  const autoDd = dd.auto_escada_3, refDd = dd.nova_gestao;
+  // DD só é significativo com trades fechadas (a curva é plana até lá — 0%)
+  const hasDdData = hasPnlData && (autoDd != null || refDd != null);
+  const ddOk = hasDdData ? (autoDd == null || refDd == null || autoDd <= refDd * 1.25) : null;
+  const pvr = window._phase3pvr || 0, rvb = window._phase3rvb || 0;
+  // gate de promoção (ESTRATEGIAS.md Parte X): N ≥ alvo E os 3 critérios
+  // (PF ≥ 1.5 · P&L ≥ 50% · DD ≤ 125%) — regra estrita, sem comité 2 de 3.
+  // P&L/DD tri-state: null (sem dados) nunca conta como cumprido.
+  const sameOk = pfOk && pnlOk === true && ddOk === true;
+  // ETA dos 20 sinais (ritmo dos últimos 30 dias — snapshot `fase3_eta`)
+  const eta = s.fase3_eta;
+  let etaTxt = "—";
+  if (eta && eta.done) etaTxt = "✅";
+  else if (eta && eta.eta) {
+    try { etaTxt = new Date(eta.eta).toLocaleDateString("pt-PT", { day: "2-digit", month: "short" }); }
+    catch (e) { etaTxt = "—"; }
+  }
+  $("phase3Stats").innerHTML =
+    `<div class="mini"><div class="lbl">Auto escada 3 · N</div><div class="val">${n} <span class="muted" style="font-size:11px">/ ${target}</span></div></div>` +
+    `<div class="mini"><div class="lbl">Ritmo · ETA 20</div><div class="val" style="font-size:11px">${etaTxt}${eta && eta.pace ? ` <span class="muted">${eta.pace.toFixed(2)}/dia</span>` : ""}</div></div>` +
+    `<div class="mini"><div class="lbl">Auto · PF</div><div class="val ${pfOk ? "win" : ""}">${pf === null || pf === undefined ? "—" : pf.toFixed(2)}</div></div>` +
+    `<div class="mini"><div class="lbl">Ref · PF</div><div class="val">${refPf === null || refPf === undefined ? "—" : refPf.toFixed(2)}</div></div>` +
+    `<div class="mini"><div class="lbl">P&L auto vs ref</div><div class="val ${pnlOk === true ? "win" : pnlOk === false ? "loss" : ""}" title="auto ${cur(autoPnl)} vs referência ${cur(refPnl)}">${!hasPnlData ? "—" : fmt(pnlPct, 0) + "%"}</div></div>` +
+    `<div class="mini"><div class="lbl">Diverg. paper↔MT5</div><div class="val">${pvr}</div></div>` +
+    `<div class="mini"><div class="lbl">Real vs backtest</div><div class="val">${rvb}</div></div>`;
+  const items = [
+    { ok: n >= target, txt: `N ≥ ${target} sinais resolvidos — <b>${n}/${target}</b>` },
+    { ok: pfOk, txt: `PF ≥ 1.5 — <b>${pf === null || pf === undefined ? "?" : pf.toFixed(2)}</b>` },
+    { ok: pnlOk === true, txt: `P&L ≥ 50% da referência — <b>${!hasPnlData ? "— (sem trades fechadas)" : fmt(pnlPct, 0) + "%"}</b>` },
+    { ok: ddOk === true, txt: `DD ≤ 125% da referência — <b>${!hasDdData ? "— (sem curva)" : (autoDd == null ? "—" : fmt(autoDd, 0) + "%") + " vs " + (refDd == null ? "—" : fmt(refDd, 0) + "%")}</b>` },
+    { ok: n > 0 && sameOk, txt: `Gate de promoção (3/3: PF · P&L · DD) — <b>${sameOk ? "✓" : "✗"}</b>` },
+    { ok: n > 0, txt: `Validação paper↔MT5 (janela de 10 trades reais): <b>${pvr}</b> pares — os critérios (≥ 9/10 mesma saída, zero sem SL, retcodes 10009, atraso ≤ 2 min, P&L coerente) avaliam-se na janela, não aqui` },
+    { ok: true, txt: `Real vs backtest: <b>${rvb}</b> trades (coerência avaliada na janela de validação — tabela na Relatório)` },
+  ];
+  $("phase3Checklist").innerHTML = items.map(i =>
+    `<div><span class="${i.ok ? "win" : "loss"}">${i.ok ? "✓" : "✗"}</span> ${i.txt}</div>`).join("");
+  let verdict, vcls;
+  const gated = n >= target && sameOk;
+  if (gated && (s.config || {}).strategy === "auto_escada_3") {
+    verdict = `🔄 <b>Fase 3 ligada</b>: a auto_escada_3 é a principal — a janela de validação (10 trades reais) está a correr. Auditoria de SL em baixo.`;
+    vcls = "win";
+  } else if (gated) {
+    verdict = `✅ <b>Gates cumpridos</b> — a <b>auto_escada_3</b> está pronta para a Fase 3 no MT5 (3/3: ${pfOk ? "PF ✓" : "PF ✗"} · ${pnlOk === true ? "P&L ✓" : "P&L ✗"} · ${ddOk === true ? "DD ✓" : "DD ✗"}).`;
+    vcls = "win";
+  } else {
+    const falta = Math.max(0, target - n);
+    const nCriterios = (pfOk ? 1 : 0) + (pnlOk === true ? 1 : 0) + (ddOk === true ? 1 : 0);
+    const pnlTxt = pnlOk === null ? "—" : (pnlOk ? "✓" : "✗");
+    const ddTxt = ddOk === null ? "—" : (ddOk ? "✓" : "✗");
+    verdict = `Em curso: faltam <b>${falta}</b> sinais${falta ? "" : " (N completo)"} · gate 3/3 (PF ${pfOk ? "✓" : "✗"} · P&L ${pnlTxt} · DD ${ddTxt}) — ${nCriterios}/3 critérios cumpridos.`;
+    vcls = "muted";
+  }
+  $("phase3Verdict").innerHTML = `<div class="${vcls}">${verdict}</div>`;
+  // veredicto da janela de validação (gravado quando as 10 trades reais fecham)
+  const fv = s.fase3_verdict;
+  const valEl = $("phase3Validation");
+  if (valEl) {
+    if (!fv) {
+      valEl.style.display = "none";
+    } else {
+      valEl.style.display = "";
+      const kept = fv.decision === "maintain";
+      valEl.innerHTML =
+        `<div class="${kept ? "win" : "loss"}" style="border:1px solid ${kept ? "var(--win)" : "var(--loss)"}22;border-radius:6px;padding:6px 8px">` +
+        `🏁 <b>Janela de validação fechada</b> (${esc(fv.evaluated_at || "")}): ` +
+        `${kept ? "✅ auto_escada_3 MANTIDA na principal" : "↩️ ROLLBACK para a nova_gestao"}` +
+        ` — ${esc(fv.reason || "")} ` +
+        `<span class="muted">(PF ${fv.pf == null ? "—" : fv.pf} · mesma saída que o papel ` +
+        `${fv.same_exit_n == null ? "—" : fv.same_exit_n + "/" + (fv.window_trades || "?") + " (" + (fv.same_exit_pct == null ? "—" : fv.same_exit_pct + "%") + ")"} · ` +
+        `${fv.structural_divergences} diverg. · ${fv.positions_without_sl} sem SL · ` +
+        `${fv.duplicate_orders == null ? 0 : fv.duplicate_orders} duplicadas · ` +
+        `${fv.refused_retcodes == null ? 0 : fv.refused_retcodes} retcodes recusados · ` +
+        `${fv.slow_opens == null ? 0 : fv.slow_opens} aberturas lentas · ` +
+        `${fv.pnl_incoherent == null ? 0 : fv.pnl_incoherent} P&L incoerentes)</span></div>`;
+    }
+  }
+  const promote = $("phase3Promote");
+  if (promote) {
+    promote.style.display = (gated && (s.config || {}).strategy !== "auto_escada_3") ? "" : "none";
+  }
+  // histórico de veredictos das janelas (nunca se apaga ao reabrir)
+  const hist = s.fase3_verdicts || [];
+  const histEl = $("phase3History");
+  if (histEl) {
+    const hc = $("phase3HistoryCount");
+    if (hc) hc.textContent = hist.length;
+    const hl = $("phase3HistoryList");
+    if (hl) {
+      hl.innerHTML = hist.slice().reverse().map(v => {
+        const kept = v.decision === "maintain";
+        return `<div class="${kept ? "win" : "loss"}">${kept ? "✅" : "↩️"} ` +
+          `${esc(v.evaluated_at || "").slice(0, 16)} — ${kept ? "mantida" : "rollback"} ` +
+          `· PF ${v.pf == null ? "—" : v.pf} · ${v.window_trades} trades · ` +
+          `${v.structural_divergences} diverg. · ${v.positions_without_sl} sem SL · ` +
+          `${v.duplicate_orders == null ? 0 : v.duplicate_orders} duplic. · ` +
+          `${v.refused_retcodes == null ? 0 : v.refused_retcodes} recusados · ` +
+          `${v.slow_opens == null ? 0 : v.slow_opens} lentas · ` +
+          `${v.pnl_incoherent == null ? 0 : v.pnl_incoherent} P&L incoer.</div>`;
+      }).join("") || `<div class="muted">Sem veredictos ainda.</div>`;
+    }
+    // registo das alterações de alvo (quem/quando/motivo — contexto para a
+    // janela de validação quando o alvo foi reduzido)
+    const tl = $("phase3TargetLog");
+    if (tl) {
+      const log = s.fase3_target_log || [];
+      tl.innerHTML = log.slice().reverse().map(e =>
+        `<div class="muted">🎯 ${esc(e.at || "").slice(0, 16)} · ${e.from} → ${e.to} — ${esc(e.reason || "")}</div>`
+      ).join("") || `<div class="muted">Sem alterações — alvo sempre ${(s.config || {}).fase3_target || 20}</div>`;
+    }
+    histEl.style.display = (hist.length || (s.fase3_target_log || []).length) ? "" : "none";
+  }
+  // snapshot antes/depois da janela de validação (gravado ao promover)
+  const snap = s.fase3_snapshot;
+  const snapEl = $("phase3Snapshot");
+  if (snapEl) {
+    if (!snap) {
+      snapEl.style.display = "none";
+    } else {
+      snapEl.style.display = "";
+      const pf = snap.pf == null ? "—" : fmt(snap.pf);
+      const refPf = snap.ref_pf == null ? "—" : fmt(snap.ref_pf);
+      snapEl.innerHTML =
+        `<div class="lbl" style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:0 0 4px">📸 Snapshot da janela de validação</div>` +
+        `<div class="muted" style="font-size:12px">gravado em <b>${esc(snap.promoted_at || "")}</b> ao promover <b>${esc(snap.strategy_id)}</b> — ` +
+        `N <b>${snap.n}</b> · PF <b>${pf}</b> (ref ${refPf}) · DD auto <b>${snap.dd_auto == null ? "—" : fmt(snap.dd_auto, 0) + "%"}</b> vs ref ` +
+        `${snap.dd_ref == null ? "—" : fmt(snap.dd_ref, 0) + "%"} · divergences paper↔MT5 <b>${snap.paper_vs_real_pairs}</b> · ` +
+        `trades reais fechadas <b>${snap.real_trades_closed}</b> · auditoria SL <b>${snap.sl_audit_entries}</b> entradas` +
+        ` — no fim da janela, compara com o estado atual para validar a Fase 3.</div>`;
+    }
+  }
+}
+
+/* instrumentos da Fase 3 (refresh 60s — não em cada snapshot): counts do
+   divergence paper↔MT5 e do real vs backtest, drawdown das contas e a
+   auditoria de SL (target→valid→applied) */
+async function refreshPhase3Instruments() {
+  const box = $("phase3Panel");
+  if (!box || box.style.display === "none") return;
+  try {
+    // payload único (GET /api/analysis/fase3_status) — antes eram 4 chamadas
+    const f3 = await fetch("/api/analysis/fase3_status").then(r => r.json());
+    const pvr = f3.paper_vs_real || { pairs: [] };
+    const rvb = f3.real_vs_backtest || { trades: [] };
+    const sl = f3.sl_log || { trades: [] };
+    window._phase3pvr = (pvr.pairs || []).length;
+    window._phase3rvb = (rvb.trades || []).length;
+    // drawdown máximo (peak→trough em %) por estratégia (calculado no
+    // servidor a partir da curva 30d — f3.dd)
+    window._phase3dd = f3.dd || {};
+    // auditoria de SL
+    const trades = (sl.trades || []);
+    const count = $("phase3AuditCount");
+    if (count) count.textContent = trades.length;
+    const tb = document.querySelector("#autoSlTable tbody");
+    if (tb) {
+      tb.innerHTML = "";
+      if (!trades.length) {
+        tb.innerHTML = '<tr><td colspan="9" class="empty">Sem modifies da auto-gestão ainda — aparece aqui quando a Fase 3 correr no MT5.</td></tr>';
+      } else {
+        for (const tr of trades) {
+          for (const e of tr.entries) {
+            const r = document.createElement("tr");
+            const rc = e.retcode;
+            const rcCls = rc === 10016 ? "loss" : (rc === 10009 || rc === 0 || rc === null ? "" : "loss");
+            r.innerHTML =
+              `<td class="muted" style="white-space:nowrap" title="${esc(tr.signal_id || "")}">${esc(tr.symbol || tr.trade_id)}</td>` +
+              `<td>perna ${e.leg}</td>` +
+              `<td class="muted" style="white-space:nowrap" title="${esc(e.ts || "")}">${when(e.ts)}</td>` +
+              `<td><span class="tag">${esc(e.kind || "?")}</span></td>` +
+              `<td>${e.target == null ? "—" : fmt(e.target)}</td>` +
+              `<td>${e.valid == null ? "—" : fmt(e.valid)}</td>` +
+              `<td class="muted">${e.clamped ? "✗ arredondado" : "—"}</td>` +
+              `<td class="${rcCls}">${rc === null ? "dry-run" : rc}</td>` +
+              `<td>${e.applied ? "<span class='tag win'>✓</span>" : "<span class='tag loss'>✗ recusado</span>"}</td>`;
+            tb.appendChild(r);
+          }
+        }
+      }
+    }
+    // re-render dos painéis (counts/DD mudaram)
+    if (window._lastSnap) {
+      renderPhase3(window._lastSnap);
+      renderPhase2(window._lastSnap);
+    }
+  } catch (e) { /* silencioso */ }
+}
+
+function renderPaperRaceWarn(s) {
+  const el = $("paperRaceWarn");
+  if (!el) return;
+  const accts = ((s.paper || {}).accounts || []);
+  // a principal também tem conta virtual própria (1000 €) — compara-se
+  // virtual vs virtual, não o saldo real da MT5
+  const main = accts.find(a => a.is_main);
+  const princ = main && main.balance !== null && main.balance !== undefined
+    ? Number(main.balance) : Number((s.account || {}).balance || 0);
+  const test = accts.filter(a => !a.is_main);
+  const beat = test.filter(a => a.balance !== null && a.balance !== undefined &&
+                                a.balance > princ && (a.closed || 0) > 0)
+                    .sort((a, b) => (b.balance - princ) - (a.balance - princ));
+  if (!beat.length) { el.style.display = "none"; return; }
+  const top = beat[0];
+  el.innerHTML = `⚠️ <b>${STRATEGY_NAMES[top.strategy_id] || top.strategy_id}</b> (teste) está a ganhar à principal na corrida paper: ` +
+    `<b>${cur(Number(top.balance))}</b> vs ${cur(princ)} (conta virtual) ` +
+    `(${top.closed} trades fechadas · win ${fmt(top.win_rate || 0, 1)}%). ` +
+    `Abre a página de teste para ver a corrida completa.`;
+  el.style.display = "";
+}
+
+function updateTabCounts(s) {
+  const pend = (s.signals || []).filter(x => x.status === "pending").length;
+  const open = s.account.open_trades || 0;
+  const set = (id, n) => { const el = $(id); if (!el) return; if (n > 0) { el.textContent = n; el.style.display = ""; } else el.style.display = "none"; };
+  set("tabCountSinais", pend);
+  set("tabCountPosicoes", open);
+  set("tabCountIgnoradas", s.ignored_count || 0);
+}
+
+const nLegsFrom = (sigs) => {
+  const last = (sigs || []).find(x => x.entry);
+  let n = 0;
+  for (let i = 1; i <= 5; i++) if (last && last["take_profit_" + i]) n++;
+  return n || 5;
+};
+
+function renderRiskPreview(s) {
+  const c = s.config, a = s.account;
+  const eq = Number(a.equity || 0);
+  const risk = Number(c.risk_pct || 0);
+  const nLegs = nLegsFrom(s.signals);
+  const perTrade = eq * risk / 100;
+  const perLeg = perTrade / nLegs;
+  const dailyLimit = eq * Number(c.daily_loss_limit_pct || 0) / 100;
+  const today = Number(a.realized_today || 0);
+  $("rcPerTrade").textContent = cur(perTrade);
+  $("rcPerLeg").textContent = cur(perLeg);
+  const rp = c.risk_preview || {};
+  const rcLots = $("rcLots");
+  if (rcLots && rp.lots_total) {
+    rcLots.textContent = `${rp.lots_total} total · ${rp.lots_per_leg} / perna`;
+    rcLots.title = `≈ ${rp.lots_total} lotes no total (${rp.lots_per_leg} por perna) numa trade de ${rp.symbol || "XAUUSD"}, com o risco de ${fmt(c.risk_pct, 1)}% e SL a ${fmt(rp.sl_dist, 1)} do preço — o lote exato depende do SL de cada sinal.`;
+  } else {
+    rcLots.textContent = "—";
+  }
+  $("rcDaily").textContent = cur(dailyLimit);
+  const tc = $("rcToday"); tc.textContent = (today > 0 ? "+" : "") + cur(today); tc.style.color = today < 0 && Math.abs(today) >= dailyLimit * 0.8 ? "var(--red)" : "";
+  $("riskModeTag").textContent = c.kill_switch ? "pausado" : (c.mode === "auto" ? "auto" : "manual");
+  $("riskModeTag").className = "badge " + (c.kill_switch ? "paused" : c.mode);
+  $("autoPreview").style.display = eq > 0 ? "" : "none";
+}
+
+function renderModeHint(s) {
+  const c = s.config, ex = s.execution || {};
+  const el = $("modeHint");
+  el.className = "mode-hint " + (c.mode === "auto" ? "auto" : "manual");
+  if (c.kill_switch) {
+    el.innerHTML = `<b>Pausado.</b> O kill switch está ativo — nenhum sinal executa. Clica <b>▶ Reativar</b> no topo para retomar.`;
+  } else if (c.mode === "auto") {
+    const st = ex.connected ? (ex.trade_allowed ? "ordens a sério na conta demo" : "⚠️ AutoTrading OFF no terminal") : "⚠️ terminal MT5 não ligado";
+    el.innerHTML = `<b>Próximo sinal do grupo</b>: entra na janela de edição (${fmt(c.edit_window_seconds, 0)}s) e executa sozinho · ${st} · ` +
+      `se o SL bater, perdes <b>${fmt(c.risk_pct, 1)}% da conta</b> (${cur(Number((s.account.equity || 0)) * Number(c.risk_pct) / 100)}), dividido por pernas TP1..TP5.`;
+  } else {
+    el.innerHTML = `<b>Manual</b>: os sinais do grupo ficam <b>pendentes</b> na tab Sinais (Aprovar / Rejeitar) · nada executa sem a tua confirmação.`;
+  }
+}
+
+function renderGroupFilter(signals) {
+  const sel = $("groupFilter");
+  const groups = [...new Set((signals || []).map(x => x.source || "").filter(Boolean))];
+  if (groups.includes(groupFilter) && sel.options.length - 1 === groups.length) return;
+  const keep = groups.includes(groupFilter) ? groupFilter : "";
+  sel.innerHTML = '<option value="">Todos os grupos</option>' +
+    groups.map(g => `<option value="${esc(g)}">${esc(g)}</option>`).join("");
+  groupFilter = keep; sel.value = keep;
+}
+
+function replyTargetLabel(s, all) {
+  // "SL HIT" responde ao sinal 08:04 XAUUSD — resolve reply_to_msg_id
+  // para a mensagem do sinal alvo (mesmo grupo / message_id).
+  const rid = s.reply_to_msg_id;
+  if (!rid) return "";
+  const target = (all || []).find(x => x.message_id === String(rid) && x.id !== s.id);
+  if (!target) return `→ responde à msg ${rid}`;
+  const t = when(target.received_at);
+  return `→ responde ao sinal ${t} ${target.symbol || ""}`.trim();
+}
+
+function renderSignals(all) {
+  const list = groupFilter ? (all || []).filter(s => s.source === groupFilter) : (all || []);
+  const tb = document.querySelector("#signalsTable tbody");
+  tb.innerHTML = "";
+  if (!list.length) { tb.innerHTML = '<tr><td colspan="9" class="empty">Sem sinais ainda — o listener do Telegram vai buscar as mensagens do grupo.</td></tr>'; return; }
+  for (const s of list) {
+    const tr = document.createElement("tr");
+    const time = when(s.received_at);
+    let action = "";
+    if (s.status === "pending") {
+      action = `<button class="small green" style="padding:4px 9px" onclick="act('/api/signals/${s.id}/approve')">Aprovar</button>
+                <button class="small danger" style="padding:4px 9px" onclick="act('/api/signals/${s.id}/reject')">Rejeitar</button>`;
+    }
+    let statusText = s.status;
+    if (s.status === "awaiting_edit") {
+      const rem = s.edit_deadline ? Math.max(0, Math.ceil((new Date(s.edit_deadline) - Date.now()) / 1000)) : "?";
+      statusText = "⏳ " + rem + "s";
+    } else if (s.status === "historical") statusText = "histórico";
+    else if (s.status === "management") {
+      const reply = replyTargetLabel(s, all);
+      statusText = reply ? `📨 gestão · ${reply}` : "📨 gestão";
+    }
+    tr.innerHTML = `<td class="muted">${time}</td><td>${esc(s.source || "—")}</td><td>${esc(s.symbol) || "—"}</td>
+      <td>${dirLabel(s.direction)}</td><td>${s.entry || "—"}</td><td>${s.stop_loss || "—"}</td>
+      <td>${tpsCell(s)}</td>
+      <td><span class="tag ${s.status}" title="${esc(s.error || "")}">${statusText}</span></td><td>${action}</td>`;
+    tr.title = esc(s.raw_text || "");
+    tb.appendChild(tr);
+  }
+}
+
+function renderPositions(list) {
+  const tb = document.querySelector("#positionsTable tbody");
+  tb.innerHTML = "";
+  if (!list.length) { tb.innerHTML = '<tr><td colspan="8" class="empty">Sem posições abertas.</td></tr>'; return; }
+  for (const p of list) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>#${p.leg}</td><td>${esc(p.symbol)}</td><td>${dirLabel(p.direction)}</td>
+      <td>${p.lots}</td><td>${p.entry}</td><td>${p.stop_loss}</td><td>${p.take_profit}</td>
+      <td class="${cls(p.pnl)}">${money(p.pnl)}</td>`;
+    tb.appendChild(tr);
+  }
+}
+
+function renderMt5Positions(mt5pos, currency) {
+  const box = $("mt5Positions");
+  if (!box) return;
+  if (!mt5pos || !mt5pos.length) { box.style.display = "none"; return; }
+  box.style.display = "";
+  const c = (currency || "EUR") === "EUR" ? "€" : (currency || "USD") + " ";
+  const groups = {};
+  for (const p of mt5pos) (groups[p.trade_id || p.ticket] = groups[p.trade_id || p.ticket] || []).push(p);
+  box.innerHTML = Object.values(groups).map(legs => {
+    const p0 = legs[0];
+    return `<div class="mini" style="border-left:3px solid ${p0.type === 'buy' ? 'var(--green)' : 'var(--red)'};margin-bottom:8px">
+      <div class="lbl">${p0.signal_source ? esc(p0.signal_source) + " · " : ""}${p0.trade_id ? esc(p0.trade_id) : ""}</div>
+      <div class="val" style="font-size:14px">${c}${fmt(p0.profit)}</div>
+      <div style="font-size:12px;color:var(--muted);margin-top:4px">
+        ${legs.map(p => `#${p.leg || "?"} ${p.type} ${p.volume} lotes · TP ${p.tp} · P&L ${c}${fmt(p.profit)}`).join(" · ")}
+      </div>
+    </div>`;
+  }).join("") || `<div class="mini">sem posições</div>`;
+}
+
+function renderTrades(list) {
+  const tb = document.querySelector("#tradesTable tbody");
+  tb.innerHTML = "";
+  if (!list.length) { tb.innerHTML = '<tr><td colspan="9" class="empty">Sem trades ainda.</td></tr>'; return; }
+  for (const t of list) {
+    const tr = document.createElement("tr");
+    const time = when(t.opened_at);
+    const perLeg = lotsPerLeg(t);
+    tr.innerHTML = `<td class="muted">${time}</td><td>${esc(t.symbol)}</td><td>${dirLabel(t.direction)}</td>
+      <td title="${esc(perLeg.title)}">${perLeg.html}</td><td>${t.entry}</td><td>${tpsCell(t)}</td>
+      <td><span class="tag ${t.status}">${tradeStatusLabel(t.status)}</span></td>${exitCell(t)}
+      <td class="${cls(t.pnl)}">${money(t.pnl)}</td>`;
+    tb.appendChild(tr);
+  }
+}
+
+const EXIT_LABELS = { sl: "🛑 SL", tp1: "🎯 TP1", tp2: "🎯 TP2", tp3: "🎯 TP3", tp4: "🎯 TP4", tp5: "🎯 TP5", be: "⚖️ BE", protect: "🛡 protect", close_all: "📦 close_all", close_tp1: "📦 close_tp1", close_tp: "📦 close_tp", move_sl: "🔧 move_sl", killswitch: "⏹ kill", manual: "✋ manual", mixed: "🔀 misto" };
+function exitCell(t) {
+  const r = t.exit_reason;
+  let html = "";
+  if (r) html += `<span class="tag" style="background:var(--panel);border:1px solid var(--border)">${EXIT_LABELS[r] || esc(r)}</span>`;
+  if (t.counterfactual_pnl !== undefined) {
+    const cf = t.counterfactual_pnl;
+    const delta = (t.pnl || 0) - cf;
+    const c2 = cf > 0 ? "win" : (cf < 0 ? "loss" : "muted");
+    html += `<div class="muted" style="font-size:11px;margin-top:3px" title="Contrafactual: o que teria dado sem gestão (variante TP1..TP5 da corrida paper, mesmo sinal)">sem gestão: <span class="${c2}">${money(cf)}</span>${delta !== 0 ? ` <span class="muted">(${delta > 0 ? "+" : ""}${money(delta)} gestão)</span>` : ""}</div>`;
+  }
+  return html ? `<td>${html}</td>` : '<td><span class="muted">—</span></td>';
+}
+
+const FEED_GROUP_LABEL = { trade_open: "🚀 Aberturas", trade_close: "📦 Fechos", risk: "⚠️ Risco", system: "⚙️ Sistema", summary: "📊 Resumos", management: "📨 Gestão", revived: "🔄 Revives", race: "🏁 Corrida", divergence: "⚖️ Divergências auto vs referência" };
+
+function renderFeed(list) {
+  const feed = $("feed");
+  feed.innerHTML = "";
+  if (!list.length) { feed.innerHTML = '<div class="empty">Sem eventos ainda. Aprova um sinal ou espera por mensagens do Telegram.</div>'; return; }
+  // agrupa por tipo (contagem) — o feed fica organizado em vez de uma lista
+  // longa; cada grupo mostra os eventos mais recentes desse tipo
+  const groups = {};
+  const order = [];
+  for (const n of list.slice(0, 60)) {
+    const k = n.kind || "system";
+    if (!groups[k]) { groups[k] = []; order.push(k); }
+    groups[k].push(n);
+  }
+  for (const k of order) {
+    const h = document.createElement("div");
+    h.className = "feed-group";
+    h.innerHTML = `<span class="fg-lbl">${FEED_GROUP_LABEL[k] || k}</span> <span class="fg-n">${groups[k].length}</span>`;
+    feed.appendChild(h);
+    for (const n of groups[k].slice(0, 8)) {
+      const d = document.createElement("div");
+      d.className = "feed-item";
+      d.innerHTML = feedHtml(n);
+      feed.appendChild(d);
+    }
+  }
+}
+
+const FEED_ICONS = { trade_open: "🚀", trade_close: "📦", risk: "⚠️", system: "⚙️", summary: "📊", management: "📨", revived: "🔄", race: "🏁", divergence: "⚖️" };
+const FEED_COLOR = { trade_open: "var(--green)", trade_close: "var(--muted)", risk: "var(--amber)", system: "var(--blue)", summary: "var(--violet)", management: "var(--blue)", revived: "var(--green)", race: "var(--violet)" };
+function feedHtml(m) {
+  const icon = FEED_ICONS[m.kind] || "•";
+  const color = FEED_COLOR[m.kind] || "var(--muted)";
+  let actionBtn = "";
+  if (m.action && m.action.startsWith("promote:")) {
+    const sid = m.action.slice(8);
+    const name = STRATEGY_NAMES[sid] || sid;
+    actionBtn = `<button class="feed-act" data-promote="${esc(sid)}" title="Passar a principal a usar ${esc(name)}">⬆️ Promover</button>`;
+  } else if (m.action && m.action.startsWith("fase3_target:")) {
+    const t = m.action.slice(13);
+    actionBtn = `<button class="feed-act" data-fase3-target="${esc(t)}" title="Baixar o alvo da janela da Fase 3 de 20 para ${esc(t)} sinais">🎯 Reduzir alvo para ${esc(t)}</button>`;
+  }
+  return `<span class="t">${esc(when(m.created_at))}</span> <span class="ic" style="color:${color}">${icon}</span> ${esc(m.text)}${actionBtn}`;
+}
+function prependFeed(m) {
+  playNotifSound(m.kind);
+  const feed = $("feed");
+  const d = document.createElement("div");
+  d.className = "feed-item";
+  d.innerHTML = feedHtml(m);
+  d.classList.add("fade-in");
+  feed.prepend(d);
+  while (feed.children.length > 60) feed.lastChild.remove();
+}
+
+// botão de ação no feed (ex.: "⬆️ Promover" numa sugestão de troca) —
+// delegação no #feed para sobreviver aos re-renders do renderFeed
+$("feed").addEventListener("click", async (ev) => {
+  const tbtn = ev.target.closest("[data-fase3-target]");
+  if (tbtn) {
+    const t = tbtn.dataset.fase3Target;
+    const cur = (last && last.config && last.config.fase3_target) || 20;
+    if (!confirm(`Reduzir o alvo da janela da Fase 3 de ${cur} para ${t} sinais? (menos margem estatística — os critérios mantêm-se PF ≥ 1.5 · P&L ≥ 50% · DD ≤ 125%)`)) return;
+    const d = await act("/api/config", { fase3_target: Number(t), fase3_target_reason: "ETA > 6 semanas (botão do feed)" });
+    if (d && d.error) { toast("Erro: " + d.error, "err"); return; }
+    toast("🎯 Alvo da Fase 3 agora " + t + " sinais — ETA recalculado", "ok");
+    return;
+  }
+  const btn = ev.target.closest("[data-promote]");
+  if (!btn) return;
+  const sid = btn.dataset.promote;
+  const name = STRATEGY_NAMES[sid] || sid;
+  if (!confirm(`Passar a conta principal (MT5 real) a usar a estratégia “${name}”?`)) return;
+  const d = await act("/api/config", { strategy: sid });
+  if (d && d.error) { toast("Erro: " + d.error, "err"); return; }
+  toast("♟ Estratégia promovida: " + name + " — a principal usa-a agora", "ok");
+  location.href = "/";
+});
+
+/* detalhe de risco colapsável (menos ruído na principal) */
+const btnRiskToggle = $("btnRiskToggle");
+if (btnRiskToggle) {
+  btnRiskToggle.onclick = () => document.body.classList.toggle("risk-collapsed");
+}
+
+/* ------------------------------------------------------------- actions */
+$("btnManual").onclick = async () => { const d = await act("/api/config", { mode: "manual" }); if (!d.error) toast("Modo manual", "ok"); };
+$("btnAuto").onclick = async () => { const d = await act("/api/config", { mode: "auto" }); if (!d.error) toast("Modo automático ativado — sinais executam sozinhos", "ok"); };
+$("btnSummary").onclick = async () => { const d = await act("/api/summary"); if (!d.error) toast("📊 Resumo diário enviado", "ok"); };
+let riskTimer = null;
+function updateRiskPreviewLocal() {
+  if (!last) return;
+  const eq = Number((last.account || {}).equity || 0);
+  const risk = parseFloat($("riskSlider").value);
+  const nLegs = nLegsFrom(last.signals);
+  $("rcPerTrade").textContent = cur(eq * risk / 100);
+  $("rcPerLeg").textContent = cur(eq * risk / 100 / nLegs);
+  const hint = $("modeHint");
+  if (hint && last.config.mode === "auto" && !last.config.kill_switch) {
+    hint.innerHTML = hint.innerHTML.replace(/<b>[^<]*% da conta<\/b> \([^)]*\)/, `<b>${fmt(risk, 1)}% da conta</b> (${cur(eq * risk / 100)})`);
+  }
+}
+$("riskSlider").oninput = (e) => {
+  $("riskVal").textContent = fmt(e.target.value, 1) + "%";
+  updateRiskPreviewLocal();
+  clearTimeout(riskTimer);
+  riskTimer = setTimeout(() => act("/api/config", { risk_pct: parseFloat(e.target.value) }), 250);
+};
+let editWinTimer = null;
+const editWinSlider = $("editWinSlider");
+if (editWinSlider) editWinSlider.oninput = (e) => {
+  const v = parseFloat(e.target.value);
+  $("editWinVal").textContent = fmt(v, 0) + "s";
+  clearTimeout(editWinTimer);
+  editWinTimer = setTimeout(() => act("/api/config", { edit_window_seconds: v }), 250);
+};
+$("groupFilter").onchange = (e) => { groupFilter = e.target.value; if (last) renderSignals(last.signals); };
+
+/* ---------------------------------------------------------------- tabs */
+document.querySelectorAll(".tabs button").forEach((b) => {
+  b.onclick = () => {
+    document.querySelectorAll(".tabs button").forEach(x => x.classList.remove("active"));
+    document.querySelectorAll("main .card[id^=tab-]").forEach(x => x.style.display = "none");
+    b.classList.add("active");
+    const id = b.dataset.tab;
+    const target = document.getElementById("tab-" + id);
+    target.style.display = "";
+    if (id === "relatorio") loadReport();
+    if (id === "ignoradas") loadIgnored();
+  };
+});
+
+/* --------------------------------------------------------------- report */
+$("reportDays").onchange = () => loadReport();
+$("btnIgnoredRefresh").onclick = () => loadIgnored();
+$("ignoredDays").onchange = () => loadIgnored();
+let _ignoredSearchTimer = null;
+$("ignoredSearch").oninput = () => {
+  clearTimeout(_ignoredSearchTimer);
+  _ignoredSearchTimer = setTimeout(loadIgnored, 300);
+};
+
+async function loadIgnored() {
+  const tb = document.querySelector("#ignoredTable tbody");
+  const q = encodeURIComponent($("ignoredSearch").value.trim());
+  const days = $("ignoredDays").value;
+  try {
+    const r = await fetch(`/api/ignored?limit=100&days=${days}&q=${q}`).then(res => res.json());
+    tb.innerHTML = "";
+    const label = days == 1 ? "últimas 24h" : days == 7 ? "últimos 7 dias" : days == 30 ? "últimos 30 dias" : "todo o histórico";
+    $("ignoredCountTxt").textContent = `${r.total} mensagem(ns)${q ? " a bater com “" + $("ignoredSearch").value.trim() + "”" : ""} em ${label}`;
+    if (!r.items || !r.items.length) {
+      tb.innerHTML = '<tr><td colspan="3" class="empty">Nenhuma mensagem ignorada neste filtro.</td></tr>';
+      return;
+    }
+    for (const it of r.items) {
+      const tr = document.createElement("tr");
+      const time = when(it.received_at);
+      const src = (it.source || "").replace(/^tg:/, "");
+      tr.innerHTML = `<td class="muted" style="white-space:nowrap" title="${esc(it.received_at || "")}">${esc(time)}</td>` +
+        `<td class="muted">${esc(src)}</td>` +
+        `<td style="white-space:pre-wrap;word-break:break-word;max-width:520px">${esc(it.raw_text)}</td>`;
+      tb.appendChild(tr);
+    }
+  } catch (e) {
+    tb.innerHTML = '<tr><td colspan="3" class="empty">Erro ao carregar auditoria.</td></tr>';
+  }
+}
+
+async function loadReport() {
+  const days = $("reportDays").value;
+  const r = await fetch("/api/report?days=" + days).then(res => res.json());
+  $("rSignals").textContent = r.signals.total;
+  $("rTrades").textContent = r.trades.closed;
+  $("rWinRate").textContent = fmt(r.trades.win_rate, 1) + "%";
+  const p = $("rPnl"); p.textContent = money(r.trades.pnl); p.className = "val " + cls(r.trades.pnl);
+  $("rPF").textContent = r.trades.profit_factor === null ? "—" : fmt(r.trades.profit_factor);
+  const rrs = [1, 2, 3, 4, 5].map(i => r.risk_reward["avg_tp" + i]).filter(v => v > 0);
+  $("rRR").textContent = rrs.length ? rrs.map(v => fmt(v)).join(" / ") : "—";
+  $("rDD").textContent = cur(r.drawdown.amount) + " (" + fmt(r.drawdown.pct, 1) + "%)";
+  drawEquityChart(r.equity_curve || []);
+  drawDailyChart(r.by_day || []);
+  loadOperationalMetrics();
+  loadDivergences();
+  loadProtectLatency();
+  loadRealVsBacktest();
+  loadPaperVsRealAuto();
+
+  const tb = document.querySelector("#reportGroupsTable tbody");
+  tb.innerHTML = "";
+  if (!r.groups.length) { tb.innerHTML = '<tr><td colspan="6" class="empty">Sem dados no período.</td></tr>'; return; }
+  for (const g of r.groups) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${esc(g.group)}</td><td>${g.signals}</td><td>${g.trades}</td><td>${g.wins}</td>
+      <td>${fmt(g.win_rate, 1)}%</td><td class="${cls(g.pnl)}">${money(g.pnl)}</td>`;
+    tb.appendChild(tr);
+  }
+}
+
+/* Item 10 — telemetria operacional agregada (exceções, spread e MT5) */
+async function loadOperationalMetrics() {
+  const panel = $("operationalMetricsPanel");
+  if (!panel) return;
+  const spreadTb = document.querySelector("#operationalSpreadTable tbody");
+  const mt5Tb = document.querySelector("#operationalMt5Table tbody");
+  const exTb = document.querySelector("#operationalExceptionsTable tbody");
+  try {
+    const r = await fetch("/api/operations?days=90").then(res => res.json());
+    const ex = r.exceptions || {}, spread = r.spread || {}, mt5 = r.mt5 || {};
+    const mods = mt5.modifies || {}, con = mt5.connections || {};
+    const latest = (con.weekly || []).slice(-1)[0] || {};
+    $("operationalMetricsStats").innerHTML =
+      `<div class="mini"><div class="lbl">Exceções (${ex.days || 90}d)</div><div class="val ${ex.total ? "loss" : "win"}">${ex.total || 0}</div></div>` +
+      `<div class="mini"><div class="lbl">Spread observado</div><div class="val">${spread.observations || 0}</div></div>` +
+      `<div class="mini"><div class="lbl">Reconexões (sucesso)</div><div class="val">${latest.reconnect_successes || 0}</div></div>` +
+      `<div class="mini"><div class="lbl">Modifies recusados</div><div class="val ${mods.total_rejected ? "loss" : "win"}">${mods.total_rejected || 0} / ${mods.total_attempts || 0}</div></div>` +
+      `<div class="mini"><div class="lbl">Taxa global de recusa</div><div class="val ${mods.rejection_rate_pct > 0 ? "loss" : "win"}">${mods.rejection_rate_pct == null ? "—" : fmt(mods.rejection_rate_pct, 1) + "%"}</div></div>`;
+    spreadTb.innerHTML = "";
+    const spreadRows = spread.monthly || [];
+    if (!spreadRows.length) {
+      spreadTb.innerHTML = '<tr><td colspan="6" class="empty">Sem quotes MT5 observadas ainda.</td></tr>';
+    } else {
+      for (const row of spreadRows.slice().reverse()) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `<td>${esc(row.month)}</td><td>${esc(row.symbol)}</td><td>${row.observations}</td>` +
+          `<td><b>${fmt(row.avg_spread_pips, 2)}</b></td><td>${fmt(row.min_spread_pips, 2)}</td><td>${fmt(row.max_spread_pips, 2)}</td>`;
+        spreadTb.appendChild(tr);
+      }
+    }
+    mt5Tb.innerHTML = "";
+    const connRows = con.weekly || [], modifyRows = mods.weekly || [];
+    const byWeek = {};
+    for (const row of connRows) byWeek[row.week_start] = { ...row };
+    for (const row of modifyRows) byWeek[row.week_start] = { ...(byWeek[row.week_start] || {}), ...row };
+    const weeks = Object.keys(byWeek).sort().reverse();
+    if (!weeks.length) {
+      mt5Tb.innerHTML = '<tr><td colspan="7" class="empty">Sem eventos MT5 observados ainda.</td></tr>';
+    } else {
+      for (const week of weeks) {
+        const row = byWeek[week];
+        const rej = row.rejected || 0;
+        const rate = row.rejection_rate_pct;
+        const tr = document.createElement("tr");
+        tr.innerHTML = `<td>${esc(week)}</td><td>${row.reconnect_successes || 0} / ${row.reconnect_attempts || 0}</td>` +
+          `<td>${row.reconnect_failures || 0}</td><td>${row.disconnects || 0}</td>` +
+          `<td>${row.attempts || 0}</td><td class="${rej ? "loss" : ""}">${rej}</td>` +
+          `<td class="${rej ? "loss" : "win"}">${rate == null ? "—" : fmt(rate, 1) + "%"}</td>`;
+        mt5Tb.appendChild(tr);
+      }
+    }
+    const exCount = $("operationalExceptionCount");
+    if (exCount) exCount.textContent = ex.total || 0;
+    exTb.innerHTML = "";
+    const recent = ex.recent || [];
+    if (!recent.length) {
+      exTb.innerHTML = '<tr><td colspan="4" class="empty">Sem exceções persistidas no período.</td></tr>';
+    } else {
+      for (const row of recent) {
+        const context = row.context || {};
+        const ctx = [row.signal_id && `sinal ${row.signal_id}`, row.trade_id && `trade ${row.trade_id}`, context.phase || context.loop || context.component].filter(Boolean).join(" · ") || "—";
+        const tr = document.createElement("tr");
+        tr.innerHTML = `<td class="muted" title="${esc(row.created_at || "")}">${when(row.created_at)}</td>` +
+          `<td>${esc(row.exception_type || "?")}</td><td class="muted">${esc(ctx)}</td><td>${esc(row.message || "")}</td>`;
+        exTb.appendChild(tr);
+      }
+    }
+  } catch (e) {
+    $("operationalMetricsStats").innerHTML = '<div class="muted">Telemetria operacional indisponível.</div>';
+  }
+}
+
+/* divergências auto vs referência (Fase 2) — tabela do Relatório */
+async function loadDivergences() {
+  const tb = document.querySelector("#divergencesTable tbody");
+  if (!tb) return;
+  try {
+    const r = await fetch("/api/paper/divergences").then(res => res.json());
+    const rows = r.divergences || [];
+    tb.innerHTML = "";
+    if (!rows.length) {
+      tb.innerHTML = '<tr><td colspan="7" class="empty">Sem divergências ainda — a auto e a referência ainda não saíram diferentes em nenhum sinal.</td></tr>';
+      return;
+    }
+    for (const d of rows) {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td>${esc(d.auto_at || "—")}</td><td>${esc(d.symbol)}</td>
+        <td>${d.auto_open ? '<span class="tag open">aberta</span>' : '<span class="tag">' + esc(d.auto_reason || "?") + '</span>'}</td>
+        <td class="${cls(d.auto_pnl)}">${d.auto_pnl == null ? "—" : money(d.auto_pnl)}</td>
+        <td><span class="tag">${esc(d.ref_reason || "?")}</span></td>
+        <td class="${cls(d.ref_pnl)}">${d.ref_pnl == null ? "—" : money(d.ref_pnl)}</td>
+        <td class="muted" style="font-size:12px">${esc(d.motivo)}</td>`;
+      tb.appendChild(tr);
+    }
+  } catch (e) { /* silencioso */ }
+}
+
+/* telemetria do protect híbrido (backtest/paper/MT5) */
+async function loadProtectLatency() {
+  const panel = $("protectLatencyPanel");
+  const tb = document.querySelector("#protectLatencyTable tbody");
+  if (!panel || !tb) return;
+  try {
+    const r = await fetch("/api/analysis/protect_latency?strategy=auto_escada_3_hibrida&limit=500").then(res => res.json());
+    const st = r.stats || {};
+    $("protectLatencyStats").innerHTML =
+      `<div class="mini"><div class="lbl">Eventos</div><div class="val">${st.count || 0}</div></div>` +
+      `<div class="mini"><div class="lbl">Venceu auto / grupo</div><div class="val">${st.auto_wins || 0} / ${st.group_wins || 0}</div></div>` +
+      `<div class="mini"><div class="lbl">Mediana atraso</div><div class="val">${st.median_seconds == null ? "—" : fmt(st.median_seconds, 1) + "s"}</div></div>` +
+      `<div class="mini"><div class="lbl">P90 atraso</div><div class="val">${st.p90_seconds == null ? "—" : fmt(st.p90_seconds, 1) + "s"}</div></div>` +
+      `<div class="mini"><div class="lbl">P90 diferença</div><div class="val">${st.p90_pips == null ? "—" : fmt(st.p90_pips, 1) + " pips"}</div></div>`;
+    tb.innerHTML = "";
+    if (!r.rows || !r.rows.length) {
+      tb.innerHTML = '<tr><td colspan="7" class="empty">Sem eventos protect ainda — o relatório ganha dados quando a híbrida receber mensagens reais.</td></tr>';
+      return;
+    }
+    for (const row of r.rows) {
+      const tr = document.createElement("tr");
+      tr.innerHTML =
+        `<td class="muted" title="${esc(row.group_received_at || "")}">${when(row.group_received_at)}</td>` +
+        `<td>${esc(row.symbol || row.signal_id || "—")}</td>` +
+        `<td><span class="tag">${esc(row.engine || "?")}</span></td>` +
+        `<td class="${row.winner === "auto" ? "win" : row.winner === "group" ? "loss" : ""}">${esc(row.winner || "—")}</td>` +
+        `<td>${row.delta_pips == null ? "—" : fmt(row.delta_pips, 1)}</td>` +
+        `<td>${row.delta_seconds == null ? "—" : fmt(row.delta_seconds, 1)}</td>` +
+        `<td>${esc(row.leg1_action || "—")}</td>`;
+      tb.appendChild(tr);
+    }
+  } catch (e) {
+    tb.innerHTML = '<tr><td colspan="7" class="empty">Erro ao carregar a telemetria protect.</td></tr>';
+  }
+}
+
+/* trades reais fechadas vs backtest do mesmo sinal (slippage + timing) */
+async function loadRealVsBacktest() {
+  const tb = document.querySelector("#realVsBtTable tbody");
+  if (!tb) return;
+  try {
+    const r = await fetch("/api/analysis/real_vs_backtest").then(res => res.json());
+    const rows = r.trades || [];
+    tb.innerHTML = "";
+    if (!rows.length) {
+      tb.innerHTML = '<tr><td colspan="10" class="empty">Sem trades reais fechadas ainda — quando a conta demo fechar as primeiras, a comparação aparece aqui.</td></tr>';
+      return;
+    }
+    for (const t of rows) {
+      const tr = document.createElement("tr");
+      const dE = t.entry_diff_pips;
+      const dEcls = dE == null ? "" : (Math.abs(dE) > 0.05 ? (dE > 0 ? "loss" : "win") : "muted");
+      const dS = t.exit_diff_avg;
+      const dScls = dS == null ? "" : (Math.abs(dS) > 0.001 ? (t.direction === "buy" ? (dS > 0 ? "win" : "loss") : (dS > 0 ? "loss" : "win")) : "muted");
+      const delay = t.delay_seconds == null ? "—" :
+        (Math.abs(t.delay_diff) <= 30 ? `${fmt(t.delay_seconds / 60, 1)} min` : `${fmt(t.delay_seconds / 60, 1)} min <span class="muted">(sim ${fmt(t.bt_delay_seconds / 60, 1)})</span>`);
+      tr.innerHTML =
+        `<td class="muted" style="white-space:nowrap" title="${esc(t.closed_at || "")}">${when(t.closed_at)}</td>` +
+        `<td>${esc(t.symbol)} ${t.direction === "buy" ? "▲" : "▼"}</td>` +
+        `<td>${t.real_entry == null ? "—" : fmt(t.real_entry)}</td>` +
+        `<td>${t.bt_entry_fill == null ? "—" : fmt(t.bt_entry_fill)}</td>` +
+        `<td class="${dEcls}" title="${t.entry_diff == null ? "" : "Δ " + fmt(t.entry_diff) + " pontos"}">${dE == null ? "—" : (dE > 0 ? "+" : "") + fmt(dE, 2) + " pips"}</td>` +
+        `<td class="${dScls}" title="média ponderada dos fechos das pernas vs o nível da razão">${dS == null ? "—" : fmt(dS, 4)}</td>` +
+        `<td><span class="tag">${esc(t.exit_reason || "?")}</span></td>` +
+        `<td class="${cls(t.real_pnl)}">${money(t.real_pnl)}</td>` +
+        `<td class="${t.bt_pnl == null ? "" : cls(t.bt_pnl)}">${t.bt_pnl == null ? "—" : money(t.bt_pnl) + (t.bt_outcome ? ` <span class="muted">(${esc(t.bt_outcome)})</span>` : "")}</td>` +
+        `<td>${delay}</td>`;
+      tb.appendChild(tr);
+    }
+  } catch (e) {
+    tb.innerHTML = '<tr><td colspan="10" class="empty">Erro ao carregar a comparação.</td></tr>';
+  }
+}
+
+/* auto paper vs auto MT5 (Fase 3) — mesma decisão de saída, Δ preço, Δ timing */
+async function loadPaperVsRealAuto() {
+  const tb = document.querySelector("#paperVsRealTable tbody");
+  if (!tb) return;
+  try {
+    const r = await fetch("/api/analysis/paper_vs_real_auto").then(res => res.json());
+    const rows = r.pairs || [];
+    tb.innerHTML = "";
+    if (!rows.length) {
+      tb.innerHTML = '<tr><td colspan="9" class="empty">Sem pares real↔papel ainda — quando a Fase 3 arrancar (uma auto promovida a principal no MT5), a comparação aparece aqui.</td></tr>';
+      return;
+    }
+    for (const p of rows) {
+      const tr = document.createElement("tr");
+      const dP = p.price_diff_pips;
+      const dPcls = dP == null ? "" : (Math.abs(dP) > 0.05 ? (dP > 0 ? "win" : "loss") : "muted");
+      const same = p.paper_open ? '<span class="tag open">paper aberta</span>' :
+        (p.same_exit ? "✓" : '<span class="tag loss">✗</span>');
+      const tDiff = p.timing_diff_min == null ? "—" :
+        (Math.abs(p.timing_diff_min) < 1 ? `${fmt(p.timing_diff_min, 1)} min` : `${fmt(p.timing_diff_min, 1)} min`);
+      tr.innerHTML =
+        `<td class="muted" style="white-space:nowrap" title="${esc(p.real_closed_at || "")}">${when(p.real_closed_at)}</td>` +
+        `<td>${esc(p.symbol)} ${p.direction === "buy" ? "▲" : "▼"}</td>` +
+        `<td><span class="tag">${esc(p.real_exit || "?")}</span></td>` +
+        `<td>${p.paper_open ? '<span class="tag open">aberta</span>' : '<span class="tag">' + esc(p.paper_exit || "?") + '</span>'}</td>` +
+        `<td class="${dPcls}" title="fecho ponderado real vs papel">${dP == null ? "—" : (dP > 0 ? "+" : "") + fmt(dP, 2) + " pips"}</td>` +
+        `<td class="muted" title="papel vs real (min); + = o papel fechou depois">${tDiff}</td>` +
+        `<td class="${cls(p.real_pnl)}">${money(p.real_pnl)}</td>` +
+        `<td class="${cls(p.paper_pnl)}">${money(p.paper_pnl)}</td>` +
+        `<td>${same}</td>`;
+      tb.appendChild(tr);
+    }
+  } catch (e) {
+    tb.innerHTML = '<tr><td colspan="9" class="empty">Erro ao carregar a comparação paper↔MT5.</td></tr>';
+  }
+}
+
+/* --------------------------------------------------------------- chart */
+function drawDailyChart(days) {
+  const canvas = $("dailyChart");
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  if (!days.length) {
+    ctx.fillStyle = "#8a94a6"; ctx.font = "13px sans-serif";
+    ctx.fillText("Sem trades fechadas no período — as barras aparecem quando houver dias com fecho.", 20, H / 2);
+    return;
+  }
+  const padL = 46, padR = 10, padT = 14, padB = 22;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const pnls = days.map(d => d.pnl);
+  let max = Math.max(1, ...pnls.map(Math.abs));
+  const bw = Math.min(34, plotW / days.length * 0.62);
+  const step = plotW / days.length;
+  const x0 = i => padL + step * i + (step - bw) / 2;
+  const y = v => padT + plotH - ((v + max) / (2 * max)) * plotH;
+  ctx.strokeStyle = "#263040"; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(padL, y(0)); ctx.lineTo(W - padR, y(0)); ctx.stroke();
+  days.forEach((d, i) => {
+    const bx = x0(i);
+    const h = Math.abs(d.pnl) / max * (plotH / 2);
+    const by = d.pnl >= 0 ? y(d.pnl) : y(0);
+    ctx.fillStyle = d.pnl >= 0 ? "#22c55e" : "#ef4444";
+    ctx.fillRect(bx, by, bw, Math.max(1, h));
+    ctx.fillStyle = "#8a94a6"; ctx.font = "10px sans-serif";
+    ctx.fillText(ddmm(d.day), bx, H - 8);
+  });
+  ctx.strokeStyle = "#3b82f6"; ctx.lineWidth = 1.5; ctx.beginPath();
+  days.forEach((d, i) => {
+    const cy = padT + plotH - (d.win_rate / 100) * plotH;
+    i === 0 ? ctx.moveTo(x0(i) + bw / 2, cy) : ctx.lineTo(x0(i) + bw / 2, cy);
+  });
+  ctx.stroke();
+  ctx.fillStyle = "#8a94a6"; ctx.font = "9px sans-serif";
+  ctx.fillText("WR", W - padR - 18, padT - 3);
+  days.forEach((d, i) => {
+    const cy = padT + plotH - (d.win_rate / 100) * plotH;
+    ctx.fillStyle = "#3b82f6";
+    ctx.beginPath(); ctx.arc(x0(i) + bw / 2, cy, 2.5, 0, Math.PI * 2); ctx.fill();
+  });
+  ctx.fillStyle = "#8a94a6"; ctx.font = "9px sans-serif";
+  const lastD = days[days.length - 1];
+  ctx.fillText(`${ddmm(lastD.day)} · ${lastD.trades} trades · WR ${fmt(lastD.win_rate, 0)}% · ${money(lastD.pnl)}`, padL + 2, padT - 3);
+}
+
+function drawEquityChart(points) {
+  const canvas = $("equityChart");
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  if (!points || points.length < 2) {
+    ctx.fillStyle = "#8a94a6"; ctx.font = "13px sans-serif";
+    ctx.fillText("Sem dados suficientes para a curva de equity.", 20, H / 2);
+    return;
+  }
+  const pad = 34;
+  const vals = points.map(p => p.pnl);
+  let min = Math.min(0, ...vals), max = Math.max(0, ...vals);
+  if (max - min < 1) max = min + 1;
+  const x = i => pad + (i / (points.length - 1)) * (W - pad * 2);
+  const y = v => H - pad - ((v - min) / (max - min)) * (H - pad * 2);
+  ctx.strokeStyle = "#263040"; ctx.lineWidth = 1;
+  for (let g = 0; g <= 4; g++) {
+    const gy = pad + (g / 4) * (H - pad * 2);
+    ctx.beginPath(); ctx.moveTo(pad, gy); ctx.lineTo(W - pad, gy); ctx.stroke();
+  }
+  if (min < 0 && max > 0) {
+    ctx.strokeStyle = "#8a94a6"; ctx.setLineDash([4, 4]);
+    ctx.beginPath(); ctx.moveTo(pad, y(0)); ctx.lineTo(W - pad, y(0)); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  ctx.beginPath();
+  points.forEach((p, i) => i === 0 ? ctx.moveTo(x(i), y(p.pnl)) : ctx.lineTo(x(i), y(p.pnl)));
+  ctx.strokeStyle = "#3b82f6"; ctx.lineWidth = 2; ctx.stroke();
+  const last = points[points.length - 1];
+  ctx.fillStyle = last.pnl >= 0 ? "#22c55e" : "#ef4444";
+  ctx.font = "bold 12px sans-serif";
+  ctx.fillText((last.pnl > 0 ? "+" : "") + last.pnl.toFixed(0), W - pad - 60, y(last.pnl) - 6);
+}
+
+/* ----------------------- corrida paralela (curva ao vivo) */
+async function loadPaperRaceMini() {
+  const box = $("paperRaceMini");
+  if (!box) return;
+  try {
+    const hours = ($("paperRaceHours") || {}).value || 24;
+    const r = await fetch("/api/paper/history?hours=" + hours).then(res => res.json());
+    const series = (r.series || []).filter(s => s.points && s.points.length);
+    if (!series.length) { box.style.display = "none"; return; }
+    box.style.display = "";
+    drawPaperRaceCurve(series, "paperRaceMiniChart", "paperRaceMiniLegend", 84);
+  } catch (e) { box.style.display = "none"; }
+}
+
+/* desenha a evolução do saldo (normalizado a % desde o primeiro ponto) de
+   cada estratégia — todas começam com a sua conta virtual de 1000 €, por
+   isso o eixo mostra % de variação desde o início da corrida. A série
+   reservada `__real__` (is_real) é o saldo REAL da conta MT5: desenha-se
+   por cima a tracejado claro como linha de referência, fora da comparação */
+function drawPaperRaceCurve(series, canvasId, legendId, height) {
+  const canvas = $(canvasId);
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  const pad = 30;
+  const seriesN = series.map(s => {
+    const base = s.points[0].balance || 0;
+    return { ...s, pts: s.points.map(p => base ? ((p.balance - base) / base) * 100 : 0) };
+  });
+  const all = seriesN.flatMap(s => s.pts);
+  if (!all.length) return;
+  let min = Math.min(0, ...all), max = Math.max(0, ...all);
+  if (max - min < 1) max = min + 1;
+  const nMax = Math.max(...seriesN.map(s => s.pts.length));
+  const x = i => pad + (nMax <= 1 ? 0 : (i / (nMax - 1)) * (W - pad * 2));
+  const y = v => H - pad - ((v - min) / (max - min)) * (H - pad * 2);
+  ctx.strokeStyle = "#263040"; ctx.lineWidth = 1;
+  for (let g = 0; g <= 3; g++) {
+    const gy = pad + (g / 3) * (H - pad * 2);
+    ctx.beginPath(); ctx.moveTo(pad, gy); ctx.lineTo(W - pad, gy); ctx.stroke();
+  }
+  if (min < 0 && max > 0) {
+    ctx.strokeStyle = "#8a94a6"; ctx.setLineDash([4, 4]);
+    ctx.beginPath(); ctx.moveTo(pad, y(0)); ctx.lineTo(W - pad, y(0)); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  for (const s of seriesN) {
+    if (s.is_real) continue; // a linha real desenha-se por cima, no fim
+    const col = RACE_COLORS[s.strategy_id] || "#22c55e";
+    const isMain = !!s.is_main;
+    ctx.strokeStyle = col;
+    ctx.lineWidth = isMain ? 3 : 2;
+    if (isMain) ctx.setLineDash([8, 4]); // a principal distingue-se a tracejado
+    ctx.beginPath();
+    s.pts.forEach((v, i) => i === 0 ? ctx.moveTo(x(i), y(v)) : ctx.lineTo(x(i), y(v)));
+    ctx.stroke();
+    if (isMain) ctx.setLineDash([]);
+    const lastV = s.pts[s.pts.length - 1];
+    ctx.fillStyle = col; ctx.font = (isMain ? "bold 12px" : "bold 11px") + " sans-serif";
+    ctx.fillText((lastV > 0 ? "+" : "") + lastV.toFixed(1) + "%", Math.min(W - pad - 60, x(s.pts.length - 1) - 24), y(lastV) - 4);
+  }
+  // referência: saldo real da MT5 (tracejado claro, por cima das virtuais)
+  for (const s of seriesN) {
+    if (!s.is_real) continue;
+    const col = "#f8fafc";
+    ctx.strokeStyle = col;
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([2, 4]);
+    ctx.beginPath();
+    s.pts.forEach((v, i) => i === 0 ? ctx.moveTo(x(i), y(v)) : ctx.lineTo(x(i), y(v)));
+    ctx.stroke();
+    ctx.setLineDash([]);
+    const lastV = s.pts[s.pts.length - 1];
+    ctx.fillStyle = col; ctx.font = "bold 11px sans-serif";
+    ctx.fillText((lastV > 0 ? "+" : "") + lastV.toFixed(1) + "%", Math.min(W - pad - 60, x(s.pts.length - 1) - 24), y(lastV) - 4);
+  }
+  ctx.fillStyle = "#8a94a6"; ctx.font = "10px sans-serif";
+  const t0 = seriesN[0].points[0].ts || "", t1 = seriesN[0].points[seriesN[0].points.length - 1].ts || "";
+  ctx.fillText(t0.slice(5, 16).replace("T", " "), pad, H - 8);
+  ctx.fillText(t1.slice(5, 16).replace("T", " "), W - pad - 80, H - 8);
+  const legend = $(legendId);
+  if (!legend) return;
+  legend.innerHTML = "";
+  for (const s of seriesN) {
+    if (s.is_real) continue; // a real vai por último, com estilo próprio
+    const lastV = s.pts[s.pts.length - 1];
+    const bal = s.points[s.points.length - 1].balance;
+    const base = s.points[0].balance || 0;
+    const absPnl = bal - base;
+    const mini = document.createElement("div");
+    mini.className = "mini";
+    mini.innerHTML =
+      `<div class="lbl" style="color:${RACE_COLORS[s.strategy_id] || "#22c55e"}">${esc(s.nome || s.strategy_id)}${s.is_main ? " 🧠" : ""}</div>` +
+      `<div class="val" style="font-size:13px;color:${lastV >= 0 ? "var(--green)" : "var(--red)"}">${(lastV > 0 ? "+" : "") + lastV.toFixed(1)}% · ${money(absPnl)} <span class="muted">(${cur(bal)})</span></div>` +
+      `<div class="muted" style="font-size:10px">${s.closed || 0} fechadas · WR ${fmt(s.win_rate ?? 0, 1)}%</div>`;
+    legend.appendChild(mini);
+  }
+  // referência: o saldo real da conta MT5 (fora da comparação — só mostra o
+  // "dinheiro a sério" ao lado das contas virtuais)
+  for (const s of seriesN) {
+    if (!s.is_real) continue;
+    const lastV = s.pts[s.pts.length - 1];
+    const bal = s.points[s.points.length - 1].balance;
+    const base = s.points[0].balance || 0;
+    const absPnl = bal - base;
+    const mini = document.createElement("div");
+    mini.className = "mini";
+    mini.innerHTML =
+      `<div class="lbl" style="color:#f8fafc">⚡ ${esc(s.nome || "MT5 real")} <span class="muted" style="font-size:10px">conta real</span></div>` +
+      `<div class="val" style="font-size:13px;color:${lastV >= 0 ? "var(--green)" : "var(--red)"}">${(lastV > 0 ? "+" : "") + lastV.toFixed(1)}% · ${money(absPnl)} <span class="muted">(${cur(bal)})</span></div>`;
+    legend.appendChild(mini);
+  }
+  // tooltip ao passar o rato: mostra P&L absoluto em € + % do ponto mais
+  // próximo de cada estratégia
+  canvas._raceData = seriesN;
+  if (!canvas._raceTip) {
+    canvas._raceTip = document.createElement("div");
+    canvas._raceTip.className = "chart-tip";
+    canvas._raceTip.style.cssText = "position:absolute;pointer-events:none;display:none;background:rgba(10,8,18,.95);border:1px solid var(--border);border-radius:8px;padding:6px 9px;font-size:11px;z-index:50;box-shadow:0 4px 14px rgba(0,0,0,.5)";
+    canvas.parentElement.style.position = "relative";
+    canvas.parentElement.appendChild(canvas._raceTip);
+  }
+  const tip = canvas._raceTip;
+  canvas.onmousemove = (e) => {
+    const data = canvas._raceData;
+    if (!data || !data.length) return;
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const padC = 30;
+    const nMax = Math.max(...data.map(s => s.pts.length));
+    const xpx = i => padC + (nMax <= 1 ? 0 : (i / (nMax - 1)) * (rect.width - padC * 2));
+    let bestI = 0, bestD = 1e9;
+    for (let i = 0; i < nMax; i++) {
+      const d = Math.abs(xpx(i) - mx);
+      if (d < bestD) { bestD = d; bestI = i; }
+    }
+    let html = "";
+    for (const s of data) {
+      const idx = Math.min(bestI, s.pts.length - 1);
+      const v = s.pts[idx];
+      const base = s.points[0].balance || 0;
+      const bal = s.points[idx].balance || 0;
+      const absPnl = bal - base;
+      const col = RACE_COLORS[s.strategy_id] || "#22c55e";
+      html += `<div style="color:${col}">${esc(s.nome || s.strategy_id)}</div>` +
+        `<div style="color:${v >= 0 ? "var(--green)" : "var(--red)"}">${(v > 0 ? "+" : "") + v.toFixed(1)}% · ${money(absPnl)} <span class="muted">(${cur(bal)})</span></div>`;
+    }
+    tip.innerHTML = html;
+    tip.style.display = "block";
+    tip.style.left = (mx + 12) + "px";
+    tip.style.top = (e.clientY - rect.top + 8) + "px";
+  };
+  canvas.onmouseleave = () => { if (tip) tip.style.display = "none"; };
+}
+
+$("paperRaceHours").onchange = () => {
+  act("/api/config", { paper_race_hours: parseInt($("paperRaceHours").value, 10) });
+  loadPaperRaceMini();
+};
+loadPaperRaceMini();
+setInterval(loadPaperRaceMini, 60000);
+setTimeout(refreshPhase3Instruments, 1500);
+setInterval(refreshPhase3Instruments, 60000);
+
+/* ⬆️ Promover a auto_escada_3 a principal (arranca a Fase 3 no MT5) — o
+   botão vive nos painéis Fase 2 (gate 3/3 cumprido) e Fase 3; ambos fazem
+   POST /api/config {strategy}, que grava o snapshot da auditoria de
+   SL/divergências para a janela de validação (estado.py::update_config) */
+function promoteAutoEscada3() {
+  return async () => {
+    if (!confirm("Passar a conta principal (MT5 real) a usar a estratégia “auto_escada_3”? A execução passa a usar escada + trailing (auto_mgmt) e abre a janela de validação de 10 trades (ESTRATEGIAS.md Parte X).")) return;
+    const d = await act("/api/config", { strategy: "auto_escada_3" });
+    if (d && d.error) { toast("Erro: " + d.error, "err"); return; }
+    toast("♟ auto_escada_3 promovida — Fase 3 arrancada", "ok");
+  };
+}
+$("btnPhase3Promote").onclick = promoteAutoEscada3();
+$("btnPhase2Promote").onclick = promoteAutoEscada3();
+</script>
+</body>
+</html>

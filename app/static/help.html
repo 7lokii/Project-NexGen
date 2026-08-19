@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="pt" data-theme="cyberpunk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Project NexGen — Ajuda</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2307080f'/%3E%3Crect x='4' y='4' width='56' height='56' rx='11' fill='none' stroke='%2300f0ff' stroke-width='3'/%3E%3Ctext x='32' y='46' font-family='Arial Black, Arial' font-size='36' font-weight='900' fill='%2300f0ff' text-anchor='middle'%3EN%3C/text%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@600;800&family=Chakra+Petch:wght@400;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body class="no-chrome">
+<nav class="term-menu" id="termMenu" aria-label="Navegação">
+  <span class="term-menu-label">▚ NAV</span>
+  <a class="term-menu-item main" data-page="principal" href="/"><span class="cur">▸</span>PRINCIPAL<span class="sub">conta MT5 · estratégia ativa</span><span class="best"></span></a>
+  <span class="term-menu-label term-drop-toggle" id="dropEstrategiasToggle" role="button" tabindex="0" aria-expanded="true">▚ ESTRATÉGIAS <span class="drop-caret">▾</span></span>
+  <div class="term-drop" id="dropEstrategias">
+    <a class="term-menu-item" data-page="teste-nova_gestao" href="/teste?s=nova_gestao"><span class="cur">▸</span>TP1..TP5 + gestão<span class="sub">principal · referência</span><span class="best"></span></a>
+    <a class="term-menu-item" data-page="teste-tp2_protect" href="/teste?s=tp2_protect"><span class="cur">▸</span>Sair no TP2 + protect only<span class="sub">só protect do grupo</span><span class="best"></span></a>
+    <a class="term-menu-item" data-page="teste-auto_3" href="/teste?s=auto_3"><span class="cur">▸</span>Auto 3 TPs<span class="sub">3 pernas</span><span class="best"></span></a>
+    <a class="term-menu-item" data-page="teste-auto_escada_3" href="/teste?s=auto_escada_3"><span class="cur">▸</span>Auto 3 TPs + escada<span class="sub">Fase 2 · escada + trailing</span><span class="best"></span></a>
+    <a class="term-menu-item" data-page="teste-auto_escada_3_hibrida" href="/teste?s=auto_escada_3_hibrida"><span class="cur">▸</span>Auto 3 TPs + escada + protect híbrido<span class="sub">paper · proteção mecânica + grupo</span><span class="best"></span></a>
+    <a class="term-menu-item" data-page="teste-auto_escada_5" href="/teste?s=auto_escada_5"><span class="cur">▸</span>Auto 5 TPs + escada + confirmação<span class="sub">5 pernas + confirmação</span><span class="best"></span></a>
+  </div>
+  <span class="term-menu-label">▚ SISTEMA</span>
+  <a class="term-menu-item" data-page="diagnostico" href="/diagnostico"><span class="cur">▸</span>DIAGNÓSTICO<span class="sub">MT5 · listener · BD</span></a>
+  <a class="term-menu-item" data-page="help" href="/help"><span class="cur">▸</span>HELP<span class="sub">estratégias · conceitos</span></a>
+</nav>
+<aside class="term-right" id="termRight" aria-label="Conta e sessão">
+  <div class="ts-head">
+    <p class="term-menu-label">▚ STATE</p>
+    <button id="btnTermRightCollapse" class="ts-toggle" title="Colapsar/expandir terminal" aria-label="Colapsar terminal">‹</button>
+  </div>
+  <div class="hdr-badges" id="hdrBadges">
+    <span id="modeBadge" class="badge manual">manual</span>
+    <span id="strategyBadge" class="badge violet" style="display:none" title="Estratégia ativa da conta principal"></span>
+    <span id="execBadge" class="badge mt5-dry" style="display:none"></span>
+    <span id="marketBadge" class="badge manual">🎲 simulação</span>
+    <span id="killBadge" class="badge paused" style="display:none">PAUSADO</span>
+  </div>
+  <div class="term-side" id="termSide" aria-label="Estado do sistema">
+    <div class="ts-head">
+      <p class="term-menu-label">▚ MARKET</p>
+      <button id="btnTermCollapse" class="ts-toggle" title="Colapsar/expandir terminal" aria-label="Colapsar terminal">‹</button>
+    </div>
+    <span id="priceStrip" class="price-strip"></span>
+  </div>
+  <div class="ts-meta">
+    <span class="online-users" id="onlineUsers" title="Utilizadores com a dashboard aberta">👥 —</span>
+    <span class="clock" id="clock">—</span>
+  </div>
+  <span class="hdr-actions">
+    <button id="btnKill" class="danger">🛑 Kill switch</button>
+    <button id="btnLogout" class="ghost" style="display:none" title="Terminar sessão">Sair</button>
+  </span>
+</aside>
+<div class="bg-reticle" aria-hidden="true"></div>
+<div id="dashBoot"><div class="dash-boot-inner">
+  <div class="boot-title">PROJECT NEXGEN</div>
+  <pre id="dashBootText"></pre>
+</div></div>
+<div class="wrap">
+  <header>
+    <button id="btnMenu" class="ghost" title="Menu: testes · diagnóstico" aria-label="Abrir menu">☰</button>
+    <div class="brand">
+      <h1 data-text="🤖 Project NexGen">🤖 Project NexGen</h1>
+      <span class="sub" id="subTitle">copy-trading · execução real (demo MT5)</span>
+    </div>
+    <div class="spacer"></div>
+    <button id="btnMenuStatus" class="ghost" title="Estado do sistema" aria-label="Abrir estado">▦</button>
+  </header>
+
+  <div class="statusbar" id="statusBar">
+    <span class="dot" id="stDot"></span>
+    <span id="stText">A ligar…</span>
+    <span class="st-sep"></span>
+    <span id="stLast">—</span>
+  </div>
+
+  <div id="tab-help" class="card">
+    <h2>❓ HELP — estratégias e conceitos
+      <span style="display:inline-flex;gap:8px;align-items:center">
+        <button id="btnHelpRefresh" class="primary">🔄 Atualizar números</button>
+      </span>
+    </h2>
+    <p class="muted" style="margin:0 0 12px;font-size:13px">
+      Como cada estratégia funciona (clica para expandir) e o glossário de
+      conceitos. Os números reais vêm do backtest dos <b>últimos 30 dias</b>.
+    </p>
+    <div id="helpStrategies"></div>
+    <div class="lbl" style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:18px 0 8px">📖 Glossário — clica para ver</div>
+    <div id="helpGlossary"></div>
+  </div>
+
+  <div class="footer">🤖 <b>Project NexGen</b> · copy-trading · execução real (demo MT5) · conta <b id="acctFooter">—</b> · <span id="acctServerFooter">MetaQuotes-Demo</span></div>
+</div>
+
+<script src="common.js"></script>
+<script>
+/* =========================================================
+   Página HELP — explica cada estratégia + conceitos.
+   ========================================================= */
+
+/* marca o item do menu da página atual */
+termItems().forEach(b => b.classList.toggle("active", b.dataset.page === "help"));
+
+const HELP_FLOW = {
+  nova_gestao: ["Abre as 5 pernas com o risco dividido.", "SL-first + TP1 fecha a perna 1 e move as restantes a BE.", "Aplica AO VIVO a gestão do grupo: protect (fecha perna 1 + SL acima da entrada), close_all (sai tudo) e close_tp1 (fecha só a perna 1).", "É a estratégia principal atual — a melhor segundo o backtest (as antigas nova/nova_gestao_3/tp2_gestao saíram do menu — ver o compare histórico)."],
+};
+const HELP_GLOSSARY = [
+  ["📥 Sinal", "Mensagem do grupo Golden Moves com entrada, TP1..TP5 e SL (ex.: 'I'm buying XAUUSD 4400-4396 TP1 4402 … SL 4392')."],
+  ["🎯 TP (Take Profit)", "Nível onde a perna fecha com lucro. TP1..TP5 = 5 alvos; a estratégia divide o risco pelas pernas."],
+  ["🛑 SL (Stop Loss)", "Nível onde a perda é cortada. Regra SL-first: se no mesmo candle o SL e um TP forem tocados, o SL conta (conservador)."],
+  ["⚖️ BE (Breakeven)", "Depois do TP1, o SL das pernas restantes sobe para a ENTRADA — a partir daí a trade não pode dar prejuízo (sai a 0 no pior caso)."],
+  ["🧠 Gestão do grupo", "Instruções reais do grupo ao vivo: 'protect' (fecha perna 1 + SL acima da entrada), 'close_all'/'out' (sai tudo), 'close TP1' (fecha só a perna 1). São aplicadas quando chegam."],
+  ["💰 Risco por trade", "% da conta em jogo se o SL bater (ex.: 5% = 50 € numa conta de 1000 €). O lote é calculado para a perda ser exatamente essa % — com o piso de lote mínimo (0.01) a dominar em contas pequenas."],
+  ["📉 Kill switch diário", "Se a perda realizada do dia passar do limite (6%), o bot pausa até reativares manualmente — a rede de segurança contra dias maus."],
+  ["🏁 Corrida paralela", "Cada estratégia de teste tem a sua conta virtual (1000 €): quando um sinal real executa na principal, abre a MESMA trade em papel com os parâmetros dela — vês ao vivo quem está a ganhar."],
+];
+async function loadHelp() {
+  const box = $("helpStrategies");
+  if (!box) return;
+  try {
+    const reg = await fetch("/api/strategies").then(r => r.json());
+    // só as estratégias em uso (as ocultas tp2/tp2_protect ficam de fora —
+    // saíram do menu/páginas de teste/corrida paper)
+    const vis = (reg.strategies || []).filter(s => !s.hidden);
+    const ids = vis.map(s => s.id);
+    // números reais dos últimos 30 dias para cada estratégia (em paralelo)
+    const nums = {};
+    await Promise.all(ids.map(async (id) => {
+      try {
+        const m = await fetch("/api/analysis/month?group=Golden%20Moves&days=30&strategy=" + encodeURIComponent(id) + testeSimQS()).then(r => r.json());
+        const a = m.aggregate || {};
+        nums[id] = { pf: a.profit_factor, wr: a.win_rate, pnl: (m.end_balance || 0) - (m.start_balance || 0), signals: m.signals };
+      } catch (e) { nums[id] = null; }
+    }));
+    const main = reg.main || "nova_gestao";
+    box.innerHTML = vis.map(s => {
+      const n = nums[s.id];
+      const isMain = s.id === main;
+      const stat = n ? (n.pf === null ? "—" : fmt(n.pf)) + " PF · " + fmt(n.wr, 1) + "% WR · " + money(n.pnl) + " (30d)" : "…";
+      return `<details class="help-card" style="margin-bottom:8px;border:1px solid var(--border);border-radius:10px;padding:10px 14px;background:var(--panel2)">` +
+        `<summary style="cursor:pointer;font-weight:600;font-size:14px;display:flex;gap:8px;align-items:center">` +
+        `<span style="color:${RACE_COLORS[s.id] || "var(--violet)"}">⬤</span> ${esc(s.nome)}${isMain ? " <span class='badge auto' style='padding:1px 8px'>principal</span>" : ""}` +
+        `<span class="muted" style="font-size:12px;font-weight:400">${esc(s.id)} · ${esc(stat)}</span></summary>` +
+        `<p class="muted" style="margin:8px 0 6px;font-size:13px">${esc(s.desc || "")}</p>` +
+        `<ol style="margin:4px 0 0 18px;font-size:13px;line-height:1.6">` +
+        (HELP_FLOW[s.id] || []).map(f => `<li>${esc(f)}</li>`).join("") +
+        `</ol></details>`;
+    }).join("");
+    const gl = $("helpGlossary");
+    gl.innerHTML = HELP_GLOSSARY.map(([t, d]) =>
+      `<details style="margin-bottom:6px;border:1px solid var(--border);border-radius:8px;padding:7px 12px;background:var(--panel2)">` +
+      `<summary style="cursor:pointer;font-size:13px;font-weight:600">${t}</summary>` +
+      `<p class="muted" style="margin:6px 0 0;font-size:12.5px">${esc(d)}</p></details>`).join("");
+  } catch (e) { box.innerHTML = "<p class='muted'>Erro ao carregar a ajuda.</p>"; }
+}
+$("btnHelpRefresh").onclick = loadHelp;
+loadHelp();
+</script>
+</body>
+</html>

@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="pt" data-theme="cyberpunk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Project NexGen — Login</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2307080f'/%3E%3Crect x='4' y='4' width='56' height='56' rx='11' fill='none' stroke='%2300f0ff' stroke-width='3'/%3E%3Ctext x='32' y='46' font-family='Arial Black, Arial' font-size='36' font-weight='900' fill='%2300f0ff' text-anchor='middle'%3EN%3C/text%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@600;800&family=Chakra+Petch:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #08060f; --panel: #120a26; --panel2: #1c1038; --border: #3b2a6e;
+    --text: #f2edff; --muted: #9b8fc4; --green: #00ff9c; --red: #ff2a4a;
+    --amber: #fcee0a; --blue: #00f0ff; --violet: #c449ff;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family:"Chakra Petch", "Segoe UI", system-ui, sans-serif;
+    background: radial-gradient(1100px 600px at 85% -10%, #3a106855, transparent 60%),
+      radial-gradient(900px 520px at -10% 110%, #5c103055, transparent 55%), var(--bg);
+    color: var(--text); display:flex; align-items:center; justify-content:center; min-height:100vh; }
+  body::after { content:""; position:fixed; inset:0; pointer-events:none; z-index:999;
+    background: repeating-linear-gradient(0deg, rgba(196,73,255,.04) 0 1px, transparent 1px 3px);
+    mix-blend-mode: screen; }
+  .box { background: var(--panel); border:1px solid var(--border); border-radius:3px;
+    padding:36px 40px; width:min(400px, 92vw); box-shadow:0 0 0 1px #ffffff08, 0 18px 50px rgba(0,0,0,.55), 0 0 34px rgba(196,73,255,.09); position: relative; }
+
+  /* boot */
+  #boot { text-align:left; min-height:230px; display:flex; flex-direction:column; justify-content:center; }
+  .boot-title { font-family:"Orbitron", sans-serif; font-size:15px; letter-spacing:.14em; color: var(--violet);
+    text-shadow: 0 0 14px rgba(196,73,255,.6); margin-bottom:14px; }
+  #bootText, #bootSuccessText { margin:0; font-size:12.5px; line-height:1.8; color: var(--green);
+    text-shadow: 0 0 8px rgba(0,255,156,.35); white-space:pre; }
+  #bootText::after, #bootSuccessText::after { content:"▌"; color: var(--blue); animation: blink 1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity:0; } }
+  /* login */
+  .lock { font-size:32px; margin-bottom:12px; text-shadow: 0 0 18px rgba(0,240,255,.6); }
+  .box h1 { font-family:"Orbitron", sans-serif; font-size:18px; letter-spacing:.12em; text-transform:uppercase;
+    margin:0 0 4px; text-shadow: 0 0 14px rgba(196,73,255,.5); position: relative; transition: text-shadow .2s ease; }
+  .box h1::before, .box h1::after { content:attr(data-text); position:absolute; inset:0; opacity:0; pointer-events:none; }
+  .box h1::before { color:#c449ff; animation: glitchA 2.6s infinite steps(1); }
+  .box h1::after { color:#ff2a4a; animation: glitchB 2.6s infinite steps(1); }
+  @keyframes glitchA {
+    0%, 72%, 100% { opacity:0; transform:none; clip-path:inset(0); }
+    74% { opacity:.9; transform:translate(-3px,1px); clip-path:inset(8% 0 62% 0); }
+    77% { opacity:.9; transform:translate(3px,-1px); clip-path:inset(52% 0 12% 0); }
+    80% { opacity:.9; transform:translate(-2px,2px); clip-path:inset(28% 0 40% 0); }
+    83% { opacity:0; transform:none; }
+  }
+  @keyframes glitchB {
+    0%, 72%, 100% { opacity:0; transform:none; clip-path:inset(0); }
+    75% { opacity:.9; transform:translate(3px,0); clip-path:inset(38% 0 28% 0); }
+    78% { opacity:.9; transform:translate(-3px,1px); clip-path:inset(6% 0 78% 0); }
+    81% { opacity:0; transform:none; }
+  }
+  /* erro: glitch na caixa + título vermelho */
+  .box h1.title-err { text-shadow: 0 0 18px rgba(255,42,74,.8); }
+  .box h1.title-err::before { color:#ff2a4a; animation-duration: .6s; }
+  .box h1.title-err::after { color:#fcee0a; animation-duration: .6s; }
+  .box.box-glitch { animation: boxGlitch .75s steps(1) 2; }
+  @keyframes boxGlitch {
+    0%,100% { transform: translate(0); clip-path: inset(0 0 0 0); }
+    12% { transform: translate(-7px, 2px); clip-path: inset(8% 0 62% 0); }
+    25% { transform: translate(6px, -2px) skewX(-2deg); clip-path: inset(48% 0 18% 0); }
+    38% { transform: translate(-5px, 1px) skewX(1deg); clip-path: inset(22% 0 48% 0); }
+    52% { transform: translate(4px, -1px); clip-path: inset(62% 0 8% 0); }
+    66% { transform: translate(-3px, 2px) skewX(-1deg); clip-path: inset(10% 0 68% 0); }
+    80% { transform: translate(2px, 0); clip-path: inset(55% 0 20% 0); }
+  }
+  .box .sub { color: var(--muted); font-size:12.5px; margin-bottom:24px; }
+  .box input { width:100%; background:var(--panel2); color:var(--text); border:1px solid var(--border);
+    border-radius:3px; padding:12px 14px; font-size:14px; font-family:inherit; margin-bottom:14px;
+    transition: border-color .2s ease, box-shadow .2s ease; }
+  .box input:focus { outline:none; border-color:var(--violet); box-shadow: 0 0 12px rgba(196,73,255,.28); }
+  .box input.input-err { border-color: var(--red); box-shadow: 0 0 14px rgba(255,42,74,.45); }
+  .box button { width:100%; background:var(--violet); border:1px solid var(--violet); color:#fff;
+    border-radius:3px; padding:12px; font-size:14px; font-weight:700; font-family:"Chakra Petch", sans-serif;
+    cursor:pointer; text-transform:uppercase; letter-spacing:.1em; box-shadow: 0 0 16px rgba(196,73,255,.4);
+    transition: background .2s ease, border-color .2s ease, box-shadow .2s ease, color .2s ease; }
+  .box button:hover { filter:brightness(1.12); }
+  .box button:disabled { opacity:.5; cursor:not-allowed; }
+  .box button.btn-err { background: var(--red); border-color: var(--red); color:#fff;
+    box-shadow: 0 0 20px rgba(255,42,74,.6); animation: btnErrPulse .7s ease 2; }
+  .box button.btn-ok { background: var(--green); border-color: var(--green); color:#000;
+    box-shadow: 0 0 20px rgba(0,255,156,.6); }
+  @keyframes btnErrPulse { 0%,100% { opacity:1; } 50% { opacity:.7; } }
+  .err { color: var(--red); font-size:12.5px; margin:10px 0 0; min-height:16px; text-shadow: 0 0 8px rgba(255,42,74,.5); }
+  .attempts { color: var(--muted); font-size:11px; margin-top:8px; text-align:center; letter-spacing:.05em; }
+  .fade-in { animation: fadeIn .5s ease; }
+  @keyframes fadeIn { from { opacity:0; transform: translateY(-6px); } to { opacity:1; transform:none; } }
+  /* boot pós-login */
+  #bootSuccess { text-align:left; min-height:230px; display:flex; flex-direction:column; justify-content:center; }
+  #bootSuccessText { color: var(--amber); text-shadow: 0 0 10px rgba(252,238,10,.5); }
+
+  /* ---- fundo: terminais animados (CRT, tema de trading) ---- */
+  .box { position: relative; z-index: 1; }
+  .bg-term {
+    position: fixed; top: 0; bottom: 0; width: clamp(130px, 16vw, 290px);
+    z-index: 0; pointer-events: none; overflow: hidden; opacity: .5;
+  }
+  .bg-term-left { left: 0; }
+  .bg-term-right { right: 0; }
+  .bg-term::before {
+    content: ""; position: absolute; top: 0; bottom: 0; width: 2px; z-index: 2;
+    background: linear-gradient(180deg, transparent, var(--red), var(--violet), var(--red), transparent);
+  }
+  .bg-term-left::before { right: 0; box-shadow: 0 0 26px 6px rgba(196,73,255,.26), 0 0 42px 14px rgba(255,42,74,.16); }
+  .bg-term-right::before { left: 0; box-shadow: 0 0 26px 6px rgba(196,73,255,.26), 0 0 42px 14px rgba(255,42,74,.16); }
+  .bg-term::after {
+    content: ""; position: absolute; inset: 0; z-index: 1;
+    background: linear-gradient(180deg, var(--bg) 0%, transparent 10%, transparent 90%, var(--bg) 100%);
+  }
+  .bg-term-inner {
+    position: absolute; left: 0; right: 0; top: 0;
+    animation: bgTermScroll 55s linear infinite; will-change: transform;
+  }
+  .bg-term-right .bg-term-inner { animation-duration: 72s; animation-direction: reverse; }
+  .bg-term-code { margin: 0; padding: 12px 16px; opacity: .85; }
+  .tline {
+    font-family: Consolas, "Courier New", monospace; font-size: 11px; line-height: 1.7;
+    color: #ff4d6d; text-shadow: 0 0 7px rgba(255,42,74,.6); white-space: pre;
+    transition: color .3s ease, text-shadow .3s ease;
+  }
+  .tline.flash { color: #fff; text-shadow: 0 0 14px rgba(196,73,255,.95); }
+  .bg-term-status {
+    position: absolute; left: 0; right: 0; bottom: 0; z-index: 3;
+    font-family: Consolas, "Courier New", monospace; font-size: 10.5px; color: #ff2a4a;
+    text-shadow: 0 0 7px rgba(255,42,74,.75); background: rgba(8,6,15,.94);
+    border-top: 1px solid rgba(255,42,74,.45); padding: 5px 12px;
+    white-space: nowrap; overflow: hidden; letter-spacing: .02em;
+  }
+  .bg-term-status .cur { animation: blink 1s steps(1) infinite; color: #c449ff; }
+  @keyframes bgTermScroll { from { transform: translateY(0); } to { transform: translateY(-50%); } }
+  .bg-reticle {
+    position: fixed; left: 50%; top: 50%; width: 460px; height: 460px;
+    transform: translate(-50%, -50%); pointer-events: none; z-index: 0; opacity: .12;
+    background:
+      radial-gradient(circle, transparent 58%, rgba(255,42,74,.55) 58.6%, transparent 59.4%),
+      radial-gradient(circle, transparent 50%, rgba(196,73,255,.4) 50.5%, transparent 51.2%),
+      radial-gradient(circle, transparent 26%, rgba(255,42,74,.3) 26.6%, transparent 27.4%);
+    animation: reticleBreath 6s ease-in-out infinite;
+  }
+  .bg-reticle::before, .bg-reticle::after {
+    content: ""; position: absolute; background: linear-gradient(90deg, transparent, rgba(255,42,74,.5), transparent);
+  }
+  .bg-reticle::before { left: 50%; top: 0; bottom: 0; width: 1px; }
+  .bg-reticle::after { top: 50%; left: 0; right: 0; height: 1px; }
+  @keyframes reticleBreath { 0%, 100% { opacity: .08; } 50% { opacity: .18; } }
+  @media (prefers-reduced-motion: reduce) {
+    .bg-term-inner { animation: none; }
+    .bg-reticle { animation: none; }
+    .tline { transition: none; }
+    .bg-term-status .cur { animation: none; }
+  }
+  @media (max-width: 960px) { .bg-term, .bg-reticle { display: none; } }
+</style>
+</head>
+<body>
+  <div class="bg-term bg-term-left" aria-hidden="true"><div class="bg-term-inner"></div></div>
+  <div class="bg-term bg-term-right" aria-hidden="true"><div class="bg-term-inner"></div></div>
+  <div class="bg-reticle" aria-hidden="true"></div>
+  <div class="box" id="box">
+    <div id="boot">
+      <div class="boot-title">PROJECT NEXGEN</div>
+      <pre id="bootText"></pre>
+    </div>
+    <div id="loginArea" style="display:none">
+      <div class="lock">🔐</div>
+      <h1 data-text="Project NexGen" id="title">Project NexGen</h1>
+      <div class="sub">Dashboard protegida — introduz a password para continuar</div>
+      <form id="loginForm">
+        <input type="password" id="password" placeholder="Password" autocomplete="current-password">
+        <button type="submit" id="btn">Entrar</button>
+      </form>
+      <div class="err" id="err"></div>
+      <div class="attempts" id="attempts"></div>
+    </div>
+    <div id="bootSuccess" style="display:none">
+      <div class="boot-title">PROJECT NEXGEN</div>
+      <pre id="bootSuccessText"></pre>
+    </div>
+  </div>
+<script>
+/* ---- boot inicial (sem verificação de acesso — isso é depois do login) ---- */
+const BOOT_LINES = [
+  "> INIT PROJECT NEXGEN ...",
+  "> MT5 BRIDGE ........... OK",
+  "> TELEGRAM LISTENER .... OK",
+  "> RISK ENGINE .......... OK",
+  "> AUTH SYSTEM .......... OK",
+  "> PROCEEDING TO LOGIN ...",
+];
+const bootText = document.getElementById("bootText");
+const boot = document.getElementById("boot");
+const loginArea = document.getElementById("loginArea");
+let i = 0;
+function nextLine() {
+  if (i < BOOT_LINES.length) {
+    bootText.textContent += BOOT_LINES[i] + "\n";
+    tick();
+    i++;
+    setTimeout(nextLine, 330);
+  } else {
+    boot.style.transition = "opacity .45s ease";
+    boot.style.opacity = "0";
+    setTimeout(() => {
+      boot.style.display = "none";
+      loginArea.style.display = "block";
+      loginArea.classList.add("fade-in");
+      document.getElementById("password").focus();
+    }, 480);
+  }
+}
+
+/* ---- boot pós-login: verificar acesso -> permitido -> dashboard ---- */
+const bootSuccess = document.getElementById("bootSuccess");
+const bootSuccessText = document.getElementById("bootSuccessText");
+function runSuccessBoot() {
+  loginArea.style.display = "none";
+  bootSuccess.style.display = "flex";
+  bootSuccess.classList.add("fade-in");
+  let k = 0;
+  const lines = ["> VERIFICAR ACESSO ...", "> ACESSO PERMITIDO"];
+  bootSuccessText.textContent = "";
+  const step = () => {
+    if (k < lines.length) {
+      bootSuccessText.textContent += lines[k] + "\n";
+      k++;
+      setTimeout(step, 420);
+    } else {
+      setTimeout(() => { window.location.href = "/"; }, 650);
+    }
+  };
+  step();
+}
+
+/* ---- login ---- */
+const form = document.getElementById("loginForm");
+const btn = document.getElementById("btn");
+const err = document.getElementById("err");
+const box = document.getElementById("box");
+const title = document.getElementById("title");
+const passwordInput = document.getElementById("password");
+const attempts = document.getElementById("attempts");
+let tries = 0;
+
+/* favicon: pisca em vermelho quando o acesso é negado */
+const favLink = document.querySelector('link[rel="icon"]');
+const FAV_NORMAL = favLink.href;
+const FAV_RED = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2307080f'/%3E%3Crect x='4' y='4' width='56' height='56' rx='11' fill='none' stroke='%23ff3355' stroke-width='3'/%3E%3Ctext x='32' y='46' font-family='Arial Black, Arial' font-size='36' font-weight='900' fill='%23ff3355' text-anchor='middle'%3EN%3C/text%3E%3C/svg%3E";
+const FAV_GREEN = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2307080f'/%3E%3Crect x='4' y='4' width='56' height='56' rx='11' fill='none' stroke='%2300ff9c' stroke-width='3'/%3E%3Ctext x='32' y='46' font-family='Arial Black, Arial' font-size='36' font-weight='900' fill='%2300ff9c' text-anchor='middle'%3EN%3C/text%3E%3C/svg%3E";
+let favBlink = null;
+function blinkFavicon() {
+  let flashes = 0;
+  clearInterval(favBlink);
+  favBlink = setInterval(() => {
+    favLink.href = (flashes++ % 2 === 0) ? FAV_RED : FAV_NORMAL;
+    if (flashes >= 6) { clearInterval(favBlink); favLink.href = FAV_RED; }
+  }, 250);
+}
+/* som sintetizado (Web Audio) — teclado no boot, grave no erro, agudo no sucesso.
+   O silêncio controla-se no próprio browser (mute do separador/aba). */
+let audioCtx = null;
+function ensureAudio() {
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === "suspended") audioCtx.resume();
+    return audioCtx;
+  } catch (e) { return null; }
+}
+function beep(freq, dur, type, delay, gain) {
+  const ctx = ensureAudio();
+  if (!ctx) return;
+  try {
+    const t0 = ctx.currentTime + (delay || 0);
+    const osc = ctx.createOscillator();
+    const g = ctx.createGain();
+    osc.type = type || "square";
+    osc.frequency.setValueAtTime(freq, t0);
+    g.gain.setValueAtTime(gain || 0.045, t0);
+    g.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+    osc.connect(g).connect(ctx.destination);
+    osc.start(t0);
+    osc.stop(t0 + dur + 0.02);
+  } catch (e) { /* sem áudio disponível */ }
+}
+/* clique de teclado curto para cada linha do boot */
+function tick() {
+  const ctx = ensureAudio();
+  if (!ctx) return;
+  try {
+    const t0 = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const g = ctx.createGain();
+    osc.type = "square";
+    osc.frequency.setValueAtTime(1700 + Math.random() * 500, t0);
+    g.gain.setValueAtTime(0.022, t0);
+    g.gain.exponentialRampToValueAtTime(0.001, t0 + 0.035);
+    osc.connect(g).connect(ctx.destination);
+    osc.start(t0);
+    osc.stop(t0 + 0.05);
+  } catch (e) {}
+}
+function beepError() { beep(170, .18, "sawtooth"); beep(120, .22, "square", .16); }
+function beepSuccess() { beep(880, .12, "square"); beep(1320, .16, "square", .13); }
+/* primeiro gesto do utilizador desbloqueia o áudio (autoplay policy) */
+document.addEventListener("pointerdown", () => { try { ensureAudio(); } catch (e) {} });
+
+function blinkFaviconGreen() {
+  let flashes = 0;
+  clearInterval(favBlink);
+  favBlink = setInterval(() => {
+    favLink.href = (flashes++ % 2 === 0) ? FAV_GREEN : FAV_NORMAL;
+    if (flashes >= 6) { clearInterval(favBlink); favLink.href = FAV_GREEN; }
+  }, 220);
+}
+function restoreFavicon() {
+  clearInterval(favBlink);
+  favLink.href = FAV_NORMAL;
+}
+
+function showError(msg) {
+  err.textContent = msg;
+  box.classList.remove("box-glitch"); void box.offsetWidth; box.classList.add("box-glitch");
+  title.classList.remove("title-err"); void title.offsetWidth; title.classList.add("title-err");
+  passwordInput.classList.add("input-err");
+  btn.classList.add("btn-err");
+  btn.textContent = "Password incorreta";
+  btn.disabled = true;
+  blinkFavicon();
+  beepError();
+  setTimeout(() => {
+    btn.classList.remove("btn-err");
+    btn.textContent = "Entrar";
+    btn.disabled = false;
+    passwordInput.classList.remove("input-err");
+    title.classList.remove("title-err");
+    restoreFavicon();
+  }, 1800);
+}
+
+form.onsubmit = async (e) => {
+  e.preventDefault();
+  err.textContent = "";
+  btn.disabled = true;
+  btn.textContent = "A verificar…";
+  try {
+    const r = await fetch("/api/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password: passwordInput.value }),
+    });
+    const d = await r.json();
+    if (r.status === 401 || d.error) {
+      tries++;
+      attempts.textContent = tries > 1 ? `Tentativa ${tries} — acesso negado` : "";
+      btn.disabled = false;
+      showError(d.error || "Password incorreta");
+      passwordInput.value = "";
+      passwordInput.focus();
+      return;
+    }
+    btn.textContent = "Password correta ✓";
+    btn.classList.add("btn-ok");
+    blinkFaviconGreen();
+    beepSuccess();
+    // deixa o "Password correta ✓" verde visível um momento antes do boot
+    setTimeout(runSuccessBoot, 950);
+  } catch (_) {
+    err.textContent = "Falha de ligação ao servidor";
+    btn.disabled = false;
+    btn.textContent = "Entrar";
+  }
+};
+
+/* ---- fundo: terminais animados (tema de trading) ---- */
+(function () {
+  const SYMS = ["XAUUSD", "XAGUSD", "EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "NZDUSD"];
+  const DIRS = ["BUY", "SELL"];
+  const MGMT = [
+    "TP1 HIT  +40 pips", "TP2 HIT  +80 pips", "TP3 HIT  +110 pips",
+    "TP4 HIT  +160 pips", "TP5 HIT  FULL TARGET  +200 pips", "SL HIT",
+    "SL moved to breakeven", "Close first entries", "Make the trade risk free",
+    "Out at BE after we secured TP1", "GO — enter now team", "TP4 and 5 HIT",
+  ];
+  const rnd = (n) => Math.floor(Math.random() * n);
+  const gpx = () => (4300 + Math.random() * 300).toFixed(2);
+  const fpx = () => (1.0 + Math.random() * 0.6).toFixed(4);
+  const hex = (n) => rnd(0xFFFF).toString(16).toUpperCase().padStart(n, "0");
+  const symPx = (s) => (s === "XAUUSD" || s === "XAGUSD") ? gpx() : fpx();
+  function genLine() {
+    const r = Math.random();
+    const s = SYMS[rnd(SYMS.length)];
+    const p = symPx(s);
+    if (r < 0.30) return s + " " + DIRS[rnd(2)] + " " + p + "-" + p + "  TP1 " + p + "  TP2 " + p + "  SL " + p;
+    if (r < 0.48) return MGMT[rnd(MGMT.length)];
+    if (r < 0.64) return s + "  " + p + " / " + symPx(s) + "  sprd " + (0.1 + Math.random() * 0.6).toFixed(2);
+    if (r < 0.76) return "BALANCE 1000.00  EQUITY " + (1000 + rnd(60)).toFixed(2);
+    if (r < 0.86) return "FILL #" + hex(4) + "  " + DIRS[rnd(2)] + " 0.10 " + s + " @ " + symPx(s) + "  OK";
+    return "W " + rnd(9000) + "  C " + rnd(4096) + "  ·  UPLINK OK  " + (40 + rnd(60)) + "ms";
+  }
+  const STATUS = [
+    () => "XAUUSD " + gpx() + " " + (Math.random() < .5 ? "▲" : "▼") + " " + (Math.random() * 5).toFixed(2) + " · sprd 0.35",
+    () => "TP2 HIT +80 pips · SL → BE",
+    () => "BALANCE 1000.00 · EQUITY " + (1000 + rnd(60)).toFixed(2),
+    () => "EURUSD " + fpx() + " ▲ +0.00038",
+    () => "AGUARDANDO SINAL — janela de edição 30s",
+  ];
+  let statusIdx = 0;
+  function build(term) {
+    const inner = term.querySelector(".bg-term-inner");
+    inner.innerHTML = "";
+    const copy = () => {
+      const lines = [];
+      for (let i = 0; i < 42; i++) {
+        const d = document.createElement("div");
+        d.className = "tline";
+        d.textContent = genLine();
+        inner.appendChild(d);
+        lines.push(d);
+      }
+      return lines;
+    };
+    const first = copy(), second = copy();
+    term._lines = first.concat(second);
+    const st = document.createElement("div");
+    st.className = "bg-term-status";
+    term.appendChild(st);
+    term._status = st;
+  }
+  document.querySelectorAll(".bg-term").forEach(build);
+  function tickStatus() {
+    document.querySelectorAll(".bg-term").forEach(function (t) {
+      if (!t._status) return;
+      t._status.innerHTML = "▍ " + STATUS[statusIdx % STATUS.length]() + ' <span class="cur">▌</span>';
+    });
+    statusIdx++;
+  }
+  tickStatus();
+  setInterval(tickStatus, 1200);
+  setInterval(function () {
+    const terms = document.querySelectorAll(".bg-term");
+    const t = terms[rnd(terms.length)];
+    if (!t || !t._lines) return;
+    const i = rnd(42);
+    [t._lines[i], t._lines[i + 42]].forEach(function (el) {
+      if (!el) return;
+      el.classList.add("flash");
+      setTimeout(function () { el.classList.remove("flash"); }, 900);
+    });
+  }, 3500);
+})();
+
+/* arranca o boot depois de tudo declarado (tick já definido) */
+nextLine();
+</script>
+</body>
+</html>

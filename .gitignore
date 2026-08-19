@@ -1,0 +1,24 @@
+__pycache__/
+*.py[cod]
+.venv/
+*.db
+*.session
+.pytest_cache/
+.env
+
+# Local runtime data, credentials and operational artefacts
+*.log*
+*.pid
+*.bak-*
+signalbot.db*
+backups/
+cookies.txt
+.freebuff/
+mt5.txt
+preview*.db
+preview*.log
+/auto*_*.json
+/hybrid_month.json
+/protect_causal.json
+/item2-sweep.txt
+/nexgen_group.png

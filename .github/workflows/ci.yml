@@ -1,0 +1,89 @@
+name: NexGen CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      failure_probe:
+        description: "Run the opt-in expected-failure probe to verify CI catches a failing pytest command"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: Full pytest suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Run full suite
+        env:
+          SIGNALBOT_LOG_ROTATE: "0"
+          SIGNALBOT_DASHBOARD_PASSWORD: ""
+          SIGNALBOT_API_TOKEN: ""
+          EXECUTION_MODE: sim
+          MT5_DRY_RUN: "1"
+          MARKET_PROVIDER: none
+        run: python -m pytest -q
+
+  documentation:
+    name: Documentation rules
+    needs: tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install test dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Validate documentation invariants
+        env:
+          SIGNALBOT_LOG_ROTATE: "0"
+          SIGNALBOT_DASHBOARD_PASSWORD: ""
+          SIGNALBOT_API_TOKEN: ""
+          EXECUTION_MODE: sim
+          MT5_DRY_RUN: "1"
+          MARKET_PROVIDER: none
+        run: python -m pytest -q tests/test_docs.py
+
+  failure-probe:
+    name: Expected failure probe (manual)
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.failure_probe == true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install pytest
+        run: python -m pip install pytest
+      - name: Confirm a failing pytest command is detected
+        shell: bash
+        run: |
+          set -e
+          trap 'rm -f ci_failure_probe_test.py' EXIT
+          python -c 'from pathlib import Path; Path("ci_failure_probe_test.py").write_text("def test_ci_failure_probe(): assert False\\n")'
+          # This manual-only job must be red: branch protection can then see
+          # that a deliberately failing pytest really blocks the workflow.
+          python -m pytest -q ci_failure_probe_test.py

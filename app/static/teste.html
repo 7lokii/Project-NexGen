@@ -1,0 +1,643 @@
+<!DOCTYPE html>
+<html lang="pt" data-theme="cyberpunk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Project NexGen — Teste de estratégias</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2307080f'/%3E%3Crect x='4' y='4' width='56' height='56' rx='11' fill='none' stroke='%2300f0ff' stroke-width='3'/%3E%3Ctext x='32' y='46' font-family='Arial Black, Arial' font-size='36' font-weight='900' fill='%2300f0ff' text-anchor='middle'%3EN%3C/text%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@600;800&family=Chakra+Petch:wght@400;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body class="no-chrome">
+<nav class="term-menu" id="termMenu" aria-label="Navegação">
+  <span class="term-menu-label">▚ NAV</span>
+  <a class="term-menu-item main" data-page="principal" href="/"><span class="cur">▸</span>PRINCIPAL<span class="sub">conta MT5 · estratégia ativa</span><span class="best"></span></a>
+  <span class="term-menu-label term-drop-toggle" id="dropEstrategiasToggle" role="button" tabindex="0" aria-expanded="true">▚ ESTRATÉGIAS <span class="drop-caret">▾</span></span>
+  <div class="term-drop" id="dropEstrategias">
+    <a class="term-menu-item" data-page="teste-nova_gestao" href="/teste?s=nova_gestao"><span class="cur">▸</span>TP1..TP5 + gestão<span class="sub">principal · referência</span><span class="best"></span></a>
+    <a class="term-menu-item" data-page="teste-tp2_protect" href="/teste?s=tp2_protect"><span class="cur">▸</span>Sair no TP2 + protect only<span class="sub">só protect do grupo</span><span class="best"></span></a>
+    <a class="term-menu-item" data-page="teste-auto_3" href="/teste?s=auto_3"><span class="cur">▸</span>Auto 3 TPs<span class="sub">3 pernas</span><span class="best"></span></a>
+    <a class="term-menu-item" data-page="teste-auto_escada_3" href="/teste?s=auto_escada_3"><span class="cur">▸</span>Auto 3 TPs + escada<span class="sub">Fase 2 · escada + trailing</span><span class="best"></span></a>
+    <a class="term-menu-item" data-page="teste-auto_escada_3_hibrida" href="/teste?s=auto_escada_3_hibrida"><span class="cur">▸</span>Auto 3 TPs + escada + protect híbrido<span class="sub">paper · proteção mecânica + grupo</span><span class="best"></span></a>
+    <a class="term-menu-item" data-page="teste-auto_escada_5" href="/teste?s=auto_escada_5"><span class="cur">▸</span>Auto 5 TPs + escada + confirmação<span class="sub">5 pernas + confirmação</span><span class="best"></span></a>
+  </div>
+  <span class="term-menu-label">▚ SISTEMA</span>
+  <a class="term-menu-item" data-page="diagnostico" href="/diagnostico"><span class="cur">▸</span>DIAGNÓSTICO<span class="sub">MT5 · listener · BD</span></a>
+  <a class="term-menu-item" data-page="help" href="/help"><span class="cur">▸</span>HELP<span class="sub">estratégias · conceitos</span></a>
+</nav>
+<aside class="term-right" id="termRight" aria-label="Conta e sessão">
+  <div class="ts-head">
+    <p class="term-menu-label">▚ STATE</p>
+    <button id="btnTermRightCollapse" class="ts-toggle" title="Colapsar/expandir terminal" aria-label="Colapsar terminal">‹</button>
+  </div>
+  <div class="hdr-badges" id="hdrBadges">
+    <span id="modeBadge" class="badge manual">manual</span>
+    <span id="strategyBadge" class="badge violet" style="display:none" title="Estratégia ativa da conta principal"></span>
+    <span id="execBadge" class="badge mt5-dry" style="display:none"></span>
+    <span id="marketBadge" class="badge manual">🎲 simulação</span>
+    <span id="killBadge" class="badge paused" style="display:none">PAUSADO</span>
+  </div>
+  <div class="term-side" id="termSide" aria-label="Estado do sistema">
+    <div class="ts-head">
+      <p class="term-menu-label">▚ MARKET</p>
+      <button id="btnTermCollapse" class="ts-toggle" title="Colapsar/expandir terminal" aria-label="Colapsar terminal">‹</button>
+    </div>
+    <span id="priceStrip" class="price-strip"></span>
+  </div>
+  <div class="ts-meta">
+    <span class="online-users" id="onlineUsers" title="Utilizadores com a dashboard aberta">👥 —</span>
+    <span class="clock" id="clock">—</span>
+  </div>
+  <span class="hdr-actions">
+    <button id="btnKill" class="danger">🛑 Kill switch</button>
+    <button id="btnLogout" class="ghost" style="display:none" title="Terminar sessão">Sair</button>
+  </span>
+</aside>
+<div class="bg-reticle" aria-hidden="true"></div>
+<div id="dashBoot"><div class="dash-boot-inner">
+  <div class="boot-title">PROJECT NEXGEN</div>
+  <pre id="dashBootText"></pre>
+</div></div>
+<div class="wrap">
+  <header>
+    <button id="btnMenu" class="ghost" title="Menu: testes · diagnóstico" aria-label="Abrir menu">☰</button>
+    <div class="brand">
+      <h1 data-text="🤖 Project NexGen">🤖 Project NexGen</h1>
+      <span class="sub" id="subTitle">copy-trading · execução real (demo MT5)</span>
+    </div>
+    <div class="hdr-badges" id="hdrBadges">
+      <span id="modeBadge" class="badge manual">manual</span>
+      <span id="strategyBadge" class="badge violet" style="display:none" title="Estratégia ativa da conta principal"></span>
+      <span id="execBadge" class="badge mt5-dry" style="display:none"></span>
+      <span id="marketBadge" class="badge manual">🎲 simulação</span>
+      <span id="killBadge" class="badge paused" style="display:none">PAUSADO</span>
+    </div>
+    <div class="spacer"></div>
+    <button id="btnMenuStatus" class="ghost" title="Estado do sistema" aria-label="Abrir estado">▦</button>
+  </header>
+
+  <div class="statusbar" id="statusBar">
+    <span class="dot" id="stDot"></span>
+    <span id="stText">A ligar…</span>
+    <span class="st-sep"></span>
+    <span id="stLast">—</span>
+  </div>
+
+  <div id="tab-teste" class="card">
+    <h2>🧪 Teste de estratégia <span id="testeStratName" style="color:var(--violet)"></span>
+      <span style="display:inline-flex;gap:8px;align-items:center">
+        <select id="testeDays">
+          <option value="7">últimos 7 dias</option>
+          <option value="30" selected>últimos 30 dias</option>
+          <option value="90">últimos 90 dias</option>
+          <option value="0">tudo (desde o início)</option>
+        </select>
+        <select id="testeRisk" title="Risco do sim (estudos) — vazio = o risco da config atual">
+          <option value="">risco atual</option>
+          <option value="0.5">0.5%</option>
+          <option value="1">1%</option>
+          <option value="2">2%</option>
+          <option value="3">3%</option>
+          <option value="5">5%</option>
+          <option value="10">10%</option>
+        </select>
+        <input id="testeBalance" type="number" min="100" step="any" value="1000"
+          title="Saldo inicial do sim — default 1000 (o saldo próprio da conta paper desta estratégia)"
+          style="width:100px;background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:7px 8px;font-size:12px;outline:none">
+        <button id="btnTesteRefresh" class="primary">🔄 Atualizar</button>
+        <button id="btnPromote" class="primary" style="border-color:var(--green);color:var(--green)" title="Passa a conta principal (MT5 real) a usar esta estratégia">⬆️ Promover a principal</button>
+      </span>
+    </h2>
+    <p class="muted" id="testeIntro" style="margin:0 0 12px;font-size:13px">
+      Saldo <b>próprio e simulado</b>: começa há 1 mês com 1.000 € e reexecuta os
+      <b>sinais reais</b> do grupo sobre os <b>preços históricos reais</b> com os parâmetros
+      desta estratégia. Nunca abre trades na conta real.
+    </p>
+    <div class="mini" style="margin-bottom:10px;font-size:14px;font-weight:600" id="testeVerdict">—</div>
+    <div class="mini-stats">
+      <div class="mini"><div class="lbl">Saldo inicial</div><div class="val" id="tsStart">—</div></div>
+      <div class="mini"><div class="lbl">P&L do mês</div><div class="val" id="tsPnl">—</div></div>
+      <div class="mini"><div class="lbl">Saldo final</div><div class="val" id="tsEnd">—</div></div>
+      <div class="mini"><div class="lbl">Win rate</div><div class="val" id="tsWR">—</div></div>
+      <div class="mini"><div class="lbl">Profit factor</div><div class="val" id="tsPF">—</div></div>
+      <div class="mini"><div class="lbl">Trades</div><div class="val" id="tsTrades">—</div></div>
+    </div>
+    <canvas id="testeChart" width="760" height="120" style="width:100%;height:120px;background:var(--panel2);border:1px solid var(--border);border-radius:10px;margin:10px 0"></canvas>
+    <div class="lbl" id="testeCompareLbl" style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:8px 0 6px">Comparação das estratégias (mesmos sinais, últimos 30 dias)</div>
+    <canvas id="testeCompareChart" width="760" height="140" style="width:100%;height:140px;background:var(--panel2);border:1px solid var(--border);border-radius:10px;margin-bottom:6px"></canvas>
+    <div class="mini-stats" id="testeCompareLegend"></div>
+    <div class="lbl" id="testeLiveLbl" style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:12px 0 6px">Corrida paralela ao vivo (paper trading — saldo virtual próprio)</div>
+    <div class="mini-stats" id="testeLive"></div>
+
+    <div id="testeAllSection">
+      <div class="lbl" style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:16px 0 6px">📜 Desde o início do grupo (todo o histórico de sinais na BD)</div>
+      <div class="mini" style="margin-bottom:10px;font-size:14px;font-weight:600" id="testeAllVerdict">—</div>
+      <div style="display:flex;gap:8px;margin:0 0 10px;align-items:center">
+        <span class="lbl" style="font-size:11px;color:var(--muted)">Período:</span>
+        <select id="testeAllPeriod" style="font-size:12px"></select>
+      </div>
+      <div class="mini-stats">
+        <div class="mini"><div class="lbl">Sinais válidos</div><div class="val" id="tsAllSignals">—</div></div>
+        <div class="mini"><div class="lbl">Saldo inicial</div><div class="val" id="tsAllStart">—</div></div>
+        <div class="mini"><div class="lbl">P&L total</div><div class="val" id="tsAllPnl">—</div></div>
+        <div class="mini"><div class="lbl">Saldo final</div><div class="val" id="tsAllEnd">—</div></div>
+        <div class="mini"><div class="lbl">Win rate</div><div class="val" id="tsAllWR">—</div></div>
+        <div class="mini"><div class="lbl">Profit factor</div><div class="val" id="tsAllPF">—</div></div>
+        <div class="mini"><div class="lbl">Trades resolvidas</div><div class="val" id="tsAllTrades">—</div></div>
+      </div>
+      <canvas id="testeAllChart" width="760" height="120" style="width:100%;height:120px;background:var(--panel2);border:1px solid var(--border);border-radius:10px;margin-bottom:6px"></canvas>
+      <div class="lbl" style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:8px 0 4px">📊 P&L por mês</div>
+      <canvas id="testeAllMonthly" width="760" height="110" style="width:100%;height:110px;background:var(--panel2);border:1px solid var(--border);border-radius:10px;margin-bottom:6px"></canvas>
+      <div class="lbl" style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:8px 0 4px">🧮 P&L por perna (trades resolvidas — onde o lucro vem)</div>
+      <div class="mini-stats" id="testeAllLegs"></div>
+    </div>
+
+    <div id="testeWalkforward" style="display:none;margin-bottom:12px">
+      <div class="lbl" style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:14px 0 6px">🧪 Walk-forward (gestão) — o edge mantém-se ao longo do tempo?</div>
+      <div class="val" style="font-size:13px" id="wfSummaryText">—</div>
+      <div class="mini-stats" id="wfBuckets"></div>
+    </div>
+
+    <div id="testeFlowSection" style="display:none">
+      <div class="lbl" style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:16px 0 6px">🧪 Exemplo real do fluxo — sinal resolvido mais recente desta estratégia</div>
+      <div class="mini" style="margin-bottom:10px;font-size:13px;line-height:1.5" id="testeFlowTitle">—</div>
+      <canvas id="testeFlowChart" width="760" height="150" style="width:100%;height:150px;background:var(--panel2);border:1px solid var(--border);border-radius:10px;margin-bottom:6px"></canvas>
+      <div class="scroll" style="max-height:220px" id="testeFlowEvents"></div>
+    </div>
+
+    <div class="lbl" style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:14px 0 6px;display:flex;align-items:center;gap:8px">
+      <span>🧾 Histórico de trades de papel (corrida paralela — fechadas com P&amp;L)</span>
+      <button id="btnPaperCsv" class="ghost" style="display:none;margin-left:auto" title="Exportar as trades de papel (esta estratégia + a referência nova_gestao) em CSV para análise fora da dashboard">⬇️ CSV</button>
+    </div>
+    <div class="scroll" style="max-height:260px"><table id="paperTradesTable">
+      <thead><tr><th>Aberta</th><th>Símbolo</th><th>Dir</th><th>Entrada</th><th>Lotes</th><th>Estado</th><th>Fechada</th><th>P&amp;L</th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+  </div>
+
+  <div class="footer">🤖 <b>Project NexGen</b> · copy-trading · execução real (demo MT5) · conta <b id="acctFooter">—</b> · <span id="acctServerFooter">MetaQuotes-Demo</span></div>
+</div>
+
+<script src="common.js"></script>
+<script>
+/* =========================================================
+   Página TESTE — simulação de estratégias + corrida paralela.
+   A estratégia vem do URL: /teste?s=nova_gestao
+   ========================================================= */
+
+let testeTimer = null;
+const testeStrategy = new URLSearchParams(location.search).get("s") || "nova";
+const _csvBtn = $("btnPaperCsv");
+if (_csvBtn) _csvBtn.onclick = exportPaperCsv;
+
+/* marca o item do menu da estratégia atual */
+termItems().forEach(b => b.classList.toggle("active", b.dataset.page === "teste-" + testeStrategy));
+
+async function loadTesteCompare(days) {
+  const canvas = $("testeCompareChart");
+  if (!canvas) return;
+  const lbl = $("testeCompareLbl");
+  if (lbl) {
+    lbl.textContent = Number(days) === 0
+      ? "Comparação das estratégias (mesmos sinais, desde o início do grupo)"
+      : `Comparação das estratégias (mesmos sinais, últimos ${Number(days)} dias)`;
+  }
+  try {
+    // as estratégias de teste + a principal (gestão) na mesma curva — vês o
+    // P&L que cada uma teria dado nos mesmos sinais
+    const ids = ["nova", "nova_gestao", "tp2"];
+    const data = {};
+    for (const id of ids) {
+      const r = await fetch("/api/analysis/month?group=Golden%20Moves&days=" + days + "&strategy=" + id + testeSimQS()).then(res => res.json());
+      data[id] = r;
+    }
+    const ctx = canvas.getContext("2d");
+    const W = canvas.width, H = canvas.height;
+    ctx.clearRect(0, 0, W, H);
+    const pad = 34;
+    let min = 0, max = 0;
+    const curves = {};
+    for (const id of ids) {
+      const pts = (data[id].equity_curve || []).map(p => p.pnl);
+      curves[id] = (data[id].equity_curve || []);
+      if (pts.length) { min = Math.min(min, ...pts); max = Math.max(max, ...pts); }
+    }
+    if (max - min < 1) max = min + 1;
+    const x = i => pad + (i / 99) * (W - pad * 2);
+    const y = v => H - pad - ((v - min) / (max - min)) * (H - pad * 2);
+    ctx.strokeStyle = "#263040"; ctx.lineWidth = 1;
+    for (let g = 0; g <= 3; g++) {
+      const gy = pad + (g / 3) * (H - pad * 2);
+      ctx.beginPath(); ctx.moveTo(pad, gy); ctx.lineTo(W - pad, gy); ctx.stroke();
+    }
+    const COLORS = { nova_gestao: "#9A4FE8", tp2_protect: "#10b981", auto_escada_3: "#a3e635", auto_escada_3_hibrida: "#c084fc" };
+    const NAMES = { nova_gestao: "TP1..TP5 + gestão", tp2_protect: "Sair no TP2 + protect only", auto_escada_3: "Auto escada 3", auto_escada_3_hibrida: "Auto escada 3 híbrida" };
+    for (const id of ids) {
+      const pts = curves[id];
+      if (pts.length < 2) continue;
+      ctx.beginPath();
+      pts.forEach((p, i) => {
+        const px = pad + (i / (pts.length - 1)) * (W - pad * 2);
+        i === 0 ? ctx.moveTo(px, y(p.pnl)) : ctx.lineTo(px, y(p.pnl));
+      });
+      ctx.strokeStyle = COLORS[id]; ctx.lineWidth = 2; ctx.stroke();
+    }
+    // legenda com o P&L final de cada uma
+    const leg = $("testeCompareLegend");
+    if (leg) {
+      leg.innerHTML = ids.map(id => {
+        const a = (data[id].aggregate || {});
+        const pnl = Number(a.pnl || 0);
+        return `<div class="mini"><div class="lbl" style="color:${COLORS[id]}">${NAMES[id]}</div>` +
+          `<div class="val" style="color:${pnl >= 0 ? "var(--green)" : "var(--red)"}">${money(pnl)}</div></div>`;
+      }).join("");
+    }
+  } catch (e) { /* omite o comparativo se falhar */ }
+}
+
+async function loadTeste() {
+  const box = $("tab-teste");
+  if (!box || box.style.display === "none") return;
+  const days = $("testeDays").value;
+  const isAll = days === "0";  // "tudo" = histórico completo (days=0)
+  const allSec = $("testeAllSection");
+  if (allSec) allSec.style.display = isAll ? "none" : "";
+  // o texto de introdução acompanha o período escolhido (já não diz sempre "1 mês")
+  const intro = $("testeIntro");
+  if (intro) {
+    const whenTxt = isAll ? "no <b>início do grupo</b>" : `há <b>${Number(days) === 30 ? "1 mês" : Number(days) + " dias"}</b>`;
+    intro.innerHTML = `Saldo <b>próprio e simulado</b>: começa ${whenTxt} com 1.000 € e reexecuta os ` +
+      `<b>sinais reais</b> do grupo sobre os <b>preços históricos reais</b> com os parâmetros ` +
+      `desta estratégia. Nunca abre trades na conta real.`;
+  }
+  try {
+    const r = await fetch("/api/analysis/month?group=Golden%20Moves&days=" + days + "&strategy=" + testeStrategy + testeSimQS()).then(res => res.json());
+    $("testeStratName").textContent = r.strategy_name || testeStrategy;
+    const a = r.aggregate || {};
+    const st = Number(r.start_balance || 0), en = Number(r.end_balance || 0), pnl = en - st;
+    const pct = st > 0 ? (pnl / st * 100) : 0;
+    const v = $("testeVerdict");
+    v.textContent = isAll
+      ? `Se tivesses começado no início do grupo com ${cur(st)} nesta estratégia, hoje terias ${cur(en)} (${money(pnl)}, ${pct >= 0 ? "+" : ""}${fmt(pct, 1)}%) — ${r.signals || 0} sinais válidos no histórico.`
+      : `Se tivesses começado há ${r.days} dias com ${cur(st)} nesta estratégia, hoje terias ${cur(en)} (${money(pnl)}, ${pct >= 0 ? "+" : ""}${fmt(pct, 1)}%).`;
+    v.style.color = pnl >= 0 ? "var(--green)" : "var(--red)";
+    $("tsStart").textContent = cur(st);
+    $("tsEnd").textContent = cur(en);
+    const p = $("tsPnl"); p.textContent = money(pnl); p.className = "val " + cls(pnl);
+    $("tsWR").textContent = fmt(a.win_rate, 1) + "%";
+    $("tsPF").textContent = a.profit_factor === null ? "—" : fmt(a.profit_factor);
+    $("tsTrades").textContent = a.resolved;
+    drawMonthCurve(r.equity_curve || [], "testeChart");
+    loadTesteCompare(days);
+    loadWalkforward(days);
+    // corrida paralela ao vivo (paper trading forward)
+    const st2 = await fetch("/api/status").then(res => res.json());
+    const acct = ((st2.paper || {}).accounts || []).find(x => x.strategy_id === testeStrategy) || {};
+    const live = $("testeLive");
+    const liveLbl = $("testeLiveLbl");
+    const isMain = !!acct.is_main;
+    // a página da estratégia principal não tem conta paper — mostra a corrida
+    // REAL (conta MT5); o botão "Promover" não faz sentido para ela
+    $("btnPromote").style.display = isMain ? "none" : "";
+    if (isMain) {
+      const real = st2.account || {};
+      const bal = Number(real.balance || 0), eq = Number(real.equity || 0);
+      const today = Number(real.today_pnl || 0);
+      if (liveLbl) liveLbl.textContent = "Corrida real da conta principal (MT5) — esta é a estratégia ativa";
+      live.innerHTML =
+        `<div class="mini"><div class="lbl">Saldo real (agora)</div><div class="val">${cur(bal)}</div></div>` +
+        `<div class="mini"><div class="lbl">Equity</div><div class="val">${cur(eq)}</div></div>` +
+        `<div class="mini"><div class="lbl">P&L hoje</div><div class="val" style="color:${today >= 0 ? "var(--green)" : "var(--red)"}">${money(today)}</div></div>` +
+        `<div class="mini"><div class="lbl">Trades abertas</div><div class="val">${st2.open_trades ? st2.open_trades.length : 0}</div></div>`;
+    } else if (acct && acct.balance !== undefined && acct.balance !== null) {
+      if (liveLbl) liveLbl.textContent = "Corrida paralela ao vivo (paper trading — saldo virtual próprio)";
+      const livePnl = Number(acct.balance) - 1000;
+      live.innerHTML =
+        `<div class="mini"><div class="lbl">Saldo virtual (agora)</div><div class="val" style="color:${livePnl >= 0 ? "var(--green)" : "var(--red)"}">${cur(Number(acct.balance))}</div></div>` +
+        `<div class="mini"><div class="lbl">P&L (paper)</div><div class="val" style="color:${livePnl >= 0 ? "var(--green)" : "var(--red)"}">${money(livePnl)}</div></div>` +
+        `<div class="mini"><div class="lbl">Trades fechadas</div><div class="val">${acct.closed || 0}</div></div>` +
+        `<div class="mini"><div class="lbl">Win rate (paper)</div><div class="val">${fmt(acct.win_rate || 0, 1)}%</div></div>`;
+    } else {
+      if (liveLbl) liveLbl.textContent = "Corrida paralela ao vivo (paper trading — saldo virtual próprio)";
+      live.innerHTML = `<div class="mini"><div class="val" style="color:var(--muted)">Ainda sem trades de papel — a corrida começa com o próximo sinal real.</div></div>`;
+    }
+    if (!isAll) loadTesteAllHistory();
+    loadPaperTrades();
+    // export CSV só nas páginas da Fase 2 (auto vs referência)
+    const csvBtn = $("btnPaperCsv");
+    if (csvBtn) {
+      csvBtn.style.display = (testeStrategy === "auto_escada_3" || testeStrategy === "auto_escada_3_hibrida" || testeStrategy === "tp2_protect")
+        ? "" : "none";
+    }
+    if (testeStrategy === "tp2_protect") loadTesteFlow(); else $("testeFlowSection").style.display = "none";
+  } catch (e) {
+    $("testeVerdict").textContent = "Erro ao carregar a simulação.";
+  }
+}
+
+/* exemplo do fluxo real de uma trade (página TP1→BE + sair no TP2): o sinal
+   resolvido mais recente da estratégia + eventos SL/TP1/BE/fecho + caminho */
+async function loadTesteFlow() {
+  const sec = $("testeFlowSection");
+  if (!sec) return;
+  try {
+    const r = await fetch("/api/analysis/trace?strategy=tp2_protect&days=0&since=2026-07-28").then(res => res.json());
+    if (!r.found) { sec.style.display = "none"; return; }
+    sec.style.display = "";
+    const s = r.signal || {};
+    const dir = s.direction === "buy" ? "▲ COMPRA" : "▼ VENDA";
+    const tps = Object.entries(s.take_profits || {}).map(([k, v]) => `TP${k} ${v}`).join(" · ");
+    $("testeFlowTitle").innerHTML =
+      `<b>${esc(s.symbol)}</b> ${dir} · entrada <b class="cd">${fmt(s.entry)}</b> · SL <b class="cd" style="color:var(--red)">${fmt(s.stop_loss)}</b> · ${esc(tps)}<br>` +
+      `<span class="muted">sinal de ${esc(when(s.received_at))} · resultado no backtest: ` +
+      `<b class="${cls(r.pnl)}">${money(r.pnl)}</b> (${esc(r.outcome)})</span>`;
+    drawTraceChart($("testeFlowChart"), r.path || [], s, (r.events || []).map(e => ({ ...e, ts: e.ts * 1000 })));
+    const evBox = $("testeFlowEvents");
+    const META = { sl: ["🔴", "SL"], tp1: ["🟢", "TP1"], be: ["🟡", "BE"], tp_all: ["🟣", "Fecho"], leg_tp: ["🟢", "Perna"], leg_sl: ["🔴", "Perna"] };
+    evBox.innerHTML = (r.events || []).map(e => {
+      const [ic, tag] = META[e.kind] || ["•", e.kind];
+      return `<div style="padding:4px 2px;border-bottom:1px solid var(--border);font-size:12.5px">` +
+        `<span class="muted" style="white-space:nowrap">${esc(when(new Date(e.ts * 1000).toISOString()))}</span> ` +
+        `${ic} <b>${tag}</b> @ <b class="cd">${fmt(e.price)}</b> — ${esc(e.detail || "")}</div>`;
+    }).join("");
+  } catch (e) { sec.style.display = "none"; }
+}
+
+/* desenha o caminho de preços + níveis (entrada/SL/TP) + marcadores dos eventos */
+function drawTraceChart(canvas, path, s, events) {
+  if (!canvas || !path || path.length < 2) return;
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  const padL = 46, padR = 10, padT = 8, padB = 16;
+  const levels = [s.entry, s.stop_loss].concat(Object.values(s.take_profits || {}));
+  const lows = path.map(p => p.low), highs = path.map(p => p.high);
+  let min = Math.min(...lows, ...levels), max = Math.max(...highs, ...levels);
+  const span = (max - min) || 1; min -= span * 0.06; max += span * 0.06;
+  const x = i => padL + (i / (path.length - 1)) * (W - padL - padR);
+  const y = v => H - padB - ((v - min) / (max - min)) * (H - padT - padB);
+  // níveis
+  const lvlColor = (l) => l === s.stop_loss ? "var(--red)" : l === s.entry ? "#fff" : "var(--green)";
+  for (const l of levels) {
+    ctx.strokeStyle = lvlColor(l); ctx.setLineDash([5, 4]); ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(padL, y(l)); ctx.lineTo(W - padR, y(l)); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = lvlColor(l); ctx.font = "9px monospace"; ctx.textAlign = "right";
+    ctx.fillText(fmt(l), padL - 4, y(l) + 3);
+  }
+  // caminho (close)
+  ctx.strokeStyle = "#00f0ff"; ctx.lineWidth = 1.6; ctx.beginPath();
+  path.forEach((p, i) => i === 0 ? ctx.moveTo(x(i), y(p.close)) : ctx.lineTo(x(i), y(p.close)));
+  ctx.stroke();
+  // eventos
+  for (const e of events) {
+    const i = path.reduce((best, p, idx) => Math.abs(p.ts - e.ts / 1000) < Math.abs(path[best].ts - e.ts / 1000) ? idx : best, 0);
+    const col = e.kind === "sl" ? "var(--red)" : (e.kind === "be" ? "var(--amber)" : "var(--green)");
+    ctx.fillStyle = col; ctx.beginPath(); ctx.arc(x(i), y(e.price), 3.5, 0, 7); ctx.fill();
+  }
+  ctx.fillStyle = "#8a94a6"; ctx.font = "10px sans-serif"; ctx.textAlign = "left";
+  ctx.fillText(new Date(path[0].ts * 1000).toLocaleString("pt", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }), padL, H - 4);
+}
+
+/* histórico completo: simulação da estratégia desde o início do grupo (days=0),
+   com o seletor de período — todo o histórico vs só o formato atual (since) */
+async function loadTesteAllHistory() {
+  try {
+    const rawSince = $("testeAllPeriod").value;
+    const since = rawSince && rawSince !== "0" ? rawSince : ""; // "0" = todo o histórico
+    const q = "/api/analysis/month?group=Golden%20Moves&days=0&strategy=" + testeStrategy + testeSimQS() + (since ? "&since=" + since : "");
+    const r = await fetch(q).then(res => res.json());
+    const a = r.aggregate || {};
+    const st = Number(r.start_balance || 0), en = Number(r.end_balance || 0), pnl = en - st;
+    const pct = st > 0 ? (pnl / st * 100) : 0;
+    const v = $("testeAllVerdict");
+    const bank = r.bankrupt
+      ? ` ⚠️ <span style="color:var(--red)">falência no dia ${esc(r.bankrupt_date || "?")} (saldo chegou a 0)</span>`
+      : "";
+    v.innerHTML = `Se tivesses começado ${_allPeriodLabel(since)} com ${cur(st)} nesta estratégia, hoje terias ${cur(en)} (${money(pnl)}, ${pct >= 0 ? "+" : ""}${fmt(pct, 1)}%) — ${r.signals || 0} sinais válidos.${bank}`;
+    v.style.color = pnl >= 0 ? "var(--green)" : "var(--red)";
+    $("tsAllSignals").textContent = r.signals || 0;
+    $("tsAllStart").textContent = cur(st);
+    $("tsAllEnd").textContent = cur(en);
+    const p = $("tsAllPnl"); p.textContent = money(pnl); p.className = "val " + cls(pnl);
+    $("tsAllWR").textContent = fmt(a.win_rate, 1) + "%";
+    $("tsAllPF").textContent = a.profit_factor === null ? "—" : fmt(a.profit_factor);
+    $("tsAllTrades").textContent = a.resolved;
+    drawMonthCurve(r.equity_curve || [], "testeAllChart");
+    drawMonthlyBars(r.pnl_by_month || [], "testeAllMonthly");
+    const legs = r.pnl_by_leg || [];
+    const legsBox = $("testeAllLegs");
+    if (legsBox) {
+      legsBox.innerHTML = legs.length
+        ? legs.map(l => `<div class="mini"><div class="lbl">Perna ${l.leg}</div><div class="val ${cls(l.pnl)}">${money(l.pnl)}</div></div>`).join("")
+        : `<div class="mini"><div class="val" style="color:var(--muted)">Sem trades resolvidas no período</div></div>`;
+    }
+  } catch (e) { /* mantém o bloco em silêncio se falhar */ }
+}
+
+/* gráfico de barras do P&L por mês (verde = lucro, vermelho = perda) */
+function drawMonthlyBars(byMonth, canvasId) {
+  const cv = document.getElementById(canvasId);
+  if (!cv || !byMonth || !byMonth.length) return;
+  const ctx = cv.getContext("2d");
+  const W = cv.width, H = cv.height;
+  ctx.clearRect(0, 0, W, H);
+  const padL = 8, padR = 8, padT = 6, padB = 16;
+  const vals = byMonth.map(m => m.pnl);
+  const max = Math.max(...vals.map(Math.abs), 1);
+  const n = byMonth.length;
+  const bw = (W - padL - padR) / n;
+  const zero = padT + (H - padT - padB) * (max / (2 * max));
+  byMonth.forEach((m, i) => {
+    const h = (Math.abs(m.pnl) / max) * (H - padT - padB) / 2;
+    const x = padL + i * bw + bw * 0.15;
+    const y = m.pnl >= 0 ? zero - h : zero;
+    ctx.fillStyle = m.pnl >= 0 ? "rgba(0,255,156,.85)" : "rgba(255,80,80,.85)";
+    ctx.fillRect(x, y, bw * 0.7, Math.max(h, 1));
+    ctx.fillStyle = "rgba(255,255,255,.7)";
+    ctx.font = "9px monospace";
+    ctx.textAlign = "center";
+    ctx.fillText(m.month.slice(2), x + bw * 0.35, H - 4);
+  });
+  ctx.strokeStyle = "rgba(255,255,255,.3)";
+  ctx.beginPath(); ctx.moveTo(padL, zero); ctx.lineTo(W - padR, zero); ctx.stroke();
+}
+
+/* export CSV das trades de papel da Fase 2 (esta estratégia + referência) */
+async function exportPaperCsv() {
+  const ids = (testeStrategy === "auto_escada_3" || testeStrategy === "auto_escada_3_hibrida" || testeStrategy === "tp2_protect")
+    ? [testeStrategy, "nova_gestao"] : [testeStrategy];
+  let rows = [];
+  try {
+    for (const sid of ids) {
+      const r = await fetch("/api/paper/trades?strategy=" + encodeURIComponent(sid) + "&limit=300")
+        .then(res => res.json());
+      for (const t of (r.trades || [])) {
+        rows.push({
+          estrategia: sid, sinal: t.signal_id, simbolo: t.symbol,
+          direcao: t.direction, entrada: t.entry, sl: t.stop_loss,
+          tp1: t.take_profit_1, tp2: t.take_profit_2, tp3: t.take_profit_3,
+          tp4: t.take_profit_4, tp5: t.take_profit_5, lotes: lotsTotal(t),
+          estado: t.status, aberta: t.opened_at, fechada: t.closed_at || "",
+          razao: t.exit_reason || "",
+          pnl: t.pnl == null ? "" : Number(t.pnl).toFixed(2),
+        });
+      }
+    }
+    rows.sort((a, b) => (a.aberta < b.aberta ? 1 : -1));
+    const cols = ["estrategia", "sinal", "simbolo", "direcao", "entrada", "sl",
+      "tp1", "tp2", "tp3", "tp4", "tp5", "lotes", "estado", "aberta",
+      "fechada", "razao", "pnl"];
+    const esc = v => {
+      const s = String(v == null ? "" : v);
+      return /[;"\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+    };
+    const csv = [cols.join(";")]
+      .concat(rows.map(r => cols.map(c => esc(r[c])).join(";")))
+      .join("\r\n");
+    const blob = new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "paper-" + testeStrategy + "-" + new Date().toISOString().slice(0, 10) + ".csv";
+    a.click();
+    URL.revokeObjectURL(a.href);
+  } catch (e) { /* export silencioso se falhar */ }
+}
+
+/* trades de papel da estratégia (histórico da corrida paralela ao vivo) */
+async function loadPaperTrades() {
+  const tb = document.querySelector("#paperTradesTable tbody");
+  if (!tb) return;
+  try {
+    const r = await fetch("/api/paper/trades?strategy=" + encodeURIComponent(testeStrategy) + "&limit=100").then(res => res.json());
+    const trades = r.trades || [];
+    tb.innerHTML = "";
+    if (!trades.length) {
+      const isMain = (r.account || {}).is_main;
+      tb.innerHTML = isMain
+        ? '<tr><td colspan="8" class="empty">A estratégia principal corre na conta real (MT5) — as trades de papel são das estratégias de teste. Vê o histórico na aba “📜 Histórico”.</td></tr>'
+        : '<tr><td colspan="8" class="empty">Sem trades de papel ainda — a corrida paralela abre com o próximo sinal real.</td></tr>';
+      return;
+    }
+    for (const t of trades) {
+      const tr = document.createElement("tr");
+      const pnl = Number(t.pnl || 0);
+      const closed = t.status === "closed";
+      tr.innerHTML =
+        `<td class="muted" style="white-space:nowrap">${esc(when(t.opened_at))}</td>` +
+        `<td>${esc(t.symbol)}</td>` +
+        `<td class="${t.direction === "buy" ? "pos" : "neg"}">${t.direction === "buy" ? "COMPRA" : "VENDA"}</td>` +
+        `<td class="cd">${fmt(t.entry)}</td>` +
+        `<td class="cd">${lotsTotal(t)}</td>` +
+        `<td><span class="tag ${esc(t.status)}">${closed ? "fechada" : "aberta"}</span></td>` +
+        `<td class="muted" style="white-space:nowrap">${closed ? esc(when(t.closed_at)) : "—"}</td>` +
+        `<td class="cd ${cls(pnl)}">${closed ? money(pnl) : "—"}</td>`;
+      tb.appendChild(tr);
+    }
+  } catch (e) { /* tabela em silêncio se falhar */ }
+}
+
+$("testeDays").onchange = async () => {
+  // persiste o período escolhido (7/30/90/tudo) para não se perder ao recarregar
+  act("/api/config", { teste_days: parseInt($("testeDays").value, 10) });
+  loadTeste();
+};
+$("testeRisk").onchange = () => { act("/api/config", { edge_risk: $("testeRisk").value }); loadTeste(); };
+$("testeBalance").onchange = () => { act("/api/config", { edge_bal: $("testeBalance").value }); loadTeste(); };
+$("testeAllPeriod").onchange = () => {
+  _allPeriod = $("testeAllPeriod").value;
+  act("/api/config", { all_period: _allPeriod }); // persiste para não se perder ao recarregar
+  loadTesteAllHistory();
+};
+$("btnTesteRefresh").onclick = loadTeste;
+$("btnPromote").onclick = async () => {
+  const sid = testeStrategy;
+  const name = STRATEGY_NAMES[sid] || sid;
+  if (!confirm(`Passar a conta principal (MT5 real) a usar a estratégia “${name}”? A execução passa a usar os parâmetros dela (max_legs/exit_at_tp).`)) return;
+  const d = await act("/api/config", { strategy: sid });
+  if (d && d.error) { toast("Erro: " + d.error, "err"); return; }
+  toast("♟ Estratégia promovida: " + name + " — a principal usa-a agora", "ok");
+  // volta à principal para ver o badge novo
+  location.href = "/";
+};
+
+function drawMonthCurve(points, canvasId) {
+  const canvas = $(canvasId || "testeChart");
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  if (!points.length) return;
+  const pad = 30;
+  const vals = points.map(p => p.pnl);
+  let min = Math.min(0, ...vals), max = Math.max(0, ...vals);
+  if (max - min < 1) max = min + 1;
+  const x = i => pad + (i / (points.length - 1)) * (W - pad * 2);
+  const y = v => H - pad - ((v - min) / (max - min)) * (H - pad * 2);
+  ctx.strokeStyle = "#263040"; ctx.lineWidth = 1;
+  for (let g = 0; g <= 3; g++) {
+    const gy = pad + (g / 3) * (H - pad * 2);
+    ctx.beginPath(); ctx.moveTo(pad, gy); ctx.lineTo(W - pad, gy); ctx.stroke();
+  }
+  if (min < 0 && max > 0) {
+    ctx.strokeStyle = "#8a94a6"; ctx.setLineDash([4, 4]);
+    ctx.beginPath(); ctx.moveTo(pad, y(0)); ctx.lineTo(W - pad, y(0)); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  const last = points[points.length - 1];
+  const col = last.pnl >= 0 ? "#22c55e" : "#ef4444";
+  ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.beginPath();
+  points.forEach((p, i) => i === 0 ? ctx.moveTo(x(i), y(p.pnl)) : ctx.lineTo(x(i), y(p.pnl)));
+  ctx.stroke();
+  // preencher sob a curva (degradé discreto)
+  ctx.lineTo(x(points.length - 1), H - pad); ctx.lineTo(x(0), H - pad); ctx.closePath();
+  ctx.globalAlpha = 0.12; ctx.fillStyle = col; ctx.fill(); ctx.globalAlpha = 1;
+  ctx.fillStyle = col; ctx.font = "bold 12px sans-serif";
+  ctx.fillText((last.pnl > 0 ? "+" : "") + last.pnl.toFixed(0) + " €", x(points.length - 1) - 40, y(last.pnl) - 6);
+  // eixo de datas: primeira e última
+  ctx.fillStyle = "#8a94a6"; ctx.font = "10px sans-serif";
+  ctx.fillText(points[0].date || "", pad, H - 8);
+  ctx.fillText(points[points.length - 1].date || "", W - pad - 56, H - 8);
+}
+
+async function loadWalkforward(days) {
+  const box = $("testeWalkforward");
+  try {
+    const r = await fetch("/api/analysis/walkforward?group=Golden%20Moves&days=" + days).then(res => res.json());
+    if (!r.buckets || !r.buckets.length) { box.style.display = "none"; return; }
+    const s = r.summary || {};
+    const pfRange = s.pf_range ? s.pf_range.map(v => v === null ? "—" : fmt(v)).join(" → ") : "—";
+    const color = s.all_profitable ? "var(--green)" : (s.profitable >= (s.resolved_buckets || 1) / 2 ? "var(--amber)" : "var(--red)");
+    $("wfSummaryText").innerHTML =
+      `${s.profitable}/${s.resolved_buckets || 0} janelas com P&L positivo · ` +
+      `PF por janela: <b>${pfRange}</b> · ` +
+      `<span style="color:${color};font-weight:600">${s.all_profitable ? "estável ✅" : (s.profitable > 0 ? "parcialmente estável 🟡" : "não se mantém ❌")}</span>`;
+    const host = $("wfBuckets");
+    host.innerHTML = "";
+    for (const b of r.buckets) {
+      const mini = document.createElement("div");
+      mini.className = "mini";
+      const pnlCls = b.pnl >= 0 ? "var(--green)" : "var(--red)";
+      mini.innerHTML = `<div class="lbl">${esc(b.label)} · ${b.resolved} trades</div>` +
+        `<div class="val" style="font-size:13px">WR ${fmt(b.win_rate, 1)}% · PF ${b.profit_factor === null ? "—" : fmt(b.profit_factor)}</div>` +
+        `<div class="val" style="font-size:13px;color:${pnlCls}">${money(b.pnl)}</div>`;
+      host.appendChild(mini);
+    }
+    box.style.display = "";
+  } catch (e) {
+    box.style.display = "none";
+  }
+}
+
+function startTesteRefresh() { stopTesteRefresh(); testeTimer = setInterval(loadTeste, 60000); }
+function stopTesteRefresh() { if (testeTimer) { clearInterval(testeTimer); testeTimer = null; } }
+
+/* a página de teste não tem páginaRender própria — o chrome global (badges,
+   statusbar, market) vive no render() do common.js */
+loadTeste();
+startTesteRefresh();
+</script>
+</body>
+</html>

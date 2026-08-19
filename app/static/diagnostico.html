@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="pt" data-theme="cyberpunk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Project NexGen — Diagnóstico</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2307080f'/%3E%3Crect x='4' y='4' width='56' height='56' rx='11' fill='none' stroke='%2300f0ff' stroke-width='3'/%3E%3Ctext x='32' y='46' font-family='Arial Black, Arial' font-size='36' font-weight='900' fill='%2300f0ff' text-anchor='middle'%3EN%3C/text%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@600;800&family=Chakra+Petch:wght@400;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body class="no-chrome">
+<nav class="term-menu" id="termMenu" aria-label="Navegação">
+  <span class="term-menu-label">▚ NAV</span>
+  <a class="term-menu-item main" data-page="principal" href="/"><span class="cur">▸</span>PRINCIPAL<span class="sub">conta MT5 · estratégia ativa</span><span class="best"></span></a>
+  <span class="term-menu-label term-drop-toggle" id="dropEstrategiasToggle" role="button" tabindex="0" aria-expanded="true">▚ ESTRATÉGIAS <span class="drop-caret">▾</span></span>
+  <div class="term-drop" id="dropEstrategias">
+    <a class="term-menu-item" data-page="teste-nova_gestao" href="/teste?s=nova_gestao"><span class="cur">▸</span>TP1..TP5 + gestão<span class="sub">principal · referência</span><span class="best"></span></a>
+    <a class="term-menu-item" data-page="teste-tp2_protect" href="/teste?s=tp2_protect"><span class="cur">▸</span>Sair no TP2 + protect only<span class="sub">só protect do grupo</span><span class="best"></span></a>
+    <a class="term-menu-item" data-page="teste-auto_3" href="/teste?s=auto_3"><span class="cur">▸</span>Auto 3 TPs<span class="sub">3 pernas</span><span class="best"></span></a>
+    <a class="term-menu-item" data-page="teste-auto_escada_3" href="/teste?s=auto_escada_3"><span class="cur">▸</span>Auto 3 TPs + escada<span class="sub">Fase 2 · escada + trailing</span><span class="best"></span></a>
+    <a class="term-menu-item" data-page="teste-auto_escada_3_hibrida" href="/teste?s=auto_escada_3_hibrida"><span class="cur">▸</span>Auto 3 TPs + escada + protect híbrido<span class="sub">paper · proteção mecânica + grupo</span><span class="best"></span></a>
+    <a class="term-menu-item" data-page="teste-auto_escada_5" href="/teste?s=auto_escada_5"><span class="cur">▸</span>Auto 5 TPs + escada + confirmação<span class="sub">5 pernas + confirmação</span><span class="best"></span></a>
+  </div>
+  <span class="term-menu-label">▚ SISTEMA</span>
+  <a class="term-menu-item" data-page="diagnostico" href="/diagnostico"><span class="cur">▸</span>DIAGNÓSTICO<span class="sub">MT5 · listener · BD</span></a>
+  <a class="term-menu-item" data-page="help" href="/help"><span class="cur">▸</span>HELP<span class="sub">estratégias · conceitos</span></a>
+</nav>
+<aside class="term-right" id="termRight" aria-label="Conta e sessão">
+  <div class="ts-head">
+    <p class="term-menu-label">▚ STATE</p>
+    <button id="btnTermRightCollapse" class="ts-toggle" title="Colapsar/expandir terminal" aria-label="Colapsar terminal">‹</button>
+  </div>
+  <div class="hdr-badges" id="hdrBadges">
+    <span id="modeBadge" class="badge manual">manual</span>
+    <span id="strategyBadge" class="badge violet" style="display:none" title="Estratégia ativa da conta principal"></span>
+    <span id="execBadge" class="badge mt5-dry" style="display:none"></span>
+    <span id="marketBadge" class="badge manual">🎲 simulação</span>
+    <span id="killBadge" class="badge paused" style="display:none">PAUSADO</span>
+  </div>
+  <div class="term-side" id="termSide" aria-label="Estado do sistema">
+    <div class="ts-head">
+      <p class="term-menu-label">▚ MARKET</p>
+      <button id="btnTermCollapse" class="ts-toggle" title="Colapsar/expandir terminal" aria-label="Colapsar terminal">‹</button>
+    </div>
+    <span id="priceStrip" class="price-strip"></span>
+  </div>
+  <div class="ts-meta">
+    <span class="online-users" id="onlineUsers" title="Utilizadores com a dashboard aberta">👥 —</span>
+    <span class="clock" id="clock">—</span>
+  </div>
+  <span class="hdr-actions">
+    <button id="btnKill" class="danger">🛑 Kill switch</button>
+    <button id="btnLogout" class="ghost" style="display:none" title="Terminar sessão">Sair</button>
+  </span>
+</aside>
+<div class="bg-reticle" aria-hidden="true"></div>
+<div id="dashBoot"><div class="dash-boot-inner">
+  <div class="boot-title">PROJECT NEXGEN</div>
+  <pre id="dashBootText"></pre>
+</div></div>
+<div class="wrap">
+  <header>
+    <button id="btnMenu" class="ghost" title="Menu: testes · diagnóstico" aria-label="Abrir menu">☰</button>
+    <div class="brand">
+      <h1 data-text="🤖 Project NexGen">🤖 Project NexGen</h1>
+      <span class="sub" id="subTitle">copy-trading · execução real (demo MT5)</span>
+    </div>
+    <div class="spacer"></div>
+    <button id="btnMenuStatus" class="ghost" title="Estado do sistema" aria-label="Abrir estado">▦</button>
+  </header>
+
+  <div class="statusbar" id="statusBar">
+    <span class="dot" id="stDot"></span>
+    <span id="stText">A ligar…</span>
+    <span class="st-sep"></span>
+    <span id="stLast">—</span>
+  </div>
+
+  <div id="tab-diagnostico" class="card">
+    <h2>🔧 Diagnóstico do sistema
+      <span style="display:inline-flex;gap:8px;align-items:center">
+        <button id="btnDiagRefresh" class="primary">🔄 Atualizar</button>
+        <button id="btnDiagClearRestarts" class="danger">🧹 Limpar reinícios</button>
+      </span>
+    </h2>
+    <p class="muted" style="margin:0 0 12px;font-size:13px">
+      Estado das ligações em tempo real — o listener faz heartbeat a cada 1s
+      (sem notícias há >5s = OFFLINE), o MT5 é consultado a cada segundo.
+      Atualiza sozinho a cada 10s enquanto esta página está aberta.
+    </p>
+    <div class="diag-grid" id="diagGrid"></div>
+    <div class="lbl" style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:14px 0 6px">Uptime 24h — verde = ligado · vermelho = em baixo · % ao lado de cada serviço</div>
+    <canvas id="uptimeChart" width="760" height="96" style="width:100%;height:96px;background:var(--panel2);border:1px solid var(--border);border-radius:10px"></canvas>
+  </div>
+
+  <div class="footer">🤖 <b>Project NexGen</b> · copy-trading · execução real (demo MT5) · conta <b id="acctFooter">—</b> · <span id="acctServerFooter">MetaQuotes-Demo</span></div>
+</div>
+
+<script src="common.js"></script>
+<script>
+/* =========================================================
+   Página DIAGNÓSTICO — estado das ligações em tempo real.
+   ========================================================= */
+
+/* marca o item do menu da página atual */
+termItems().forEach(b => b.classList.toggle("active", b.dataset.page === "diagnostico"));
+
+let diagTimer = null;
+function startDiagAutoRefresh() { stopDiagAutoRefresh(); diagTimer = setInterval(loadDiagnostics, 10000); }
+function stopDiagAutoRefresh() { if (diagTimer) { clearInterval(diagTimer); diagTimer = null; } }
+$("btnDiagRefresh").onclick = loadDiagnostics;
+$("btnDiagClearRestarts").onclick = async () => {
+  if (!confirm("Apagar TODO o histórico de reinícios do listener?\n\n(Ação manual — o purge automático de 30 dias continua a funcionar.)")) return;
+  try {
+    const r = await fetch("/api/listener_restarts", { method: "DELETE" });
+    const d = await r.json();
+    toast(d.deleted > 0 ? `🧹 ${d.deleted} reinício(s) apagado(s)` : "🧹 Histórico já estava vazio", "ok");
+    loadDiagnostics();
+  } catch (e) {
+    toast("Erro ao limpar histórico de reinícios", "err");
+  }
+};
+
+function fmtUptime(s) {
+  s = Math.max(0, s | 0);
+  const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60), sec = s % 60;
+  if (d) return d + "d " + h + "h " + m + "m";
+  if (h) return h + "h " + m + "m";
+  if (m) return m + "m " + sec + "s";
+  return sec + "s";
+}
+function fmtAge(s) {
+  if (s === null || s === undefined) return "—";
+  s = Math.max(0, s | 0);
+  if (s < 60) return s + "s";
+  if (s < 3600) return Math.floor(s / 60) + "m " + (s % 60) + "s";
+  return Math.floor(s / 3600) + "h " + Math.floor(s % 3600 / 60) + "m";
+}
+function diagDot(ok) { return `<span class="dot ${ok ? "ok" : "bad"}" style="display:inline-block;vertical-align:middle;margin-right:6px"></span>`; }
+function diagCard(lbl, val, ok = null) {
+  const dot = ok === null ? "" : diagDot(ok);
+  return `<div class="mini diag-card"><div class="lbl">${lbl}</div><div class="val" style="font-size:13px">${dot}${val}</div></div>`;
+}
+function drawUptimeChart(hist) {
+  const canvas = $("uptimeChart");
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  if (!hist || hist.length < 2) {
+    ctx.fillStyle = "#8a94a6"; ctx.font = "12px sans-serif";
+    ctx.fillText("A recolher histórico de uptime — os dados aparecem em minutos.", 20, H / 2);
+    return;
+  }
+  const padL = 66, padR = 6, rowH = 28, rowGap = 14;
+  const plotW = W - padL - padR;
+  const t0 = hist[0].t, t1 = hist[hist.length - 1].t;
+  const span = Math.max(1, t1 - t0);
+  const rows = [
+    ["LISTENER", "listener", "#00ff9c", "#ef4444"],
+    ["MT5", "mt5", "#00b0f0", "#ef4444"],
+  ];
+  rows.forEach(([label, key, upColor, downColor], ri) => {
+    const y = 10 + ri * (rowH + rowGap);
+    ctx.fillStyle = "#8a94a6"; ctx.font = "bold 10px sans-serif";
+    ctx.fillText(label, 4, y + 17);
+    const ups = hist.filter(s => s[key]).length;
+    const pct = Math.round(100 * ups / hist.length);
+    ctx.fillStyle = pct >= 99 ? "#22c55e" : (pct >= 90 ? "#facc15" : "#ef4444");
+    ctx.font = "bold 11px sans-serif";
+    ctx.fillText(pct + "%", padL - 26, y + 17);
+    ctx.fillStyle = "#1a2332";
+    ctx.fillRect(padL, y, plotW, rowH);
+    const bw = Math.max(1, plotW / hist.length);
+    for (const s of hist) {
+      const x = padL + (s.t - t0) / span * plotW;
+      ctx.fillStyle = s[key] ? upColor : downColor;
+      ctx.fillRect(x, y, bw, rowH);
+    }
+  });
+}
+
+async function loadDiagnostics() {
+  const host = $("diagGrid");
+  if (!host) return;
+  try {
+    const r = await fetch("/api/diagnostics").then(res => res.json());
+    drawUptimeChart(r.uptime_history || []);
+    const ex = r.execution || {}, m5 = r.mt5 || {}, lis = r.listener || {}, dbx = r.db || {};
+    let html = "";
+    /* listener do Telegram */
+    const msgAge = lis.last_msg_age_s;
+    const ageTxt = msgAge === null || msgAge === undefined ? "sem mensagens ainda" : "última msg há " + fmtAge(msgAge);
+    const ageColor = msgAge === null || msgAge === undefined ? "var(--muted)" : (msgAge < 900 ? "var(--green)" : (msgAge < 7200 ? "var(--amber)" : "var(--red)"));
+    html += diagCard("📨 Telegram listener", lis.alive ? "ligado ao grupo" : "OFFLINE", !!lis.alive) +
+      `<div class="mini diag-card"><div class="lbl">Mensagens do grupo</div><div class="val" style="font-size:12px;color:${ageColor}">${ageTxt}</div></div>` +
+      `<div class="mini diag-card"><div class="lbl">Heartbeat</div><div class="val" style="font-size:12px">${lis.last_seen ? when(lis.last_seen) : "nunca"} · tick ${lis.tick ?? 0}</div></div>` +
+      `<div class="mini diag-card"><div class="lbl">Grupos</div><div class="val" style="font-size:12px;word-break:break-word">${esc((lis.groups || []).join(", ") || "—")}</div></div>`;
+    /* MetaTrader 5 */
+    const m5ok = ex.mode === "mt5-real" && ex.connected;
+    const m5label = ex.mode === "mt5-real" ? (ex.connected ? "execução real (demo)" : "sem terminal") :
+      ex.mode === "mt5-dry" ? "dry-run" : "simulação";
+    html += diagCard("🖥️ MetaTrader 5", m5label, m5ok) +
+      `<div class="mini diag-card"><div class="lbl">Conta</div><div class="val" style="font-size:12px">${esc(String(m5.login ?? "—"))} · ${esc(String(m5.server ?? "—"))}</div></div>` +
+      `<div class="mini diag-card"><div class="lbl">Saldo / Equity</div><div class="val" style="font-size:12px">${fmt(m5.balance ?? 0)} ${esc(m5.currency || "")} / ${fmt(m5.equity ?? 0)} ${esc(m5.currency || "")}</div></div>` +
+      diagCard("⚙️ AutoTrading", ex.trade_allowed ? "ligado" : "desligado", !!ex.trade_allowed) +
+      `<div class="mini diag-card" style="grid-column:1/-1"><div class="lbl">⛔ Última recusa por AutoTrading OFF (retcode 10027)</div><div class="val" style="font-size:12px">${m5.last_auto_trading_off_at ? when(m5.last_auto_trading_off_at) + " — liga o Algo Trading no terminal antes do próximo sinal" : "nunca desde o arranque"}</div></div>`;
+    /* servidor */
+    html += diagCard("🖧 Servidor API", `a correr · PID ${r.server.pid || "?"}`, true) +
+      `<div class="mini diag-card"><div class="lbl">Uptime</div><div class="val" style="font-size:12px">${fmtUptime(r.server.uptime_s || 0)}</div></div>` +
+      `<div class="mini diag-card"><div class="lbl">Iniciado</div><div class="val" style="font-size:12px">${when(r.server.started_at)}</div></div>`;
+    /* market feed */
+    const mk = r.market || {};
+    const realCount = Object.values(mk.sources || {}).filter(x => x === "real").length;
+    html += diagCard("📈 Market feed", mk.real_data ? `preços reais (${realCount} símbolos)` : "simulação", !!mk.real_data) +
+      `<div class="mini diag-card"><div class="lbl">Símbolos</div><div class="val" style="font-size:12px;word-break:break-word">${esc(Object.keys(mk.sources || {}).join(", ") || "—")}</div></div>`;
+    /* auth + bd */
+    /* último replay do histórico (data + totais) */
+    const rp = r.replay || {};
+    if (rp.done_at) {
+      html += `<div class="mini diag-card" style="grid-column:1/-1"><div class="lbl">📚 Último replay do histórico</div>` +
+        `<div class="val" style="font-size:12px">${when(rp.done_at)} — ${esc(rp.group || "")}: ${rp.total ?? 0} mensagens · <b>${rp.sinais ?? 0} sinais</b> · ${rp.gestao ?? 0} gestão · ${rp.resumos ?? 0} resumos · ${rp.ignoradas ?? 0} ignoradas/já conhecidas</div></div>`;
+    }
+    html += diagCard("🔐 Login", (r.auth && r.auth.enabled) ? "ligado (password)" : "aberto", !!(r.auth && r.auth.enabled)) +
+      diagCard("🗄️ Base de dados", `${dbx.signals ?? 0} sinais · ${dbx.trades ?? 0} trades`, null) +
+      `<div class="mini diag-card"><div class="lbl">Abertas / Ignoradas / Resumos</div><div class="val" style="font-size:12px">${dbx.positions_open ?? 0} / ${dbx.ignored ?? 0} / ${dbx.summaries ?? 0}</div></div>` +
+      `<div class="mini diag-card" style="grid-column:1/-1"><div class="lbl">BD (ficheiro)</div><div class="val" style="font-size:11px;word-break:break-all">${esc(dbx.path || "—")}</div></div>`;
+    /* última mensagem do grupo */
+    const lm = r.last_group_msg;
+    if (lm) {
+      html += `<div class="mini diag-card" style="grid-column:1/-1"><div class="lbl">Última mensagem do grupo</div>` +
+        `<div class="val" style="font-size:12px;white-space:pre-wrap;word-break:break-word">${when(lm.received_at)} — ${esc(String(lm.raw_text || "").replace(/\*\*/g, "").slice(0, 180))}</div></div>`;
+    }
+    /* atraso das edições do grupo (validar a janela de edição) */
+    try {
+      const ed = await fetch("/api/edits?group=Golden%20Moves").then(res => res.json());
+      if (ed.count > 0) {
+        const w = (r.config || {}).edit_window_seconds;
+        const medC = ed.median_seconds <= (w || 30) ? "var(--green)" : (ed.median_seconds <= (w || 30) * 1.5 ? "var(--amber)" : "var(--red)");
+        html += `<div class="mini diag-card" style="grid-column:1/-1">` +
+          `<div class="lbl">⏱️ Atraso das edições do grupo (${ed.count} edições)</div>` +
+          `<div style="font-size:12px;line-height:1.7">` +
+          `mín <b>${fmt(ed.min_seconds, 0)}s</b> · média <b>${fmt(ed.mean_seconds, 0)}s</b> · ` +
+          `mediana <b style="color:${medC}">${fmt(ed.median_seconds, 0)}s</b> · ` +
+          `p90 <b>${fmt(ed.p90_seconds, 0)}s</b> · máx <b>${fmt(ed.max_seconds, 0)}s</b>` +
+          ` — janela atual: <b>${fmt(w || 30, 0)}s</b> · a mediana está ` +
+          (ed.median_seconds <= (w || 30) ? `<b style="color:var(--green)">dentro</b>` : `<b style="color:var(--red)">FORA</b>`) +
+          ` da janela</div>` +
+          (ed.examples && ed.examples.length
+            ? `<div style="font-size:11px;color:var(--muted);line-height:1.6;margin-top:4px">últimos: ` +
+              ed.examples.map(x => `${esc(x.symbol || "")} +${fmt(x.delay_seconds, 0)}s`).join(" · ") + `</div>`
+            : "") +
+          `</div>`;
+      }
+    } catch (e) { /* sem dados de edição — omite */ }
+    /* reinícios do listener (auditoria do watchdog) */
+    const rests = r.listener_restarts || [];
+    html += `<div class="mini diag-card" style="grid-column:1/-1">` +
+      `<div class="lbl">🔄 Reinícios do listener (${rests.length} últimos)</div>` +
+      (rests.length
+        ? `<div style="font-size:11px;line-height:1.7;max-height:130px;overflow-y:auto">` +
+          rests.map(x => `${when(x.started_at)} — ${esc(x.reason || "")}`).join("<br>") +
+          `</div>`
+        : `<div class="val" style="font-size:12px;color:var(--muted)">sem reinícios registados</div>`) +
+      `</div>`;
+    host.innerHTML = html;
+  } catch (e) {
+    host.innerHTML = '<div class="mini diag-card"><div class="val">Erro ao carregar diagnóstico.</div></div>';
+  }
+}
+
+loadDiagnostics();
+startDiagAutoRefresh();
+</script>
+</body>
+</html>
