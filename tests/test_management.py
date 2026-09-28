@@ -14,6 +14,7 @@ os.environ["SIGNALBOT_DB"] = tempfile.mktemp(suffix=".db")
 os.environ["MARKET_PROVIDER"] = "none"
 
 from app.messages.manage import classify, symbol_in  # noqa: E402
+from app.messages.recounts import parse_recount  # noqa: E402
 from app.messages.summaries import parse_summary  # noqa: E402
 from app.signals.llm_fallback import (DEFAULT_MIN_CONFIDENCE,  # noqa: E402
                                       try_llm_parse)
@@ -162,12 +163,47 @@ def test_classify_go():
     assert classify("Let’s do it this weekend") is None
 
 
+def test_classify_summary_correction():
+    assert classify("Correction: Weekly summary 7 Trades Sent 6 winning trades "
+                    "1 Stop loss Win rate: 86%") == {"kind": "summary_correction"}
+    assert classify("The summary numbers were wrong, 7 Trades Sent 6 winning trades") == \
+        {"kind": "summary_correction"}
+    assert classify("Correction: the market moved fast, no summary numbers here") is None
+
+
 def test_classify_summary():
     assert classify("**Weekly summary ** **(10/08/26_14/08/26)** **Gold prime Signals ** "
                     "26 **Trades Sent** 23 **winning trades ** Win rate : 91%") \
         == {"kind": "summary"}
     assert classify("**Thursday summary ** **Gold prime Signals ** 6Trades Sent "
                     "6 winning trades 0 Stop loss Pips gained +530") == {"kind": "summary"}
+
+
+def test_classify_recount():
+    """R2: per-trade recounts ("Signal #1: Sell at 4357 … +110 pips") are
+    structured ground truth — classified as `recount`, never ignored."""
+    assert classify("Signal #1: Sell at 4357. Price went up to 4362, then "
+                    "dropped to 4351. +110 pips") == {"kind": "recount"}
+    assert classify("Signal 3: Buy at 4396.50. Price went down to 4392, then "
+                    "came back up to 4401. +45 pips") == {"kind": "recount"}
+    # without the full structure it stays chatter (no action)
+    assert classify("Signal #1 was a great trade today") is None
+    assert classify("We won +110 pips on gold") is None
+
+
+def test_parse_recount():
+    r = parse_recount("Signal #1: Sell at 4357. Price went up to 4362, "
+                      "then dropped to 4351. +110 pips")
+    assert r is not None
+    assert r["signal_number"] == 1
+    assert r["direction"] == "sell"
+    assert r["entry"] == 4357.0
+    assert r["excursion_price"] == 4362.0
+    assert r["excursion_dir"] == "up"
+    assert r["reversal_price"] == 4351.0
+    assert r["pips"] == 110.0
+    assert parse_recount("Good morning team") is None
+    assert parse_recount("") is None
 
 
 def test_classify_ignores_chatter_and_entries():

@@ -8,6 +8,7 @@ at the tick) is exercised without a terminal.
 import os
 import sys
 import tempfile
+import pytest
 from types import SimpleNamespace
 
 from app.db import DB
@@ -95,9 +96,10 @@ class _QuoteMT5:
 
 
 class _Result:
-    def __init__(self, retcode, comment):
+    def __init__(self, retcode, comment, order=None):
         self.retcode = retcode
         self.comment = comment
+        self.order = order
 
 
 class _NoTickFirstBroker(_FakeMT5):
@@ -254,6 +256,43 @@ def test_open_trade_records_two_legs():
         cleanup(db, tmp)
 
 
+def test_journal_records_dry_run_fills_when_enabled():
+    db, provider, market, eng, tmp = setup()
+    try:
+        db.set_config("execution_journal_enabled", "True")
+        sig = make_signal()
+        trade = eng.open_trade(sig, risk_pct=1.0, balance=10_000)
+        provider._fake_ticks["XAUUSD"] = 4389.0
+        eng.update(now="2026-08-19T10:00:01+00:00")
+        events = db.execution_events()
+        kinds = [row["kind"] for row in events]
+        assert kinds.count("fill_open") == 2
+        assert "fill_close" in kinds
+        close = next(row for row in events if row["kind"] == "fill_close")
+        assert close["trade_id"] == trade.id
+        assert close["payload"]["source"] == "mt5_dry_run"
+    finally:
+        cleanup(db, tmp)
+
+
+def test_journal_records_real_order_retcodes_when_enabled():
+    db = DB(tempfile.mktemp(suffix=".db"))
+    try:
+        db.set_config("execution_journal_enabled", "True")
+        provider = FakeProvider(ticks={"XAUUSD": 4385.0})
+        provider._mt5 = _FakeMT5(retcode=10027)
+        market = MarketSimulator(seed=42)
+        market.prices["XAUUSD"] = 4385.0
+        eng = MT5Engine(db, provider, market, dry_run=False)
+        eng.open_trade(make_signal(), risk_pct=1.0, balance=10_000)
+        results = [row for row in db.execution_events(kind="order_result")]
+        assert len(results) == 2
+        assert {row["payload"]["retcode"] for row in results} == {10027}
+        assert all(row["payload"]["accepted"] is False for row in results)
+    finally:
+        db.close()
+
+
 def test_tp1_then_breakeven_then_tp2():
     """TP1 fecha (lucro) → perna 2 vai a BE → TP2 fecha a perna 2."""
     db, provider, market, eng, tmp = setup()
@@ -275,6 +314,31 @@ def test_tp1_then_breakeven_then_tp2():
         assert p2.status == "closed" and p2.pnl > 0
         t = db.get_trade(trade.id)
         assert t.status == "closed"
+    finally:
+        cleanup(db, tmp)
+
+
+def test_auto_protect_early_trigger_dry_run():
+    """Dry-run MT5 uses the same trigger and group floor as the other
+    adapters, without waiting for Telegram management."""
+    db, provider, market, eng, tmp = setup()
+    try:
+        sig = make_signal(
+            entry=4385.0, stop_loss=4381.0,
+            take_profit_1=4389.0, take_profit_2=4395.0,
+        )
+        trade = eng.open_trade(sig, risk_pct=1.0, balance=10_000)
+        provider._fake_ticks["XAUUSD"] = 4388.0  # 75% of entry -> TP1
+        events = eng.update(
+            now="2026-08-19T10:01:00+00:00",
+            auto={"protect_trigger": 0.75, "protect_buffer": 0.10},
+        )
+        positions = {p.leg: p for p in db.positions_for_trade(trade.id)}
+        assert any(e.get("reason") == "auto_protect" for e in events)
+        assert positions[1].status == "closed"
+        assert positions[1].exit_reason == "auto_protect"
+        assert positions[1].close_price == 4388.0
+        assert positions[2].stop_loss == 4385.4
     finally:
         cleanup(db, tmp)
 
@@ -402,12 +466,13 @@ def test_open_trade_real_mode_no_tick_fails_leg_only():
         eng = MT5Engine(db, provider, market, dry_run=False)
         sig = make_signal()
         trade = eng.open_trade(sig, risk_pct=1.0, balance=10_000)
-        # a 1ª perna ficou sem tick (NO_TICK → falha só essa perna, fica
-        # `open` na BD como perna sem fill); a 2ª abriu no broker
+        # A 1ª perna sem tick é marcada como rejeitada na BD para não criar
+        # uma posição fantasma; a 2ª abriu no broker e mantém a trade aberta.
         pos = db.positions_for_trade(trade.id)
         assert len(pos) == 2
         legs_by_leg = {p.leg: p for p in pos}
-        assert legs_by_leg[1].status == "open"  # sem fill do broker
+        assert legs_by_leg[1].status == "closed"
+        assert legs_by_leg[1].exit_reason == "order_rejected"
         assert legs_by_leg[2].status == "open"
         assert trade.status == "open"
     finally:
@@ -721,10 +786,23 @@ class _FakeBroker:
     ORDER_TYPE_SELL = 1
     POSITION_TYPE_BUY = 0
     POSITION_TYPE_SELL = 1
+    ORDER_TYPE_BUY_LIMIT = 2
+    ORDER_TYPE_SELL_LIMIT = 3
+    ORDER_TYPE_BUY_STOP = 4
+    ORDER_TYPE_SELL_STOP = 5
     TRADE_ACTION_DEAL = 1
+    TRADE_ACTION_PENDING = 5
     TRADE_ACTION_SLTP = 6
     ORDER_TIME_GTC = 0
     ORDER_FILLING_IOC = 1
+    ORDER_FILLING_RETURN = 2
+    ORDER_STATE_STARTED = 0
+    ORDER_STATE_PLACED = 1
+    ORDER_STATE_CANCELED = 2
+    ORDER_STATE_PARTIAL = 3
+    ORDER_STATE_FILLED = 4
+    ORDER_STATE_REJECTED = 5
+    ORDER_STATE_EXPIRED = 6
     TRADE_RETCODE_DONE = 10009
     TRADE_RETCODE_INVALID_STOPS = 10016
     DEAL_ENTRY_IN = 0
@@ -737,10 +815,13 @@ class _FakeBroker:
         self.info_stops_level = info_stops_level
         self.enforce_stops_level = enforce_stops_level
         self._positions = []
+        self._orders = []  # ordens pendentes (Fase 1)
         self._deals = {}
         self._next_ticket = 1001
+        self._next_order = 9001
         self._next_deal = 5001
         self.orders = []
+        self.deleted_orders = []
         self.rates = []
         self.rate_calls = []
 
@@ -773,9 +854,55 @@ class _FakeBroker:
             if not request.get("position"):
                 return self._open(request)
             return self._close(request)
+        if action == self.TRADE_ACTION_PENDING:
+            return self._place_pending(request)
         if action == self.TRADE_ACTION_SLTP:
             return self._modify(request)
         return _Result(self.TRADE_RETCODE_DONE, "Done")
+
+    def orders_get(self, ticket=None, **k):
+        if ticket is not None:
+            return [o for o in self._orders if o.ticket == ticket]
+        return list(self._orders)
+
+    def order_delete(self, ticket):
+        for o in self._orders:
+            if o.ticket == ticket:
+                o.state = self.ORDER_STATE_CANCELED
+        self.deleted_orders.append(ticket)
+        return _Result(self.TRADE_RETCODE_DONE, "Done")
+
+    def _place_pending(self, req):
+        """Cria uma ordem pendente (estado PLACED); `_Result.order` é o ticket."""
+        ticket = self._next_order
+        self._next_order += 1
+        self._orders.append(_Order(
+            ticket, req["symbol"], req["type"], req["volume"],
+            req["price"], req.get("sl", 0.0), req.get("tp", 0.0),
+            req.get("comment", ""), self.ORDER_STATE_PLACED,
+        ))
+        return _Result(self.TRADE_RETCODE_DONE, "Done", order=ticket)
+
+    def fill_pending(self, ticket, price=None):
+        """O broker preenche a ordem pendente: vira posição (Fase 1)."""
+        order = next((o for o in self._orders if o.ticket == ticket), None)
+        if order is None:
+            return None
+        order.state = self.ORDER_STATE_FILLED
+        # limit/stop (2-5) → tipo de posição (0 buy / 1 sell)
+        pos_type = (self.POSITION_TYPE_BUY if order.type in (
+            self.ORDER_TYPE_BUY_LIMIT, self.ORDER_TYPE_BUY_STOP)
+            else self.POSITION_TYPE_SELL)
+        pos = _Pos(ticket, order.symbol, pos_type, order.volume,
+                   price or order.price, order.sl, order.tp, order.comment, self.ask)
+        # o ticket da posição é distinto do ticket da ordem
+        pticket = self._next_ticket
+        self._next_ticket += 1
+        pos.ticket = pticket
+        self._positions.append(pos)
+        self._deals[pticket] = [_Deal(pticket, pos.price_open, 0.0,
+                                      self.DEAL_ENTRY_IN)]
+        return pticket
 
     # ---- internals ----
     def _open(self, req):
@@ -832,11 +959,26 @@ class _FakeBroker:
         return profit
 
 
+class _Order:
+    def __init__(self, ticket, symbol, type_, volume, price, sl, tp,
+                 comment, state):
+        self.ticket = ticket
+        self.symbol = symbol
+        self.type = type_
+        self.volume = volume
+        self.price = price
+        self.sl = sl
+        self.tp = tp
+        self.comment = comment
+        self.state = state
+
+
 class _Result:
-    def __init__(self, retcode, comment, price=None):
+    def __init__(self, retcode, comment, price=None, order=None):
         self.retcode = retcode
         self.comment = comment
         self.price = price
+        self.order = order
 
 
 def setup_real(ask=4385.0, bid=4384.9, info_stops_level=0.0,
@@ -1371,6 +1513,818 @@ def test_mt5_atr_requests_completed_candles_only():
         atr = eng._atr("XAUUSD", period=2, timeframe=1)
         assert atr is not None
         assert broker.rate_calls and broker.rate_calls[-1][2] == 1
+    finally:
+        db.close()
+        os.remove(tmp)
+
+
+# ------------------------------------------------------ Fase 1: pending (zona)
+
+
+def test_pending_orders_placed_at_zone_and_fill_on_broker():
+    """Fase 1 (real): entry_style=pending coloca ordens pendentes no nível da
+    entrada (com SL/TP) e o tick reconhece o fill pelo ticket da ordem."""
+    db, provider, broker, market, eng, tmp = setup_real(ask=4395.0, bid=4394.9)
+    try:
+        sig = make_signal(entry=4385.0, stop_loss=4381.0,
+                          take_profit_1=4389.0, take_profit_2=4395.0)
+        trade = eng.open_trade(
+            sig, risk_pct=1.0, balance=10_000,
+            execution_meta={"entry_style": "pending",
+                            "market_price": 4395.0},
+        )
+        assert trade.status == "open"
+        positions = db.positions_for_trade(trade.id)
+        assert all(p.status == "pending_fill" for p in positions)
+        assert all(p.order_ticket for p in positions)
+        # preço 4395 acima da entrada 4385 → BUY_LIMIT
+        assert broker.orders[-1]["type"] == broker.ORDER_TYPE_BUY_LIMIT
+        assert len(broker._orders) == 2  # 2 pernas pendentes no broker
+
+        # ainda sem fill → update não abre nem fecha nada
+        eng.update(now="2026-08-18T10:00:00+00:00", entry_order_ttl=3600)
+        assert all(p.status == "pending_fill" for p in db.positions_for_trade(trade.id))
+
+        # o broker preenche a perna 1 → o update passa-a a open
+        order1 = sorted(broker._orders, key=lambda o: o.ticket)[0]
+        broker.fill_pending(order1.ticket, price=4385.0)
+        eng.update(now="2026-08-18T10:00:05+00:00", entry_order_ttl=3600)
+        leg1 = [p for p in db.positions_for_trade(trade.id) if p.leg == 1][0]
+        assert leg1.status == "open"
+        leg2 = [p for p in db.positions_for_trade(trade.id) if p.leg == 2][0]
+        assert leg2.status == "pending_fill"
+    finally:
+        cleanup(db, tmp)
+
+
+def test_pending_orders_expire_by_ttl_and_cancel_broker_order():
+    """Fase 1: TTL expira a ordem pendente — order_delete no broker + fecho
+    na BD (pending_expired)."""
+    from app.execution.clock import ManualClock
+    db, provider, broker, market, eng, tmp = setup_real(ask=4395.0, bid=4394.9)
+    eng.clock = ManualClock(epoch=1750000000.0)
+    try:
+        sig = make_signal(entry=4385.0, stop_loss=4381.0,
+                          take_profit_1=4389.0, take_profit_2=4395.0)
+        trade = eng.open_trade(
+            sig, risk_pct=1.0, balance=10_000,
+            execution_meta={"entry_style": "pending",
+                            "market_price": 4395.0},
+        )
+        # TTL de 1 minuto; o update corre 2 min depois do open
+        eng.clock.advance(120.0)
+        eng.update(now=eng.clock.iso(), entry_order_ttl=60)
+        positions = db.positions_for_trade(trade.id)
+        assert all(p.status == "closed" and p.exit_reason == "pending_expired"
+                   for p in positions)
+        assert len(broker.deleted_orders) == 2
+    finally:
+        cleanup(db, tmp)
+
+
+def test_pending_ttl_delete_failure_keeps_position_pending_and_retries():
+    """Worker caído no order_delete do TTL: a perna NÃO fecha na BD (ficaria
+    órfã no MT5) — grava a exceção, mantém `pending_fill` e o próximo tick
+    volta a tentar o cancelamento (mesmo tratamento por perna do envio)."""
+    from app.execution.clock import ManualClock
+    db, provider, broker, market, eng, tmp = setup_real(ask=4395.0, bid=4394.9)
+    eng.clock = ManualClock(epoch=1750000000.0)
+    try:
+        sig = make_signal(entry=4385.0, stop_loss=4381.0,
+                          take_profit_1=4389.0, take_profit_2=4395.0)
+        trade = eng.open_trade(
+            sig, risk_pct=1.0, balance=10_000,
+            execution_meta={"entry_style": "pending",
+                            "market_price": 4395.0},
+        )
+        orig_delete = broker.order_delete
+        broker.order_delete = lambda ticket: (_ for _ in ()).throw(
+            RuntimeError("worker offline (order_delete)"))
+        eng.clock.advance(120.0)
+        eng.update(now=eng.clock.iso(), entry_order_ttl=60)
+        positions = db.positions_for_trade(trade.id)
+        # nada fechou na BD; a ordem continua viva no broker (não foi
+        # apagada) e a falha ficou registada para a auditoria
+        assert all(p.status == "pending_fill" for p in positions)
+        assert broker.deleted_orders == []
+        assert db.exception_rows()
+        # recupera: o próximo tick volta a tentar o delete e fecha
+        broker.order_delete = orig_delete
+        eng.clock.advance(1.0)
+        eng.update(now=eng.clock.iso(), entry_order_ttl=60)
+        positions = db.positions_for_trade(trade.id)
+        assert all(p.status == "closed" and p.exit_reason == "pending_expired"
+                   for p in positions)
+        assert len(broker.deleted_orders) == 2
+    finally:
+        cleanup(db, tmp)
+
+
+def test_pending_delete_stuck_escalates_after_n_retries():
+    """Watchdog: após N falhas seguidas do order_delete (worker offline)
+    o tick devolve `pending_delete_stuck` UMA vez por episódio — nunca em
+    silêncio — e o contador reseta quando o delete volta a funcionar."""
+    from app.execution.clock import ManualClock
+    db, provider, broker, market, eng, tmp = setup_real(ask=4395.0, bid=4394.9)
+    eng.clock = ManualClock(epoch=1750000000.0)
+    eng.PENDING_DELETE_ESCALATE_AFTER = 3
+    try:
+        sig = make_signal(entry=4385.0, stop_loss=4381.0,
+                          take_profit_1=4389.0, take_profit_2=4395.0)
+        trade = eng.open_trade(
+            sig, risk_pct=1.0, balance=10_000,
+            execution_meta={"entry_style": "pending",
+                            "market_price": 4395.0},
+        )
+        orig_delete = broker.order_delete
+        broker.order_delete = lambda ticket: (_ for _ in ()).throw(
+            RuntimeError("worker offline (order_delete)"))
+        eng.clock.advance(120.0)
+        # 2 falhas por perna → ainda sem alerta (abaixo do limiar)
+        for _ in range(2):
+            eng.clock.advance(1.0)
+            evs = eng.update(now=eng.clock.iso(), entry_order_ttl=60)
+            assert not any(e["type"] == "pending_delete_stuck" for e in evs)
+        # 3ª falha → alerta por perna (episódio único)
+        eng.clock.advance(1.0)
+        evs = eng.update(now=eng.clock.iso(), entry_order_ttl=60)
+        stuck = [e for e in evs if e["type"] == "pending_delete_stuck"]
+        assert len(stuck) == 2  # uma por perna pendente
+        assert all(e["attempts"] == 3 and e["ticket"] for e in stuck)
+        # continua a falhar → o alerta NÃO se repete a cada tick
+        for _ in range(3):
+            eng.clock.advance(1.0)
+            evs = eng.update(now=eng.clock.iso(), entry_order_ttl=60)
+            assert not any(e["type"] == "pending_delete_stuck" for e in evs)
+        assert all(p.status == "pending_fill"
+                   for p in db.positions_for_trade(trade.id))
+        # recupera: o delete volta a funcionar → fecha e o contador reseta
+        broker.order_delete = orig_delete
+        eng.clock.advance(1.0)
+        evs = eng.update(now=eng.clock.iso(), entry_order_ttl=60)
+        assert all(p.status == "closed" and p.exit_reason == "pending_expired"
+                   for p in db.positions_for_trade(trade.id))
+        assert len(broker.deleted_orders) == 2
+        assert eng._pending_delete_failures == {}
+    finally:
+        cleanup(db, tmp)
+
+
+def test_pending_delete_stuck_realerts_periodically():
+    """Watchdog: depois do 1º alerta, o `pending_delete_stuck` volta a sair
+    a cada `PENDING_DELETE_REALERT_EVERY` segundos preso (worker em baixo)
+    — uma falha prolongada nunca fica muda para sempre."""
+    from app.execution.clock import ManualClock
+    db, provider, broker, market, eng, tmp = setup_real(ask=4395.0, bid=4394.9)
+    eng.clock = ManualClock(epoch=1750000000.0)
+    eng.PENDING_DELETE_ESCALATE_AFTER = 3
+    eng.PENDING_DELETE_REALERT_EVERY = 5.0
+    try:
+        sig = make_signal(entry=4385.0, stop_loss=4381.0,
+                          take_profit_1=4389.0, take_profit_2=4395.0)
+        trade = eng.open_trade(
+            sig, risk_pct=1.0, balance=10_000,
+            execution_meta={"entry_style": "pending",
+                            "market_price": 4395.0},
+        )
+        broker.order_delete = lambda ticket: (_ for _ in ()).throw(
+            RuntimeError("worker offline (order_delete)"))
+        eng.clock.advance(120.0)
+        def stuck_events():
+            evs = eng.update(now=eng.clock.iso(), entry_order_ttl=60)
+            return [e for e in evs if e["type"] == "pending_delete_stuck"]
+        # 1º alerta só ao fim de ESCALATE_AFTER falhas (uma por perna)
+        assert stuck_events() == []
+        assert stuck_events() == []
+        assert len(stuck_events()) == 2  # n=3 → episódio escalonado
+        # perto do intervalo → sem repetição
+        assert stuck_events() == []
+        # passou REALERT_EVERY → re-alerta uma vez (e volta a esperar)
+        eng.clock.advance(5.0)
+        assert len(stuck_events()) == 2
+        assert stuck_events() == []
+    finally:
+        cleanup(db, tmp)
+
+
+def test_pending_cancel_delete_recovers_without_waiting_ttl():
+    """Auto-recover: um cancelamento de gestão falhado (worker offline)
+    fica com intenção de delete; assim que o worker volta, o tick completa o
+    cancelamento no MESMO tick — sem esperar o TTL."""
+    db, provider, broker, market, eng, tmp = setup_real(ask=4395.0, bid=4394.9)
+    try:
+        sig = make_signal(entry=4385.0, stop_loss=4381.0,
+                          take_profit_1=4389.0, take_profit_2=4395.0)
+        trade = eng.open_trade(
+            sig, risk_pct=1.0, balance=10_000,
+            execution_meta={"entry_style": "pending",
+                            "market_price": 4395.0},
+        )
+        orig_delete = broker.order_delete
+        broker.order_delete = lambda ticket: (_ for _ in ()).throw(
+            RuntimeError("worker offline (order_delete)"))
+        events = eng.close_trade_at_market(trade.id, reason="close_all")
+        assert events == []
+        positions = db.positions_for_trade(trade.id)
+        assert all(p.status == "pending_fill" for p in positions)
+        assert eng._pending_delete_intent
+        # o worker volta; um tick SEM TTL cancela as pernas logo
+        broker.order_delete = orig_delete
+        evs = eng.update(now="2026-08-18T10:00:10+00:00")
+        positions = db.positions_for_trade(trade.id)
+        assert all(p.status == "closed" and p.exit_reason == "close_all"
+                   for p in positions)
+        assert len([e for e in evs if e["type"] == "close"]) == 2
+        assert any(e["type"] == "trade_closed" for e in evs)
+        assert len(broker.deleted_orders) == 2
+        assert eng._pending_delete_intent == {}
+        assert eng.stuck_pending_legs() == []
+    finally:
+        cleanup(db, tmp)
+
+
+def test_stuck_pending_legs_exposes_retry_state():
+    """`stuck_pending_legs()` expõe (read-only) as pernas em retry de delete
+    com tentativas/escalonada/ticket — para o /api/diagnostics; esvazia
+    quando o delete volta a funcionar."""
+    from app.execution.clock import ManualClock
+    db, provider, broker, market, eng, tmp = setup_real(ask=4395.0, bid=4394.9)
+    eng.clock = ManualClock(epoch=1750000000.0)
+    eng.PENDING_DELETE_ESCALATE_AFTER = 3
+    try:
+        sig = make_signal(entry=4385.0, stop_loss=4381.0,
+                          take_profit_1=4389.0, take_profit_2=4395.0)
+        trade = eng.open_trade(
+            sig, risk_pct=1.0, balance=10_000,
+            execution_meta={"entry_style": "pending",
+                            "market_price": 4395.0},
+        )
+        orig_delete = broker.order_delete
+        broker.order_delete = lambda ticket: (_ for _ in ()).throw(
+            RuntimeError("worker offline (order_delete)"))
+        eng.clock.advance(120.0)
+        for _ in range(2):
+            eng.clock.advance(1.0)
+            eng.update(now=eng.clock.iso(), entry_order_ttl=60)
+        legs = eng.stuck_pending_legs()
+        assert len(legs) == 2
+        assert all(l["attempts"] == 2 and not l["escalated"]
+                   and l["ticket"] and l["symbol"] == "XAUUSD"
+                   and l["leg"] in (1, 2) for l in legs)
+        eng.clock.advance(1.0)
+        eng.update(now=eng.clock.iso(), entry_order_ttl=60)
+        legs = eng.stuck_pending_legs()
+        assert all(l["escalated"] for l in legs)
+        # recupera → nada preso
+        broker.order_delete = orig_delete
+        eng.clock.advance(1.0)
+        eng.update(now=eng.clock.iso(), entry_order_ttl=60)
+        assert eng.stuck_pending_legs() == []
+    finally:
+        cleanup(db, tmp)
+
+
+def test_cancel_pending_delete_failure_keeps_position_pending():
+    """close_all com o worker em baixo: o delete da ordem pendente falha →
+    a perna NÃO fecha na BD nem emite evento de fecho; a próxima tentativa
+    cancela (ordem nunca fica órfã no MT5)."""
+    db, provider, broker, market, eng, tmp = setup_real(ask=4395.0, bid=4394.9)
+    try:
+        sig = make_signal(entry=4385.0, stop_loss=4381.0,
+                          take_profit_1=4389.0, take_profit_2=4395.0)
+        trade = eng.open_trade(
+            sig, risk_pct=1.0, balance=10_000,
+            execution_meta={"entry_style": "pending",
+                            "market_price": 4395.0},
+        )
+        orig_delete = broker.order_delete
+        broker.order_delete = lambda ticket: (_ for _ in ()).throw(
+            RuntimeError("worker offline (order_delete)"))
+        events = eng.close_trade_at_market(trade.id, reason="close_all")
+        positions = db.positions_for_trade(trade.id)
+        assert all(p.status == "pending_fill" for p in positions)
+        assert events == []
+        assert broker.deleted_orders == []
+        assert db.exception_rows()
+        broker.order_delete = orig_delete
+        events = eng.close_trade_at_market(trade.id, reason="close_all")
+        positions = db.positions_for_trade(trade.id)
+        assert all(p.status == "closed" and p.exit_reason == "close_all"
+                   for p in positions)
+        assert len(broker.deleted_orders) == 2
+        assert any(ev["type"] == "trade_closed" for ev in events)
+    finally:
+        cleanup(db, tmp)
+
+
+def test_pending_delete_state_survives_restart():
+    """O estado do watchdog (tentativas/escalonada/intenção/alertas) é
+    PERSISTIDO na BD: um novo motor (restart do servidor) restaura o
+    Diagnóstico e o re-alerta continua onde ficou — o 1º retry pós-reboot de
+    uma perna já escalonada volta a alertar, e a intenção de delete
+    sobrevive (a gestão falhada completa-se com a razão original)."""
+    from app.execution.clock import ManualClock
+    db, provider, broker, market, eng, tmp = setup_real(ask=4395.0, bid=4394.9)
+    eng.clock = ManualClock(epoch=1750000000.0)
+    eng.PENDING_DELETE_ESCALATE_AFTER = 3
+    try:
+        sig = make_signal(entry=4385.0, stop_loss=4381.0,
+                          take_profit_1=4389.0, take_profit_2=4395.0)
+        trade = eng.open_trade(
+            sig, risk_pct=1.0, balance=10_000,
+            execution_meta={"entry_style": "pending",
+                            "market_price": 4395.0},
+        )
+        broker.order_delete = lambda ticket: (_ for _ in ()).throw(
+            RuntimeError("worker offline (order_delete)"))
+        eng.clock.advance(120.0)
+        for _ in range(4):  # escala (n=3) + 1 falha extra (n=4, já alertou)
+            eng.clock.advance(1.0)
+            eng.update(now=eng.clock.iso(), entry_order_ttl=60)
+        assert all(l["escalated"] for l in eng.stuck_pending_legs())
+        assert db.load_pending_delete_states("main")  # persistido durante o episódio
+
+        # ---- restart: motor novo sobre a mesma BD (mesmo broker fake) ----
+        eng2 = MT5Engine(db, provider, market, dry_run=False,
+                         clock=ManualClock(epoch=1750000000.0))
+        eng2.PENDING_DELETE_ESCALATE_AFTER = 3
+        try:
+            legs = eng2.stuck_pending_legs()
+            assert len(legs) == 2
+            assert all(l["attempts"] == 4 and l["escalated"]
+                       and l["position_id"] and l["ticket"] for l in legs)
+            # intenção TTL restaurada — o update re-tenta logo (sem TTL)
+            assert all(v["kind"] == "ttl"
+                       for v in eng2._pending_delete_intent.values())
+            # já estava escalonada → o 1º retry pós-reboot re-alerta
+            eng2.clock.advance(1.0)
+            evs = eng2.update(now=eng2.clock.iso())  # sem entry_order_ttl
+            stuck = [e for e in evs if e["type"] == "pending_delete_stuck"]
+            assert len(stuck) == 2
+            assert all(e["attempts"] == 5 for e in stuck)
+            # worker volta → o tick completa os deletes (intenção restaurada)
+            broker.order_delete = lambda ticket: True
+            eng2.clock.advance(1.0)
+            eng2.update(now=eng2.clock.iso())
+            positions = db.positions_for_trade(trade.id)
+            assert all(p.status == "closed" and p.exit_reason == "pending_expired"
+                       for p in positions)
+            assert eng2.stuck_pending_legs() == []
+            assert db.load_pending_delete_states("main") == {}  # sem órfãs
+        finally:
+            eng2.db.close()
+    finally:
+        cleanup(db, tmp)
+
+
+def test_pending_delete_exception_recorded_once_per_episode():
+    """Rate-limit: enquanto a perna fica presa, o delete falha a cada tick —
+    mas só a PRIMEIRA falha do episódio grava `operational_exceptions` (uma
+    exceção concisa por perna, não centenas de linhas idênticas)."""
+    from app.execution.clock import ManualClock
+    db, provider, broker, market, eng, tmp = setup_real(ask=4395.0, bid=4394.9)
+    eng.clock = ManualClock(epoch=1750000000.0)
+    eng.PENDING_DELETE_ESCALATE_AFTER = 3
+    try:
+        sig = make_signal(entry=4385.0, stop_loss=4381.0,
+                          take_profit_1=4389.0, take_profit_2=4395.0)
+        trade = eng.open_trade(
+            sig, risk_pct=1.0, balance=10_000,
+            execution_meta={"entry_style": "pending",
+                            "market_price": 4395.0},
+        )
+        orig_delete = broker.order_delete
+        broker.order_delete = lambda ticket: (_ for _ in ()).throw(
+            RuntimeError("worker offline (order_delete)"))
+        eng.clock.advance(120.0)
+        for _ in range(12):  # 12 falhas × 2 pernas (TTL + intenção)
+            eng.clock.advance(1.0)
+            eng.update(now=eng.clock.iso(), entry_order_ttl=60)
+        assert all(p.status == "pending_fill"
+                   for p in db.positions_for_trade(trade.id))
+        rows = [r for r in db.exception_rows()
+                if (r.get("context") or {}).get("phase") == "order_delete"]
+        assert len(rows) == 2  # uma por perna, não 24
+        assert all((r.get("context") or {}).get("episode") for r in rows)
+        assert all(r["message"] for r in rows)
+        # recupera e volta a falhar → episódio NOVO volta a gravar (uma vez)
+        broker.order_delete = orig_delete
+        eng.clock.advance(1.0)
+        eng.update(now=eng.clock.iso())  # intenção restaurada → cancela logo
+        assert all(p.status == "closed" for p in db.positions_for_trade(trade.id))
+        trade2 = eng.open_trade(
+            make_signal(entry=4385.0, stop_loss=4381.0,
+                        take_profit_1=4389.0, take_profit_2=4395.0),
+            risk_pct=1.0, balance=10_000,
+            execution_meta={"entry_style": "pending",
+                            "market_price": 4395.0},
+        )
+        broker.order_delete = lambda ticket: (_ for _ in ()).throw(
+            RuntimeError("worker offline again"))
+        eng.clock.advance(120.0)
+        for _ in range(3):
+            eng.clock.advance(1.0)
+            eng.update(now=eng.clock.iso(), entry_order_ttl=60)
+        rows2 = [r for r in db.exception_rows()
+                 if (r.get("context") or {}).get("phase") == "order_delete"]
+        assert len(rows2) == 4  # 2 do episódio 1 + 2 do novo episódio
+        assert len(db.positions_for_trade(trade2.id)) == 2
+    finally:
+        cleanup(db, tmp)
+
+
+def test_pending_delete_stuck_journal_full_context():
+    """Journal: `pending_delete_stuck` entra na fita com o contexto COMPLETO
+    da perna (leg/ticket/position/lane/tentativas/intenção/timestamps) — o
+    replay reproduz uma falha prolongada do worker de forma determinística:
+    as marcas de escalada/re-alerta + os `pending_order_result` falhados."""
+    from app.execution.clock import ManualClock
+    db, provider, broker, market, eng, tmp = setup_real(ask=4395.0, bid=4394.9)
+    eng.clock = ManualClock(epoch=1750000000.0)
+    eng.PENDING_DELETE_ESCALATE_AFTER = 3
+    eng.PENDING_DELETE_REALERT_EVERY = 5.0
+    db.set_config("execution_journal_enabled", "true")
+    try:
+        sig = make_signal(entry=4385.0, stop_loss=4381.0,
+                          take_profit_1=4389.0, take_profit_2=4395.0)
+        trade = eng.open_trade(
+            sig, risk_pct=1.0, balance=10_000,
+            execution_meta={"entry_style": "pending",
+                            "market_price": 4395.0},
+        )
+        broker.order_delete = lambda ticket: (_ for _ in ()).throw(
+            RuntimeError("worker offline (order_delete)"))
+        eng.clock.advance(120.0)
+        for _ in range(3):
+            eng.clock.advance(1.0)
+            eng.update(now=eng.clock.iso(), entry_order_ttl=60)
+        stuck = db.execution_events(kind="pending_delete_stuck")
+        assert len(stuck) == 2  # uma por perna
+        for ev in stuck:
+            p = ev["payload"]
+            assert p["leg"] in (1, 2) and p["ticket"] and p["position_id"]
+            assert p["lane"] == "main" and p["attempts"] == 3
+            assert p["intent_kind"] == "ttl" and p["escalated"] is True
+            assert p["re_alert"] is False and p["escalated_at"]
+            assert p["last_alert_utc"] and p["opened_at"]
+        # re-alerta (passou REALERT_EVERY) → segunda marca por perna
+        eng.clock.advance(5.0)
+        eng.update(now=eng.clock.iso(), entry_order_ttl=60)
+        stuck = db.execution_events(kind="pending_delete_stuck")
+        assert len(stuck) == 4
+        assert all(e["payload"]["re_alert"] is True for e in stuck[2:])
+        # as falhas de delete também estão na fita (cadência do retry)
+        fails = [f for f in db.execution_events(kind="pending_order_result")
+                 if f["payload"].get("action") == "delete"]
+        assert len(fails) >= 8
+        assert all(f["payload"]["accepted"] is False for f in fails)
+    finally:
+        cleanup(db, tmp)
+
+
+def test_close_all_cancels_pending_orders():
+    """Fase 1: close_all cancela as pernas pendentes (order_delete) sem P&L."""
+    db, provider, broker, market, eng, tmp = setup_real(ask=4395.0, bid=4394.9)
+    try:
+        sig = make_signal(entry=4385.0, stop_loss=4381.0,
+                          take_profit_1=4389.0, take_profit_2=4395.0)
+        trade = eng.open_trade(
+            sig, risk_pct=1.0, balance=10_000,
+            execution_meta={"entry_style": "pending",
+                            "market_price": 4395.0},
+        )
+        events = eng.close_trade_at_market(trade.id, reason="close_all")
+        positions = db.positions_for_trade(trade.id)
+        assert all(p.status == "closed" and p.exit_reason == "close_all"
+                   for p in positions)
+        assert all(p.pnl == 0.0 for p in positions)
+        assert len(broker.deleted_orders) == 2
+        assert any(ev["type"] == "trade_closed" for ev in events)
+    finally:
+        cleanup(db, tmp)
+
+
+# ------------------------------------------------- group SL move (kind=group)
+
+
+def test_move_leg_sl_group_clamps_and_retries_when_valid():
+    """Grupo pede "move SL above best entries": um nível demasiado perto do
+    preço (broker recusava com 10016 e o SL ficava no original — incidente
+    07/09, a perna rodou até ao SL completo) agora é CLAMPED por `_valid_sl`
+    e, se o clamped não melhorar, o alvo original fica em fila e o tick
+    re-tenta até o nível ficar válido. O SL só fica applied com 10009."""
+    db, provider, broker, market, eng, tmp = setup_real(
+        ask=4385.0, bid=4384.9, enforce_stops_level=50)
+    try:
+        sig = make_signal(entry=4385.0, stop_loss=4381.0,
+                          take_profit_1=4389.0, take_profit_2=4395.0)
+        trade = eng.open_trade(sig, risk_pct=1.0, balance=10_000)
+        assert trade.status == "open"
+        legs = sorted(db.positions_for_trade(trade.id), key=lambda x: x.leg)
+        pos2 = legs[1]
+
+        # o grupo pede SL = 4390 (acima da entrada = lock de lucro) mas o
+        # preço está em 4385 → com stops_level=50 pips (0.50) o nível 4390
+        # está a 5.10 do preço, BEM dentro da zona proibida → clamped para
+        # tick - 0.50 = 4384.5; como 4384.5 < SL atual 4381? NÃO: 4384.5
+        # melhora (buy), então o clamped é aplicado a sério no broker.
+        got = eng.move_leg_sl(trade.id, 2, 4390.0)
+        bp2 = next(x for x in broker._positions
+                   if x.ticket == eng._ticket_for(pos2.id))
+        if got is not None:
+            # clamped aceito: BD e broker ficam com o nível válido
+            assert got == 4384.5
+            assert [p for p in db.positions_for_trade(trade.id) if p.leg == 2][0].stop_loss == 4384.5
+            assert bp2.sl == 4384.5
+        else:
+            # clamped não melhorou → nada aplicado, alvo EM FILA
+            assert [p for p in db.positions_for_trade(trade.id) if p.leg == 2][0].stop_loss == 4381.0
+            assert bp2.sl == 4381.0
+
+        # ---- preço sobe para 4391: o alvo 4390 fica válido → o retry do
+        # tick aplica o nível pedido pelo grupo -------------------------
+        broker.ask = 4391.0
+        broker.bid = 4390.9
+        provider._fake_ticks["XAUUSD"] = 4390.95
+        eng.update(now="2026-09-07T12:00:00+00:00")
+
+        pos2 = [p for p in db.positions_for_trade(trade.id) if p.leg == 2][0]
+        assert pos2.stop_loss == 4390.0, \
+            f"retry devia aplicar o alvo do grupo: {pos2.stop_loss}"
+        bp2 = next(x for x in broker._positions
+                   if x.ticket == eng._ticket_for(pos2.id))
+        assert bp2.sl == 4390.0, "broker também com o SL do grupo"
+        # a fila ficou limpa depois do sucesso
+        assert db.load_pending_sl_moves("main") == {}
+    finally:
+        cleanup(db, tmp)
+
+
+def test_move_leg_sl_refusal_stages_retry_and_clears_orphans():
+    """Modify recusado (10016 com clamped que NÃO melhora) fica em fila
+    persistida; perna fechada / trade encerrada limpa a fila (órfãs)."""
+    db, provider, broker, market, eng, tmp = setup_real(
+        ask=4385.0, bid=4384.9, enforce_stops_level=10000)
+    try:
+        sig = make_signal(entry=4385.0, stop_loss=4381.0,
+                          take_profit_1=4389.0, take_profit_2=4395.0)
+        trade = eng.open_trade(sig, risk_pct=1.0, balance=10_000)
+        legs = sorted(db.positions_for_trade(trade.id), key=lambda x: x.leg)
+        pos2 = legs[1]
+
+        # stops_level enorme → qualquer clamped fica pior que o SL atual
+        # (tick - 100.0 = 4284.9 < 4381) → move_leg_sl devolve None e o
+        # ALVO fica em fila (nunca aplicado sem confirmação do broker)
+        got = eng.move_leg_sl(trade.id, 2, 4390.0)
+        assert got is None
+        assert [p for p in db.positions_for_trade(trade.id) if p.leg == 2][0].stop_loss == 4381.0
+        staged = db.load_pending_sl_moves("main")
+        assert pos2.id in staged, "alvo recusado fica em fila persistida"
+        assert staged[pos2.id]["target_sl"] == 4390.0
+        assert staged[pos2.id]["reason"] == "refused"
+
+        # o retry NÃO aplica enquanto o nível continuar inválido
+        evs = eng.update(now="2026-09-07T12:00:00+00:00")
+        assert [p for p in db.positions_for_trade(trade.id) if p.leg == 2][0].stop_loss == 4381.0
+        assert db.load_pending_sl_moves("main")
+
+        # perna fechada → intenção órfã é limpa no próximo tick
+        ticket = eng._ticket_for(pos2.id)
+        broker.simulate_close(ticket, 4384.0)
+        provider._fake_ticks["XAUUSD"] = 4384.0
+        eng.update(now="2026-09-07T12:01:00+00:00")
+        assert db.load_pending_sl_moves("main") == {}, \
+            "fecho da perna limpa a intenção em fila"
+    finally:
+        cleanup(db, tmp)
+
+
+def test_move_leg_sl_dry_run_and_no_regression_on_normal_level():
+    """Dry-run continua a aplicar na BD (sem broker) e um nível normal
+    (longe do preço) continua a ser aceite de primeira, como antes."""
+    db, provider, market, eng, tmp = setup(price=4385.0)
+    try:
+        sig = make_signal(entry=4385.0, stop_loss=4381.0,
+                          take_profit_1=4389.0, take_profit_2=4395.0)
+        trade = eng.open_trade(sig, risk_pct=1.0, balance=10_000)
+        pos2 = [p for p in db.positions_for_trade(trade.id) if p.leg == 2][0]
+        got = eng.move_leg_sl(trade.id, 2, 4390.0)
+        assert got == 4390.0
+        assert [p for p in db.positions_for_trade(trade.id) if p.leg == 2][0].stop_loss == 4390.0
+    finally:
+        cleanup(db, tmp)
+
+    # modo real, nível válido de primeira → aceite sem fila
+    db, provider, broker, market, eng, tmp = setup_real(ask=4391.0, bid=4390.9)
+    try:
+        sig = make_signal(entry=4385.0, stop_loss=4381.0,
+                          take_profit_1=4389.0, take_profit_2=4395.0)
+        trade = eng.open_trade(sig, risk_pct=1.0, balance=10_000)
+        pos2 = [p for p in db.positions_for_trade(trade.id) if p.leg == 2][0]
+        got = eng.move_leg_sl(trade.id, 2, 4390.0)
+        assert got == 4390.0, "nível válido aceita sem clamp nem fila"
+        assert [p for p in db.positions_for_trade(trade.id) if p.leg == 2][0].stop_loss == 4390.0
+        assert db.load_pending_sl_moves("main") == {}
+    finally:
+        cleanup(db, tmp)
+
+
+def test_tp1_breakeven_plus_buffer_dry_run():
+    """BE+ (tp2_protect): com `be_buffer_pips` no auto, o SL da perna 2 vai
+    para entrada+buffer (não entrada seca) depois do TP1 — e o TP2 fecha."""
+    db, provider, market, eng, tmp = setup()
+    try:
+        sig = make_signal()
+        trade = eng.open_trade(sig, risk_pct=1.0, balance=10_000,
+                               auto={"be_buffer_pips": 40.0})
+        provider._fake_ticks["XAUUSD"] = 4389.0  # TP1
+        eng.update(auto={"be_buffer_pips": 40.0})
+        p2 = [p for p in db.positions_for_trade(trade.id) if p.leg == 2][0]
+        assert p2.status == "open"
+        assert p2.stop_loss == pytest.approx(4385.4)  # 4385 + 40 pips × 0.01
+        # reversão → perna 2 fecha no BE+ (pequeno lucro, nunca prejuízo)
+        provider._fake_ticks["XAUUSD"] = 4385.3
+        eng.update(auto={"be_buffer_pips": 40.0})
+        p2 = [p for p in db.positions_for_trade(trade.id) if p.leg == 2][0]
+        assert p2.status == "closed"
+        # SL acima da entrada = "trail" (saída protegida, classificação do
+        # sl_exit_reason — é exatamente o que o BE+ pretende: lucro pequeno)
+        assert p2.exit_reason == "trail"
+        assert p2.pnl > 0
+    finally:
+        cleanup(db, tmp)
+
+
+def test_tp1_breakeven_anchor_on_leg_fill():
+    """Âncora por perna: perna 2 com fill ADVERSÁRIO (num buy, ACIMA da
+    entrada do sinal — incidente real t-07e968709234: fill 4279.26 vs
+    entrada 4276.5 perdeu 8,29 € com o "BE" abaixo do fill) tem o BE+
+    ancorado ao fill — o SL fica acima do fill, nunca abaixo."""
+    db, provider, market, eng, tmp = setup()
+    try:
+        sig = make_signal()
+        trade = eng.open_trade(sig, risk_pct=1.0, balance=10_000,
+                               auto={"be_buffer_pips": 40.0})
+        p2 = [p for p in db.positions_for_trade(trade.id) if p.leg == 2][0]
+        # slippage adversário: leg 2 fill 0,6 ACIMA da entrada (4385 → 4385.6)
+        db.update_position_entry(p2.id, 4385.6)
+        provider._fake_ticks["XAUUSD"] = 4389.0  # TP1
+        eng.update(auto={"be_buffer_pips": 40.0})
+        p2 = [p for p in db.positions_for_trade(trade.id) if p.leg == 2][0]
+        assert p2.status == "open"
+        # âncora = pior custo(4385, 4385.6) = 4385.6 → SL = 4385.6 + 0.4 = 4386.0
+        # (ANTES da correção seria 4385.4 — ABAIXO do fill, a perder)
+        assert p2.stop_loss == pytest.approx(4386.0)
+        # reversão → perna 2 fecha ACIMA do próprio fill (sem perda)
+        provider._fake_ticks["XAUUSD"] = 4385.95
+        eng.update(auto={"be_buffer_pips": 40.0})
+        p2 = [p for p in db.positions_for_trade(trade.id) if p.leg == 2][0]
+        assert p2.status == "closed"
+        assert p2.pnl > 0  # lucro pequeno garantido, nunca prejuízo
+    finally:
+        cleanup(db, tmp)
+
+
+def test_tp1_breakeven_anchor_better_fill_keeps_signal_entry():
+    """Fill MELHOR que a entrada do sinal (num buy, abaixo — comprou mais
+    barato): o âncora mantém-se na entrada do sinal (piores-caso), sem
+    apertar o stop mais do que o BE+ de 40 pips — preserva o clássico."""
+    db, provider, market, eng, tmp = setup()
+    try:
+        sig = make_signal()
+        trade = eng.open_trade(sig, risk_pct=1.0, balance=10_000,
+                               auto={"be_buffer_pips": 40.0})
+        p2 = [p for p in db.positions_for_trade(trade.id) if p.leg == 2][0]
+        db.update_position_entry(p2.id, 4383.8)  # fill melhor que 4385
+        provider._fake_ticks["XAUUSD"] = 4389.0  # TP1
+        eng.update(auto={"be_buffer_pips": 40.0})
+        p2 = [p for p in db.positions_for_trade(trade.id) if p.leg == 2][0]
+        assert p2.status == "open"
+        # âncora = pior custo(4385, 4383.8) = 4385 → SL = 4385.4 (como sempre)
+        assert p2.stop_loss == pytest.approx(4385.4)
+    finally:
+        cleanup(db, tmp)
+
+
+def test_tp1_breakeven_buffer_capped_at_tp1():
+    """Buffer maior que a distância ao TP1 fica limitado — o SL nunca
+    cruza o TP1 (o TP2 continua a fechar tudo mais acima)."""
+    db, provider, market, eng, tmp = setup()
+    try:
+        sig = make_signal(entry=4385.0, stop_loss=4381.0,
+                          take_profit_1=4385.5, take_profit_2=4395.0)
+        trade = eng.open_trade(sig, risk_pct=1.0, balance=10_000,
+                               auto={"be_buffer_pips": 400.0})
+        provider._fake_ticks["XAUUSD"] = 4385.5  # TP1
+        eng.update(auto={"be_buffer_pips": 400.0})
+        p2 = [p for p in db.positions_for_trade(trade.id) if p.leg == 2][0]
+        assert p2.status == "open"
+        # room = 0.5 - 0.01 = 0.49 → 4385.49 < TP1 4385.5
+        assert p2.stop_loss == pytest.approx(4385.49)
+    finally:
+        cleanup(db, tmp)
+
+
+# ------------------------------------------- regressões do dia 15/09 -----
+
+
+def test_group_be_plus_market_clamped_above_bid():
+    """REGRESSÃO 15/09 11:49 (−13,93 €/−38,58 €): 'Trade is risk free now'
+    com entrada 4285, bid 4285.42 e buffer 0.5 → o alvo 4285.5 ficava ACIMA
+    do bid, o broker recusou 280 modifies com 10016 durante 9 min e a perna
+    morreu no SL original. O clamp de mercado força o alvo para o lado
+    válido do preço (bid − 1 pip num buy) EM VEZ de enviar o modify proibido.
+    """
+    logs = []
+    db, provider, broker, market, eng, tmp = setup_real(
+        ask=4285.44, bid=4285.42, logs=logs)
+    try:
+        sig = make_signal(entry=4285.0, stop_loss=4280.0,
+                          take_profit_1=4290.0, take_profit_2=4295.0)
+        trade = eng.open_trade(sig, risk_pct=1.0, balance=10_000)
+        p2 = [p for p in db.positions_for_trade(trade.id) if p.leg == 2][0]
+        # pedido de gestão: SL → BE+ (entrada 4285 + buffer 0.5 = 4285.5,
+        # acima do bid 4285.42 — exatamente o caso real)
+        level = eng.move_leg_sl(trade.id, 2, 4285.5)
+        assert level is not None, "BE+ tem de aplicar clampado ao mercado"
+        assert level <= 4285.42, f"alvo clampado ao lado do preço: {level}"
+        p2 = [p for p in db.positions_for_trade(trade.id) if p.leg == 2][0]
+        assert p2.stop_loss == level
+        bp = next(x for x in broker._positions
+                  if x.ticket == eng._ticket_for(p2.id))
+        assert bp.sl == level
+        # nenhum modify com o nível proibido chegou ao broker
+        assert all(float(o.get("sl", 0) or 0) <= 4285.42
+                   for o in broker.orders if o.get("action") == 6)
+    finally:
+        db.close()
+        os.remove(tmp)
+
+
+def test_group_be_plus_accepted_when_below_bid():
+    """Caso controlado: alvo de proteção abaixo do bid é aceite como antes —
+    o clamp nunca bloqueia um BE+ legítimo."""
+    db, provider, broker, market, eng, tmp = setup_real(
+        ask=4285.44, bid=4285.42)
+    try:
+        sig = make_signal(entry=4285.0, stop_loss=4280.0,
+                          take_profit_1=4290.0, take_profit_2=4295.0)
+        trade = eng.open_trade(sig, risk_pct=1.0, balance=10_000)
+        p2 = [p for p in db.positions_for_trade(trade.id) if p.leg == 2][0]
+        # alvo abaixo do preço (preço subiu): aplica-se tal como está
+        level = eng.move_leg_sl(trade.id, 2, 4284.5)
+        assert level == 4284.5
+        p2 = [p for p in db.positions_for_trade(trade.id) if p.leg == 2][0]
+        assert p2.stop_loss == 4284.5
+    finally:
+        db.close()
+        os.remove(tmp)
+
+
+def test_autonomous_be_on_tp1_touch_real_mode():
+    """REGRESSÃO 15/09 15:37 (BE a demorar '1 minuto e pouco'): no modo real
+    o preço TOCAR o TP1 move o SL das restantes para BE+ no próprio tick —
+    sem esperar pelo fill server-side do TP nem pelo 'TP1 Hit' do grupo.
+    """
+    db, provider, broker, market, eng, tmp = setup_real()
+    try:
+        sig = make_signal(entry=4385.0, stop_loss=4381.0,
+                          take_profit_1=4389.0, take_profit_2=4395.0)
+        auto = {"be_buffer_pips": 40.0}
+        trade = eng.open_trade(sig, risk_pct=1.0, balance=10_000)
+        # preço toca o TP1, perna 1 AINDA ABERTA no broker (TP server-side)
+        provider._fake_ticks["XAUUSD"] = 4389.0
+        eng.update(now="2026-08-18T10:00:00+00:00", auto=auto)
+        by_leg = {p.leg: p for p in db.positions_for_trade(trade.id)}
+        assert by_leg[1].status == "open", "perna 1 ainda no broker"
+        # perna 2 já protegida em BE+ (4385 + 40 pips × 0.01)
+        assert by_leg[2].stop_loss == pytest.approx(4385.4)
+        # e o SL também no broker
+        bp = next(x for x in broker._positions
+                  if x.ticket == eng._ticket_for(by_leg[2].id))
+        assert bp.sl == pytest.approx(4385.4)
+        # idempotente: tick seguinte não rebenta nem muda o nível
+        eng.update(now="2026-08-18T10:00:01+00:00", auto=auto)
+        by_leg = {p.leg: p for p in db.positions_for_trade(trade.id)}
+        assert by_leg[2].stop_loss == pytest.approx(4385.4)
+    finally:
+        db.close()
+        os.remove(tmp)
+
+
+def test_autonomous_be_requires_be_buffer():
+    """Sem `be_buffer_pips` na estratégia (ex.: nova_gestao sem BE+), o BE
+    autónomo fica inerte — o comportamento das restantes estratégias não
+    muda."""
+    db, provider, broker, market, eng, tmp = setup_real()
+    try:
+        sig = make_signal(entry=4385.0, stop_loss=4381.0,
+                          take_profit_1=4389.0, take_profit_2=4395.0)
+        trade = eng.open_trade(sig, risk_pct=1.0, balance=10_000)
+        provider._fake_ticks["XAUUSD"] = 4389.0
+        eng.update(now="2026-08-18T10:00:00+00:00", auto=None)
+        p2 = [p for p in db.positions_for_trade(trade.id) if p.leg == 2][0]
+        assert p2.stop_loss == 4381.0, "SL original intacto"
     finally:
         db.close()
         os.remove(tmp)

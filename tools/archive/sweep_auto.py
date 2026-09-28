@@ -33,7 +33,7 @@ from app.execution.feed import YahooProvider
 from app.messages.manage import classify
 from app.strategies import STRATEGIES, get_strategy
 
-AUTO_IDS = ["auto_2", "auto_3", "auto_5", "auto_escada_3", "auto_escada_5"]
+AUTO_IDS = ["auto_3", "auto_5", "auto_escada_3", "auto_escada_5"]
 OLD_SINCE, OLD_UNTIL = "2026-04-01", "2026-07-28"
 # data da 1ª mensagem do formato atual (usada no compare da dashboard)
 CURRENT_SINCE = "2026-07-28"

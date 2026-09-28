@@ -97,6 +97,14 @@ _ENTRY_ZONE_INLINE = re.compile(
     rf"[^\n]*?({_NUM})\s*[-–—]\s*({_NUM})\b",
     re.IGNORECASE,
 )
+# Golden Circle format: a single entry price right after the symbol, with no
+# label and no zone — "I'm buying XAUUSD  4331  TP1 4336 TP2 4341 SL 4325".
+# Only known symbols count (a bare "BUYING 4" can never become an entry) and
+# a trailing dash means it is a zone, which the zone patterns above handle.
+_ENTRY_SYMBOL = re.compile(
+    rf"\b({'|'.join(_KNOWN_SYMBOLS)})\s*[:=]?\s*({_NUM})\b(?!\s*[-–—]\s*\d)",
+    re.IGNORECASE,
+)
 # The oldest Golden Moves format listed targets WITHOUT per-target labels:
 # "Sell Gold Now 4123.5 - 4128.5  Targets  4121.5 4119.5 4117  Open  SL/ invalid 4131.5"
 # — the numbers after "Targets" are TP1/TP2/TP3 in order. Also handles the
@@ -108,7 +116,17 @@ _TARGETS_LIST = re.compile(
 
 
 class ParseError(Exception):
-    """Raised when a raw message cannot be turned into a valid signal."""
+    """Raised when a raw message cannot be turned into a valid signal.
+
+    ``signal`` carries the fields that were successfully extracted before a
+    required field failed. The edit-window pipeline uses those partial fields
+    (especially symbol, direction and entry zone) to audit and revive a later
+    Telegram edit without guessing missing values.
+    """
+
+    def __init__(self, message: str, signal: Optional[Signal] = None):
+        super().__init__(message)
+        self.signal = signal
 
 
 def _num(value: str) -> float:
@@ -207,17 +225,29 @@ def parse(raw_text: str, source: str = "telegram", signal_id: str = "", received
                 tp5 = _num(tgt.group(5))
     stop = _optional_float(_STOP.search(text))
     entry = _optional_float(_ENTRY.search(text))
-    if entry is None:
-        zone = _ENTRY_ZONE.search(text)
-        if not zone:
-            zone = _ENTRY_ZONE_INLINE.search(text)
-        if zone:
-            # inline format has the direction word in group(1); the zone in
-            # groups (2,3) — _ENTRY_ZONE keeps the zone in groups (1,2)
-            if zone.lastindex >= 3:
-                a, b = _num(zone.group(2)), _num(zone.group(3))
-            else:
-                a, b = _num(zone.group(1)), _num(zone.group(2))
+    entry_zone_low = None
+    entry_zone_high = None
+    zone = _ENTRY_ZONE.search(text)
+    if zone is None and entry is None:
+        zone = _ENTRY_ZONE_INLINE.search(text)
+    if zone is None and entry is None:
+        # Golden Circle single-entry format: "I'm buying XAUUSD  4331  TP1 …"
+        single = _ENTRY_SYMBOL.search(text)
+        if single:
+            entry = _num(single.group(2))
+    if zone:
+        # Preserve the zone even when required details are still missing. The
+        # first Telegram version may contain only direction + zone; keeping it
+        # on the failed/buffered row is required for a later edit/revive and
+        # for the entry guard audit.
+        # inline format has the direction word in group(1); the zone in
+        # groups (2,3) — _ENTRY_ZONE keeps the zone in groups (1,2)
+        if zone.lastindex >= 3:
+            a, b = _num(zone.group(2)), _num(zone.group(3))
+        else:
+            a, b = _num(zone.group(1)), _num(zone.group(2))
+        entry_zone_low, entry_zone_high = min(a, b), max(a, b)
+        if entry is None:
             entry = _pick_zone_entry(a, b, direction, tp1)
 
     if entry is None:
@@ -229,8 +259,14 @@ def parse(raw_text: str, source: str = "telegram", signal_id: str = "", received
     if tp2 is None:
         errors.append("TP2 não encontrado")
 
-    if errors:
-        raise ParseError("; ".join(errors))
+    # An isolated labelled entry ("@ 1.0850") is only a fragment of a
+    # Telegram message. Keep explicit zones for revive/entry-guard auditing,
+    # but do not expose a standalone price as an operational entry until the
+    # stop and target fields arrive. This prevents an incomplete row from
+    # looking executable while preserving the completed-edit path.
+    entry_value = entry
+    if errors and zone is None:
+        entry_value = None
 
     signal = Signal(
         id=signal_id,
@@ -238,7 +274,7 @@ def parse(raw_text: str, source: str = "telegram", signal_id: str = "", received
         raw_text=raw_text,
         symbol=symbol or "",
         direction=direction or "",
-        entry=entry or 0.0,
+        entry=entry_value or 0.0,
         stop_loss=stop or 0.0,
         take_profit_1=tp1 or 0.0,
         take_profit_2=tp2 or 0.0,
@@ -247,11 +283,16 @@ def parse(raw_text: str, source: str = "telegram", signal_id: str = "", received
         take_profit_5=tp5 or 0.0,
         status="pending",
         received_at=received_at,
+        entry_zone_low=entry_zone_low,
+        entry_zone_high=entry_zone_high,
     )
+
+    if errors:
+        raise ParseError("; ".join(errors), signal=signal)
 
     problem = validate_signal(signal)
     if problem:
-        raise ParseError(problem)
+        raise ParseError(problem, signal=signal)
     return signal
 
 
@@ -281,9 +322,12 @@ def validate_signal(signal) -> Optional[str]:
         return "TP deve ser superior à entrada (compra)"
     if direction == "sell" and any(tp >= entry for tp in tps):
         return "TP deve ser inferior à entrada (venda)"
-    if direction == "buy" and any(b <= a for a, b in zip(tps, tps[1:])):
+    # TPs iguais são permitidos: o grupo já enviou "TP1 4280 / TP2 4280" a
+    # sério (ambas as pernas saem ao mesmo nível — 15/09). Só rejeita TPs
+    # verdadeiramente fora de ordem (invertem a direção da entrada).
+    if direction == "buy" and any(b < a for a, b in zip(tps, tps[1:])):
         return "TPs fora de ordem (devem afastar-se da entrada progressivamente)"
-    if direction == "sell" and any(b >= a for a, b in zip(tps, tps[1:])):
+    if direction == "sell" and any(b > a for a, b in zip(tps, tps[1:])):
         return "TPs fora de ordem (devem afastar-se da entrada progressivamente)"
     distance = abs(tps[0] - entry)
     if distance > 0 and any(abs(tp - entry) > 20 * distance for tp in tps[1:]):
@@ -301,13 +345,14 @@ def parse_or_error(raw_text: str, source: str = "telegram", signal_id: str = "",
     try:
         return parse(raw_text, source=source, signal_id=signal_id, received_at=received_at)
     except ParseError as exc:
-        return Signal(
+        signal = exc.signal or Signal(
             id=signal_id, source=source, raw_text=raw_text, symbol="",
             direction="", entry=0.0, stop_loss=0.0, take_profit_1=0.0,
             take_profit_2=0.0, take_profit_3=0.0, take_profit_4=0.0,
             take_profit_5=0.0, status="pending", received_at=received_at,
-            error=str(exc),
         )
+        signal.error = str(exc)
+        return signal
 
 
 def _optional_float(match: Optional[re.Match]) -> Optional[float]:

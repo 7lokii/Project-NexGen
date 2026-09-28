@@ -2,11 +2,11 @@
 
 > **Objetivo deste documento**: ser a fonte ÚNICA para avaliar as estratégias
 > do bot, sem precisar de ler mais nenhum documento do projeto. Explica o
-> contexto (o que o bot faz), os conceitos (TP/SL/BE/PF/DD…), as **12
+> contexto (o que o bot faz), os conceitos (TP/SL/BE/PF/DD…), as **13
 > estratégias do registo central** (mecânica completa + resultados), como os números
 > foram obtidos (metodologia) e como julgar se uma estratégia é boa.
 >
-> Estado: **2026-08-19** · suite de testes indicada em `AGENTS.md` · conta
+> Estado: **2026-08-31** · suite de testes indicada em `AGENTS.md` · conta
 > **demo** (nunca dinheiro real).
 
 ---
@@ -14,10 +14,24 @@
 ## Parte I — Contexto (o que é o sistema)
 
 O Project NexGen é um **bot de copy-trading semi-automático**: lê sinais de
-um grupo de Telegram chamado **Golden Moves**, espera ~8 segundos (janela de
+um grupo de Telegram chamado **Golden Moves**, espera ~10 segundos (janela de
 edição — o grupo edita a mensagem para completar o sinal), e executa a trade
 numa conta **demo** do MetaTrader 5 com uma **estratégia de N pernas**
 (TP1..TP5 + SL + breakeven). Há uma dashboard web que mostra tudo ao vivo.
+
+### Evidência replayável por trade
+
+Quando o journal opt-in está ligado, o histórico de trades mostra `🔁 replay`.
+O botão exporta automaticamente uma fita completa da trade — sinal estruturado,
+quotes e gestão correlacionada por reply — e compara SimEngine, PaperRace e
+MT5 dry-run. O resultado inclui um snapshot depois de cada evento para localizar
+onde os motores divergem. É uma ferramenta de auditoria read-only; não muda a
+principal `nova_gestao`, o shadow-paper ou o kill switch. A página `/auditoria`
+também exporta o bundle diário em JSON/CSV e arquiva snapshots das janelas
+forward para envio e comparação posterior. O resumo diário inclui a qualidade
+do journal e o progresso de `auto_escada_3/5` no feed/Telegram. A UI deixa a
+promoção visível apenas como ação bloqueada até todos os gates objetivos
+(N≥20, PF, IC95%, DD e referência) passarem; o backend aplica a mesma defesa.
 
 **Formato de um sinal** (exemplo real do grupo):
 
@@ -45,6 +59,89 @@ abertas — **se a estratégia ativa honrar esse tipo de gestão** (ver Parte IV
 **Conta demo**: tudo o que está neste documento corre em dinheiro virtual
 (conta demo MT5). Nunca se promove a conta real sem decisão explícita do
 utilizador (SPEC v3, rascunho).
+
+**Shadow-paper (forward)**: a conta principal mantém-se separada da evidência
+forward. A configuração VPS observa agora `auto_escada_3` e `auto_escada_5`,
+com duas contas virtuais independentes em `origin="shadow"`; isto não altera
+a estratégia principal nem envia ordens ao MT5. Por defeito, sinais live completos alimentam a `auto_escada_3` e a
+`auto_escada_5`, cada uma numa conta paper marcada `origin="shadow"`, mesmo
+em Manual ou com kill switch;
+histórico e propostas `llm_parsed` ficam fora. A gestão do grupo e as correções
+TP1/SL são espelhadas sem consumir a fila de gestão real nem a entrega da
+corrida paper normal: `pending_management` mantém marcadores separados para
+`applied`, `paper_applied` e `shadow_applied`. A deduplicação inclui a origem
+e a conta virtual, o kill diário e as métricas do shadow não partilham saldo
+com a corrida normal. Isto não é Fase 3 e nunca envia ordens ao MT5.
+
+### Replay determinístico entre motores
+
+Para validar que a estratégia não ganha apenas por uma diferença acidental entre
+adapters, existe uma fita read-only com eventos `signal`, `quote` e `management`,
+complementados pela evidência `order_request`, `order_result`,
+`modify_request`, `modify_result`, `fill_open` e `fill_close` do MT5. O journal
+regista retcodes, tickets, preços, P&L e latência sinal→ordem→fill quando a
+execução os fornece. `POST /api/operations/replay` alimenta a mesma sequência
+ao SimEngine, à corrida PaperRace e ao MT5 dry-run, devolve por sinal decisões,
+SL aplicado, razão, P&L e `broker_observations`. As respostas do broker são
+passivas no estudo: não autorizam ordens nem sobrescrevem decisões simuladas.
+A ordem de eventos com o mesmo timestamp é definida por `sequence`. Isto é uma
+ferramenta de validação, não muda a principal `nova_gestao`, não liga o MT5
+real e não constitui evidência forward por si só.
+
+### Gate forward controlado das auto-escadas
+
+A página `/auditoria` e `GET /api/analysis/forward-gate` separam a evidência
+forward do P&L do backtest mensal. A janela padrão é UTC de 30 dias e usa
+somente trades fechadas de `origin="shadow"` para `auto_escada_3` e
+`auto_escada_5`; a `nova_gestao` de `origin="race"` é a referência por
+`signal_id`. Uma estratégia só fica `eligible` quando tem N≥20, PF≥1.5, o
+limite inferior do IC95% da média é positivo, DD≤125% do saldo inicial, há pelo
+menos 20 sinais comparáveis e o P&L não fica mais de 10% atrás da referência.
+O resultado é um gate descritivo com `promotion="manual_only"`: não muda a
+principal nem autoriza MT5.
+
+O painel principal **“Quanto falta para promover a auto_escada_3”** junta esse
+resultado com o ETA de ritmo (`fase3_eta`) e mostra explicitamente N/PF/IC95/DD
+e os gates em falta. `GET /api/window` devolve o mesmo bloco para auditoria.
+A janela operacional real do resumo diário decorre em UTC de 20/08/2026 até
+29/08/2026 00:00, com meta mínima 10 e alvo 20 trades; isto é observação, não
+é uma promoção automática.
+
+### Revisão de segunda-feira — 31/08/2026
+
+Foi repetida a bateria read-only depois da acumulação de novos sinais (sem
+alterar configuração, paper, shadow ou MT5). No recorte atual de 30 dias, a
+ablação encontrou `all` com PF **5,96** e +**€3.472,29**, contra PF **2,19** e
++**€833,90** sem gestão; a gestão aplicada ocorreu em 43 sinais. Isto é
+consistente com manter `nova_gestao` como principal, mas não é evidência para
+promover uma auto-escada.
+
+O sweep do `auto_escada_3` confirmou o filtro `confirm_filter`: PF atual
+**1,17** em ambos, enquanto no histórico antigo a DD caiu de **284,8%** para
+**242,8%**; o gate passa. O sweep defensivo da `auto_escada_5` não encontrou
+combinação elegível: PF atual **1,85**, mas PF histórico antigo **0,64** e DD
+**219,0%**. Portanto não se alterou nenhum default.
+
+O walk-forward de 90 dias escolheu gestão completa em todos os três folds, mas
+só **1/3** dos blocos de teste foi lucrativo; é evidência de mudança de regime,
+não uma licença para extrapolar o resultado recente. O teste de pesos TP3–TP5
+piorou PF atual de **2,19** para **1,94** e aumentou DD de **21,9%** para
+**27,6%**, pelo que se mantém distribuição igual. O fallback mecânico produziu
+resultados idênticos ao humano nesta amostra (zero ativações observadas), logo
+fica study-only e desligado.
+
+O estudo de polling continua a mostrar que 1 s pode perder eventos intrabar em
+relação a 100 ms; isto é diagnóstico de sensibilidade, não P&L mensal. Houve
+também símbolos sem histórico Yahoo (`AROUND`), excluídos do replay; os números
+acima não devem ser tratados como cobertura completa desse símbolo.
+
+**Estado operacional atual (2026-09-01):** a principal está configurada como
+`tp2_protect`, com 2 pernas e saída no TP2. A conta é a demo hedged
+`5054644473` (`MetaQuotes-Demo`), saldo observado **€1.003,89**,
+`max_positions=5`, AutoTrading ligado e `MT5_DRY_RUN=0`: novos sinais aprovados
+podem enviar ordens para a conta demo. Isto não é uma autorização para uma
+conta real; qualquer promoção para dinheiro real continua bloqueada por decisão
+humana explícita.
 
 ---
 
@@ -76,6 +173,19 @@ semana e modifies de SL recusados por retcode. O `MT5Engine` só considera um
 novo SL aplicado depois de 10009/0; uma falha fica auditada. A amostra deve
 acumular pelo menos duas semanas antes de se tirar uma conclusão de tendência.
 
+O registo central também expõe um lifecycle explícito por estratégia:
+`backtest`, `paper`, `shadow`, `menu` e `promotable`. As listas históricas de
+estratégias escondidas continuam compatíveis, mas a dashboard/API não precisa
+de reconstruir essas regras. As métricas forward mostram ainda um intervalo
+bootstrap de P&L (`mean_pnl_ci95`) e um gate descritivo; este gate nunca
+promove uma estratégia sozinho e exige evidência suficiente antes de qualquer
+mudança operacional.
+
+Quando `execution_journal_enabled` está ligado, quotes e mensagens de gestão
+podem ser recolhidos em `execution_events` e consultados por
+`GET /api/operations/events`. É uma fita de auditoria/replay read-only; não
+altera a conta demo nem autoriza promoção.
+
 O workflow `.github/workflows/ci.yml` corre a suite completa em push/PR e,
 em seguida, `tests/test_docs.py`. Um dispatch manual com `failure_probe=true`
 exercita um pytest deliberadamente falhado para confirmar o comportamento de
@@ -93,14 +203,16 @@ bloqueio; não muda a configuração da conta demo nem promove estratégias.
 | **BE (breakeven)** | Quando o TP1 bate, o SL das pernas restantes sobe para a ENTRADA — a trade deixa de poder dar prejuízo (no pior caso sai a 0) |
 | **Pips** | Unidade de preço configurada por símbolo: no fallback XAUUSD usa 0.01, XAGUSD 0.001 e forex 0.0001; o broker MT5 pode fornecer os valores reais |
 | **Lote** | Tamanho da posição (0.01 = mínimo); o risco % decide os lotes |
-| **Risco por trade** | % da conta em jogo se o SL bater (default **2.5%**, antes da escala dinâmica; os lotes são calculados por símbolo e divididos pelas pernas) |
+| **Risco por trade** | % da conta em jogo se o SL bater (default **1,0%**, antes da escala dinâmica; os lotes são calculados por símbolo e divididos pelas pernas) |
 | **PF (Profit Factor)** | Lucro bruto das trades vencedoras ÷ perda bruta das perdedoras. **PF ≥ 1.5 = bom; PF ≥ 2 = muito bom; PF < 1 = perde dinheiro** |
 | **WR (Win Rate)** | % de trades que fecharam com lucro |
 | **P&L** | Lucro/perda total em € |
 | **DD (Drawdown)** | Maior queda pico→vale do saldo, em % (ex.: DD 25% = a conta chegou a descer 25% do pico) |
 | **N** | Nº de sinais/trades resolvidos numa amostra |
 | **Backtest** | Replay dos sinais REAIS do grupo sobre preços históricos (velas reais), com as mesmas regras da produção |
-| **Corrida paper** | Cada estratégia tem uma conta virtual de 1000 €; quando um sinal real executa na principal, a MESMA trade abre em papel em cada estratégia — vês ao vivo quem está a ganhar |
+| **Corrida paper** | Cada estratégia tem uma conta virtual de 1000 €; a corrida normal segue sinais que executam na principal, enquanto o **shadow-paper** também pode receber sinais live com a principal em kill switch (o modo manual foi removido — Item 12) — sempre sem MT5 |
+| **Evidence gate** | Intervalo bootstrap e número mínimo de trades para avaliar uma candidata; é evidência estatística, não promoção automática |
+| **Journal/replay** | Fita opt-in de quotes e gestão para reproduzir decisões sem alterar produção |
 | **Look-ahead** | Erro de simulação: usar informação do futuro (ex.: o fecho da vela que ainda está a decorrer). Todas as regras do projeto são **sem look-ahead** |
 | **Out-of-sample** | Validar numa janela temporal diferente da que calibrou os parâmetros (teste de robustez) |
 | **Sweep (grelha)** | Correr um parâmetro em vários valores para ver se o resultado é estável ou um pico de sorte (pico isolado = sobreajuste) |
@@ -123,12 +235,16 @@ se aplica a gestão do grupo, se sai cedo num TP, e se gere sozinho
 | `confirm_filter` | **Filtro de confirmação** (auto): se uma perna k levar SL (o movimento morreu), as pernas > k fecham ao mercado |
 | `trail_factor` | **Trailing** (auto): após o TP1, o SL segue o pico com folga = `trail_factor × distância(entrada→TP2)`. 2.0 ≈ 8 pips em gold |
 | `time_stop_minutes` | **Time stop** (auto): se as pernas ficarem abertas N min após o TP1, fecham ao mercado |
+| `def_window` / `def_trail` / `def_time_stop` | Modo defensivo após PF < 1.0 nas últimas N trades: trail/time stop mais apertados, sem cortar pernas |
+| `def_risk_pct` | Cap absoluto de risco durante o modo defensivo (1.25% nas auto-escadas; nunca aumenta o risco dinâmico) |
 | `atr_k` / `atr_period` / `atr_timeframe` | Trailing adaptativo por ATR — **desligado** (o sweep provou que é pior; ver Parte VIII) |
+| `struggle_ae_pips` / `struggle_fraction` | **Regra "struggle"** (R4): antes do TP1, se o preço andou contra a entrada por N pips e volta à entrada, fecha `fraction` das pernas a BE e protege as restantes na entrada (conselho do admin "take 50% / make risk-free"). Backtest-only — ver estudo R4 |
 
 **O que TODAS fazem igual**: SL sempre ativo (SL-first) · TP1 fecha a perna 1
  e move as restantes a BE · risco dividido pelas pernas · custos reais no
  backtest (spread, slippage, comissão) · kill diário (perda do dia > **3%** por
- defeito, configurável) → pausa.
+ defeito, configurável) → pausa. Nas auto-escadas, o modo defensivo também
+limita novas entradas a `def_risk_pct=1.25%` quando PF(10) < 1.0.
 
 
 ---
@@ -147,6 +263,8 @@ estratégia ativa honra os do seu `manage_kinds`:
 | `protect` | "close first entries and move stop loss above best entries" | fecha a perna 1 + sobe o SL das restantes para ACIMA da entrada |
 | `close_all` | "we're out", "out at BE" | fecha tudo (BE → à entrada; senão ao mercado) |
 | `move_sl` | "Adjust SL to 4331" | move o SL de todas as pernas abertas para o nível indicado |
+| `summary_correction` | "Correction: Weekly summary … Trades Sent …" | corrige os números do summary alvo por reply/período e reativa a divergência grupo↔bot |
+| `recount` | "Signal #1: Sell at 4357 … +110 pips" | guarda o recount por trade (R2) em `trade_recounts` e audita contra o fill real do mesmo dia (entrada/pips divergentes → alerta) |
 
 Uma estratégia com `manage=True` (gestão completa) honra **todos**; uma com
 `manage_kinds={"protect"}` honra **só o protect**; as `auto_*` mecânicas não
@@ -154,6 +272,20 @@ honram gestão do grupo, exceto a `auto_escada_3_hibrida`, que honra apenas
 `protect` através do merge monotónico.
 
 ---
+
+## Parte IV-A — MFE win rate (R3) e divergência com a convenção do grupo
+
+O grupo conta como **vitória** qualquer trade que andou **25–30 pips a
+favor** (excursão máxima favorável), mesmo que depois volte e feche em
+loss/BE. O bot, até agora, comparava o WR reportado com o seu próprio
+`win_rate` (pnl>0) — convenções diferentes geravam alertas de divergência
+≥10pp espúrios para trades que andaram +40 pips e voltaram ao SL.
+
+O backtest passou a medir `mfe_pips` por trade (observação pura, nunca uma
+decisão de fill) e o agregado expõe `mfe_win_rate` (wins na convenção do
+grupo, MFE ≥ 25 pips por defeito). A divergência grupo↔bot
+(`_check_group_divergence`) compara com o `mfe_win_rate` quando disponível;
+só alerta se mesmo com a convenção do grupo o desvio continuar ≥ 10pp.
 
 ## Parte V — Auto-gestão (o bot a gerir sozinho)
 
@@ -192,13 +324,24 @@ Descobertas honestas do estudo (ver Parte VIII): a escada, o filtro e o time sto
 
 ---
 
-## Parte VI — As 12 estratégias, UMA A UMA
+## Parte VI — As estratégias do registo, UMA A UMA
 
 > Nota de resultados: "atual" = últimos 30 dias do formato atual do grupo
 > (julho→hoje); "antiga" = período abr–jul (formato antigo, out-of-sample);
 > "histórico completo" = todos os sinais disponíveis desde o início. Saldo
-> sim 1000 € · risco base 2.5% (com escala dinâmica) · kill diário 3% por
+> sim 1000 € · risco base 1,0% (com escala dinâmica) · kill diário 3% por
 > defeito · custos reais. Ver metodologia (Parte VII).
+
+### Estratégias removidas do registo a 01/09 (remoção completa)
+
+`tp2` (PF 0.86 · −151 €), `tp2_gestao` (perde para a `nova_gestao` no
+compare), `nova_gestao_3` (corta as pernas 4–5 que dão o lucro) e `auto_2`
+(pior PF da família no sweep) foram retiradas do menu E do paper a 19/08
+(consolidação); a 01/09 foram **apagadas do registo** por decisão do
+utilizador — já não podem ser simuladas nem backtestadas. O histórico
+decisório (PF/DD e o porquê) está no CHANGELOG; documentos antigos que as
+mencionem são registo histórico não operacional. Os dados paper órfãos
+ficam na BD sem leitores (nunca se apagam dados).
 
 ### 1. `nova` — "TP1..TP5" (sem gestão) — controlo
 
@@ -231,33 +374,7 @@ Descobertas honestas do estudo (ver Parte VIII): a escada, o filtro e o time sto
 - **Veredicto**: a referência. Fraqueza honesta: depende do grupo (e o
   grupo perdeu no período antigo).
 
-### 3. `tp2` — "TP1→BE + sair no TP2" (sem gestão)
-
-- **Mecânica**: SL-first; **TP1 fecha a perna 1 e move as restantes a BE**;
-  **quando o TP2 bate, todas as pernas ainda abertas fecham** nesse preço
-  (`exit_at_tp=2`). Não aplica gestão do grupo.
-- **Parâmetros**: `exit_at_tp=2` · `manage=False`.
-- **Papel**: estudo "sair cedo" — fechar tudo no TP2 (lucro rápido, sem
-  esperar TP3–5).
-- **Resultados**: **PF 0.86 · −151 €** (estudo 30d, formato atual) — sair
-  cedo SEM proteção perde (os TP3–5 são onde vive o lucro).
-- **Veredicto**: perderia sozinha; só faz sentido com proteção (ver
-  `tp2_protect`).
-
-### 4. `tp2_gestao` — "Sair no TP2 + gestão"
-
-- **Mecânica**: igual à `tp2` (sair no TP2) **mas com gestão do grupo
-  completa** — o grupo pode fechar antes do TP2 (protect/close_all) ou
-  proteger mais cedo.
-- **Parâmetros**: `exit_at_tp=2` · `manage=True`.
-- **Papel**: variante antiga de "sair cedo + gestão".
-- **Resultados**: sem edge no compare histórico (perde para a `nova_gestao`
-  — o estudo mostra gestão completa no TP2 ≈ PF 2.93 · +2 010 €, abaixo dos
-  3.22 da `nova_gestao` que corre até TP5).
-- **Veredicto**: retirada do menu e do paper por falta de edge; fica no
-  registo apenas para backtest/compare histórico.
-
-### 5. `tp2_protect` — "Sair no TP2 + protect only" — **teste**
+### 3. `tp2_protect` — "Sair no TP2 + protect only" — **teste**
 
 - **Mecânica**: SL-first; TP1 fecha a perna 1 e move as restantes a BE;
   **TP2 bate → todas as pernas fecham**. Da gestão do grupo **só honra o
@@ -273,31 +390,7 @@ Descobertas honestas do estudo (ver Parte VIII): a escada, o filtro e o time sto
 - **Veredicto**: sair cedo SÓ vale com a proteção do grupo; mesmo assim a
   gestão completa (`nova_gestao`) continua a ganhar. Em validação ao vivo.
 
-### 6. `nova_gestao_3` — "TP1..TP3 + gestão"
-
-- **Mecânica**: igual à `nova_gestao` mas com **só 3 pernas** (TP1..TP3) —
-  menos lucro potencial mas menos exposição às pernas 4–5 (seguro contra
-  mudança de regime).
-- **Parâmetros**: `max_legs=3` · `manage=True`.
-- **Papel**: variante antiga conservadora.
-- **Resultados**: sem edge no compare histórico (as pernas 4–5 é que dão o
-  lucro; cortá-las corta o motor).
-- **Veredicto**: retirada do menu e do paper; fica no registo apenas para
-  backtest/compare histórico.
-
-### 7. `auto_2` — "Auto 2 TPs"
-
-- **Mecânica**: **2 pernas** (TP1..TP2), BE após TP1, **sem gestão do
-  grupo e sem auto-gestão registada** (o registo não lhe dá trail/escada).
-- **Parâmetros**: `max_legs=2` · `manage=False`.
-- **Papel**: a ideia dos amigos ("só 2 TPs") — o sweep provou que é a pior.
-- **Resultados**: no sweep COM trail adicionado: **PF 2.20 · +788 €** (atual)
-  · PF 1.13 · +618 € (antigo) — mesmo assim o pior da família. Sem trail
-  (como está registada) seria ainda pior.
-- **Veredicto**: 2 TPs cortam o motor do lucro. No menu desde 19/08 para
-  mostrar ao vivo.
-
-### 8. `auto_3` — "Auto 3 TPs"
+### 4. `auto_3` — "Auto 3 TPs"
 
 - **Mecânica**: **3 pernas**, BE após TP1, sem gestão do grupo e sem
   auto-gestão registada.
@@ -310,7 +403,7 @@ Descobertas honestas do estudo (ver Parte VIII): a escada, o filtro e o time sto
 - **Veredicto**: sem o trailing não tem edge; o trailing é o mecanismo
   (ver `auto_escada_3`, a versão com escada+trail).
 
-### 9. `auto_5` — "Auto 5 TPs"
+### 5. `auto_5` — "Auto 5 TPs"
 
 - **Mecânica**: **5 pernas**, BE após TP1, sem gestão do grupo e sem
   auto-gestão registada — **é exatamente a `nova`** (baseline sem gestão).
@@ -322,17 +415,18 @@ Descobertas honestas do estudo (ver Parte VIII): a escada, o filtro e o time sto
 - **Veredicto**: sem trail = `nova`; com trail = muito lucro mas DD 84% no
   antigo (risco alto demais — por isso a escolha foi a `auto_escada_3`).
 
-### 10. `auto_escada_3` — "Auto 3 TPs + escada" — **teste · Fase 2** ⭐
+### 6. `auto_escada_3` — "Auto 3 TPs + escada" — **teste · Fase 2** ⭐
 
 - **Mecânica**: **3 pernas**; BE após TP1; **escada de proteção**
   (`stair_levels=3`, `stair_from=1`: TP_k confirma → SL das seguintes sobe
   para o nível do TP_k); **trailing `trail_factor=2.0`** (≈8 pips em gold,
   o valor honesto calibrado); **modo defensivo** (PF das últimas 10 trades
-  < 1.0 → trail 1.5 + time stop 60 min, sem cortar pernas); sem gestão do
-  grupo.
+  < 1.0 → trail 1.5 + time stop 60 min + risco máximo 1.25%, sem cortar
+  pernas); sem gestão do grupo.
 - **Parâmetros**: `max_legs=3` · `stair_levels=3` · `stair_from=1` ·
   `confirm_filter=True` · `trail_factor=2.0` ·
-  `def_window=10 · def_trail=1.5 · def_time_stop=60` · `manage=False`.
+  `def_window=10 · def_trail=1.5 · def_time_stop=60 · def_risk_pct=1.25` ·
+  `manage=False`.
 - **Papel**: **a candidata à Fase 3** (auto-gestão no MT5) — em corrida
   paper a validar (N ≥ 20 sinais; gates: PF ≥ 1.5 · P&L ≥ 50% da referência
   · DD ≤ 125%).
@@ -346,15 +440,15 @@ Descobertas honestas do estudo (ver Parte VIII): a escada, o filtro e o time sto
   default desta estratégia. A alteração é só da auto em paper/backtest;
   não promove nem altera a principal `nova_gestao`.
 
-### 11. `auto_escada_5` — "Auto 5 TPs + escada + confirmação"
+### 7. `auto_escada_5` — "Auto 5 TPs + escada + confirmação"
 
 - **Mecânica**: **5 pernas**; escada de proteção (TP_k → SL das seguintes
   no nível do TP_k); **filtro de confirmação** (perna k leva SL → pernas > k
   fecham); trailing 2.0; **modo defensivo** (PF(10) < 1.0 → trail 1.5 +
-  time stop 60 min); sem gestão do grupo.
+  time stop 60 min + risco máximo 1.25%); sem gestão do grupo.
 - **Parâmetros**: `max_legs=None` (5) · `stair_levels=5` · `confirm_filter=True`
-  · `trail_factor=2.0` · `def_window=10 · def_trail=1.5 · def_time_stop=60`
-  · `manage=False`.
+  · `trail_factor=2.0` · `def_window=10 · def_trail=1.5 · def_time_stop=60 ·
+  def_risk_pct=1.25` · `manage=False`.
 - **Papel**: a variante mais agressiva (mais pernas = mais lucro potencial,
   mais risco de cauda).
 - **Resultados**: atual **PF 3.66 · +2 787 € · DD 35.9%** · antigo
@@ -363,11 +457,11 @@ Descobertas honestas do estudo (ver Parte VIII): a escada, o filtro e o time sto
 - **Veredicto**: o equilíbrio é pior que o escada_3 (lucro parecido, DD
   muito maior) — fica no menu para comparação ao vivo.
 
-### 12. `auto_escada_3_hibrida` — "Auto 3 TPs + escada + protect híbrido" — **experimental**
+### 8. `auto_escada_3_hibrida` — "Auto 3 TPs + escada + protect híbrido" — **experimental**
 
 - **Mecânica**: 3 pernas, escada desde o TP1, trailing `trail_factor=2.0`
-  e modo defensivo (PF(10) < 1.0 → trail 1.5 + time stop 60 min). Quando
-  chega `protect` do grupo, compara o SL do grupo com o SL mecânico por perna
+  e modo defensivo (PF(10) < 1.0 → trail 1.5 + time stop 60 min + risco
+  máximo 1.25%). Quando chega `protect` do grupo, compara o SL do grupo com o SL mecânico por perna
   e aplica apenas o nível mais protetor; nunca recua um SL já ganho pela
   auto. A perna 1 só fecha quando o preço conhecido no evento já confirmou
   TP1 e o `protect` não é pior que a proteção automática.
@@ -392,6 +486,16 @@ Descobertas honestas do estudo (ver Parte VIII): a escada, o filtro e o time sto
   O spec `docs/Melhorias/01-item-01.md` foi apagado só depois desta validação;
   a híbrida continua experimental e não é elegível para promoção automática.
 
+### ~~9. `auto_protect_5` — removida a 01/09~~ (histórico no CHANGELOG)
+
+> **Removida do registo a 01/09** (decisão do utilizador — remoção completa).
+> Hipótese de proteção precoce sem robustez out-of-sample: **PF 1.27 ·
+> +€281.41 · DD 38.6%** vs `auto_escada_5` PF 1.33 · o melhor atual do sweep
+> (1.0/0.20) tinha PF 1.96 mas o melhor antigo PF 0.50 · −€3 450.62 — nenhuma
+> combinação robusta. A mecânica (`protect_trigger`/`protect_buffer`) fica nos
+> motores para candidatas futuras; o backtest desta variante deixou de ser
+> reproduzível.
+
 ---
 
 ## Parte VII — Metodologia dos resultados (para confiar nos números)
@@ -403,7 +507,7 @@ Descobertas honestas do estudo (ver Parte VIII): a escada, o filtro e o time sto
   calibrou-se no formato atual e validou-se no antigo.
 - **Simulação**: replay dos sinais sobre **velas reais** (preços históricos),
   com as MESMAS regras da produção: SL-first, sem look-ahead (nunca se usa o
-  fecho da vela do evento), risco por sinal **2.5% por defeito** (escala
+  fecho da vela do evento), risco por sinal **1,0% por defeito** (escala
   dinâmica possível) dividido pelas pernas, **custos reais** (spread,
   slippage, comissão), contract por símbolo (XAUUSD 100, XAGUSD 5000, forex
   100000), **kill diário** (perda do dia > **3% por defeito**, configurável →
@@ -435,8 +539,9 @@ Uma estratégia é boa se:
 
 **Onde estão hoje (19/08, consolidação)**: `nova_gestao` executa a conta
 demo; a `auto_escada_3` e a `tp2_protect` estão em corrida paper (Fase 2);
-no menu ficam **6 visíveis** (`nova_gestao`, `tp2_protect`, `auto_3`,
-`auto_escada_3`, `auto_escada_3_hibrida`, `auto_escada_5`); `nova` e `auto_5` continuam em PAPEL mas
+no menu ficam **6 visíveis** (`nova_gestao`, `tp2_protect`,
+`auto_3`, `auto_escada_3`, `auto_escada_3_hibrida`, `auto_escada_5`,
+`auto_protect_5`); `nova` e `auto_5` continuam em PAPEL mas
 ocultas do menu (contrafactual "sem gestão" + comparação 5 pernas com/sem
 trail — `MENU_HIDDEN_STRATEGIES`); `tp2`, `tp2_gestao`, `nova_gestao_3` e
 `auto_2` saíram do menu E do paper (`HIDDEN_STRATEGIES`) — ficam só no
@@ -527,6 +632,13 @@ não se promove `auto_escada_5` para a conta MT5. O spec
 `docs/Melhorias/02-item-02.md` foi apagado depois de o sweep e o veredicto
 ficarem documentados.
 
+**Reexecução read-only de 19/08**: com a BD atual, o baseline `auto_escada_5`
+ficou em **PF 1.95 / DD 15.8%** na janela atual, **PF 0.70 / DD 310.9%** no
+histórico completo e **PF 0.58 / DD 302.4%** no período antigo. As 27
+combinações reproduzidas ficaram iguais a estes valores e o veredicto manteve
+**0 elegíveis**; esta leitura substitui apenas os números do snapshot acima,
+não altera os defaults nem a configuração da conta.
+
 **Item 3 encerrado (19/08)**: o sweep read-only de `auto_escada_3` comparou
 `confirm_filter=True` vs `False` nas janelas atual/tudo/antiga, com
 `stair_levels=3`, `stair_from=1` e `trail_factor=2.0` fixos. O critério passou:
@@ -564,24 +676,129 @@ mostra que não sobrevivem a regimes adversos prolongados.
 
 ---
 
+## Parte VIII-A — Estudos de decisão adicionais (19/08)
+
+Os estudos reproduzíveis vivem em `app/study_strategies.py` e são read-only:
+
+```text
+.venv/Scripts/python -m app.study_strategies --study ablation
+.venv/Scripts/python -m app.study_strategies --study walkforward
+.venv/Scripts/python -m app.study_strategies --study legs --balance 10000
+.venv/Scripts/python -m app.study_strategies --study fallback
+.venv/Scripts/python -m app.study_strategies --study polling
+```
+
+Na BD atual (30 dias, 107 sinais, saldo 1 000 €, risco 1%, kill diário 6%,
+velas 15m), a ablation encontrou:
+
+| Variante | PF | P&L € | DD |
+|---|---:|---:|---:|
+| sem gestão | 1.25 | +261.77 | 42.8% |
+| gestão completa | **3.34** | **+2 438.76** | **22.7%** |
+| só `protect` | 3.09 | +2 177.62 | 22.7% |
+| só `close_all` | 1.54 | +569.21 | 42.8% |
+| só `move_sl` | 1.25 | +261.77 | 42.8% |
+| só `tp_hit` | 1.25 | +261.77 | 42.8% |
+
+A leitura é causalmente útil, mas não prova independência estatística: o
+`protect` é o maior mecanismo isolado; `close_all` ajuda pouco sem `protect`,
+e `move_sl`/`tp_hit` não alteraram esta amostra. O valor da gestão completa é
+principalmente a combinação dos eventos e a correlação temporal do grupo.
+
+O walk-forward calibrado (3 folds) escolheu `all → protect → all_fallback_60`
+apenas com base no bloco anterior; os três blocos seguintes foram positivos
+(+61.27 €, +821.29 € e +1 513.26 €), mas o último tem só 26 sinais. O fallback
+teve exatamente o mesmo resultado do `all` no bloco em que foi escolhido.
+Isto valida a continuação da investigação, não autoriza trocar a principal.
+
+A validação expandida, sempre selecionando no treino e testando no bloco
+seguinte, ficou assim:
+
+| Período | Sinais | Seleções | Folds de teste positivos | Resultado |
+|---|---:|---|---:|---|
+| atual 30d | 107 | all → protect → all_fallback_60 | 3/3 | consistente só no regime recente |
+| últimos 90d | 397 | all → all → all | 1/3 | não robusto; período antigo pesa contra |
+| histórico completo | 578 | all → all → all | 1/3 | não robusto |
+| antigo OOS | 506 | all → all → all | 2/3 | grupo antigo continua perdedor |
+
+Nos períodos de 90 dias, completo e antigo, o `all_fallback_60` não alterou
+os números face ao `all`. A gestão robusta que existe hoje é portanto
+**robusta dentro do formato recente**, mas não é uma solução universal para
+o regime antigo; a principal fica inalterada.
+
+A redistribuição leve de risco para TP3–TP5 não muda nada com saldo de 1 000 €:
+o lote mínimo de 0.01 domina todas as pernas. Num estudo separado com saldo
+10 000 €, `tp345_light` deu PF 1.23 / +875.96 € / DD 13.5%, contra PF 1.17 /
++598.06 € / DD 12.7% com pesos iguais. É uma hipótese interessante, mas não
+é comparável diretamente à conta atual e não foi promovida.
+
+O fallback mecânico após TP1, se nenhuma gestão chegar em 30/60/120s, aplicou-se
+em apenas 1 dos 107 sinais: P&L +2 438.76 € sem fallback contra +2 439.66 €
+com 30s e +2 439.66 € com 60/120s. O ganho de 0.90 € é ruído; fica desligado
+por defeito.
+
+O benchmark isolado do motor paper testou a mesma trajetória determinística a
+1s, 250ms e 100ms. Em ambos `auto_escada_3` e `auto_escada_5`, 1s perdeu o
+spike e deixou a trade aberta; 250ms e 100ms fecharam, mas com razões/P&L
+diferentes. Isto confirma sensibilidade de polling, não edge mensal: a
+trajetória é sintética, usa BD temporária e não altera o loop de produção.
+Desde esta validação, o benchmark usa `ManualClock`: cada amostra avança
+explicitamente o relógio pelo intervalo escolhido, incluindo time stops e
+timestamps de saída. A produção continua em ~1s e usa `SystemClock`; não há
+qualquer promoção automática baseada neste teste.
+
+A fronteira de decisão também foi consolidada: `reduce_auto_protect()` em
+`app/execution/protection.py` calcula uma única vez o gatilho, a proteção do
+grupo e os SL monotónicos. Backtest, paper, SimEngine e MT5 aplicam o mesmo
+resultado nos seus próprios fills/broker. Assim, uma mudança futura no
+threshold pode ser testada em paridade sem duplicar a fórmula em quatro
+motores.
+
+**Estudo R4 — regra "struggle" (20/08)**: a candidata `auto_escada_3_struggle`
+(= auto_escada_3 + `struggle_ae_pips=15` + `struggle_fraction=0.5` — antes do
+TP1, se o preço andou 15 pips contra a entrada e volta à entrada, fecha 50%
+das pernas a BE e protege as restantes) foi corrida nos mesmos sinais/candles
+que a base. O **sweep completo** (`app/sweep_struggle.py`, read-only) correu
+a grelha `struggle_ae_pips` 5/10/15/20/25 × `struggle_fraction` 0.25/0.5/0.75
+nas `auto_escada_3` e `auto_escada_5`, nas janelas atual e completa. A regra
+nunca disparou no período atual (0 sinais) e só em 3 sinais do histórico
+completo; todas as combinações ficaram praticamente idênticas à baseline
+(PF atual 1.26→1.26 e DD 11.8% iguais; no completo PF 0.53→0.53–0.54 e DD
+±3 pp, P&L ±77 €). **Sem edge em nenhuma combinação — a candidata foi
+removida do registo a 01/09** (não é promovida nem voltará sem sinais novos
+em que o padrão "andou contra e voltou" seja mais frequente). O mecanismo
+(`struggle_ae_pips`/`struggle_fraction`) continua disponível nos motores para
+candidatas futuras.
+
+---
+
 ## Parte IX — Onde cada estratégia aparece
 
 | Estratégia | Página | Corrida paper | Backtest/compare | Conta real |
 |---|---|---|---|---|
 | `nova_gestao` | PRINCIPAL | ✅ (referência) | ✅ | ✅ demo (principal) |
-| `tp2_protect`, `auto_3`, `auto_escada_3`, `auto_escada_5` | dropdown ▚ ESTRATÉGIAS (`/teste?s=<id>`) | ✅ | ✅ | 🔒 só com validação |
-| `auto_escada_3_hibrida` | dropdown ▚ ESTRATÉGIAS (`/teste?s=auto_escada_3_hibrida`) | ✅ experimental | ✅ | 🔒 não elegível sem validação explícita |
-| `nova`, `auto_5` (contrafactual/comparação) | 🔒 ocultas do menu | ✅ em papel (não na curva) | ✅ | 🔒 |
-| `tp2`, `tp2_gestao`, `nova_gestao_3`, `auto_2` (removidas) | 🔒 | ❌ | ✅ backtest/compare | 🔒 |
+| `nova_gestao_fallback` | dropdown ▚ ESTRATÉGIAS (`/teste?s=nova_gestao_fallback`) | ✅ experimental | ✅ | 🔒 só com validação |
+| `tp2_protect` | dropdown ▚ (`/teste?s=tp2_protect`) | ✅ | ✅ | 🔒 só com validação |
+| `auto_escada_3` | dropdown ▚ (`/teste?s=auto_escada_3`) | ✅ | ✅ | 🔒 só com validação |
+| `auto_escada_3_hibrida` | dropdown ▚ (`/teste?s=auto_escada_3_hibrida`) | ✅ experimental | ✅ | 🔒 não elegível sem validação explícita |
+| `auto_3`, `auto_escada_5` (referências de backtest) | dropdown ▚ (página de teste própria) | ✅ em papel (não na curva) | ✅ | 🔒 |
+| `nova` (contrafactual), `auto_5` | 🔒 ocultas do menu | ✅ em papel (não na curva) | ✅ | 🔒 |
+| ~~`tp2`, `tp2_gestao`, `nova_gestao_3`, `auto_2`, `auto_protect_5`, `auto_escada_3_struggle`~~ | ❌ removidas do registo a 01/09 | ❌ (dados órfãos na BD sem leitores) | ❌ já não reproduzível | 🔒 |
 
-Todas as estratégias têm página própria com saldo simulado (1000 €), curva,
+As estratégias com página própria têm saldo simulado (1000 €), curva,
 comparação e os números reais de 30 dias; a página **HELP** (`/help`)
-explica-as com cartões interativos. O registo (`app/strategies.py`) é a
-fonte única de verdade; os sets `HIDDEN_STRATEGIES` (tp2/tp2_gestao/
-nova_gestao_3/auto_2 — fora do menu E do paper) e `MENU_HIDDEN_STRATEGIES`
-(nova/auto_5 — ocultas do menu mas em papel, para o contrafactual do
-histórico de trades e a comparação do backtest) controlam a visibilidade
-sem apagar nada; para repor, basta tirar o id do set.
+explica-as com cartões interativos. O painel principal **👻 Shadow-paper**
+permite escolher os IDs visíveis que recebem sinais forward; o snapshot
+`shadow_paper` mostra as trades abertas isoladas (`origin="shadow"`) e o
+saldo/PF dessa origem não é misturado com a corrida normal; o modo pode ser
+desligado sem apagar o histórico paper. O critério de evidência
+continua a ser N≥20 sinais resolvidos — não se conclui nada com poucos dados.
+O registo (`app/strategies.py`) é a fonte única de verdade: as removidas a
+01/09 deixaram de existir nele (o `get_strategy` levanta ValueError para ids
+mortos — um estudo com uma estratégia apagada falha em voz alta, nunca corre
+silenciosamente com a principal); `MENU_HIDDEN_STRATEGIES` = `nova`/`auto_5`
+(ocultas do menu mas em papel, para o contrafactual do histórico de trades e
+a comparação do backtest).
 
 ---
 
@@ -603,7 +820,7 @@ sem apagar nada; para repor, basta tirar o id do set.
 | `trail_factor` | 2.0 (meio do plateau 1.5–2.5 — monotónico, sem pico isolado) |
 | `def_window` / `def_trail` / `def_time_stop` | 10 / 1.5 / 60 (modo defensivo) |
 | `time_stop_minutes` | 0 (só o defensivo o liga) |
-| risco / kill diário | 2.5% (config) · `daily_stop_pct` ativo (paper e real) |
+| risco / kill diário | 1,0% (config) · `daily_stop_pct` ativo (paper e real) |
 | referência | `nova_gestao` em paralelo (mesma conta virtual de 1 000 €) |
 
 O `confirm_filter=True` foi congelado como default após o Item 3; a janela

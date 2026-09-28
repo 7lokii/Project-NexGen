@@ -3,27 +3,63 @@
 #   .\start.ps1                              # arranca tudo (pede a senha MT5)
 #   $env:MT5_PASSWORD="..." ; .\start.ps1    # senha ja definida
 #
-# Idempotente: deteta se o servidor (porta 8000) e/ou o listener ja estao
-# no ar e NAO lanca duplicados - correr o script com o sistema ja ligado
-# so reporta o estado e sai. Para reiniciar de facto, mata os processos
-# primeiro (taskkill //IM python.exe //F) e volta a correr.
+# Idempotente: deteta se o servidor (porta 8000), o listener e o Caddy ja
+# estao no ar e NAO lanca duplicados - correr o script com o sistema ja
+# ligado so reporta o estado e sai (e garante o Caddy, para o dominio nunca
+# ficar fora so porque o servidor foi reiniciado). Para reiniciar de facto,
+# mata os processos primeiro (taskkill //IM python.exe //F) e volta a correr.
 #
 # A senha NUNCA e gravada em ficheiro - so vive na variavel de ambiente
 # do processo. O terminal MT5 tem de estar aberto e com o AutoTrading
 # ligado (botao "Algo Trading" verde) para ordens reais.
+param()
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
 
 $Py = ".venv\Scripts\python.exe"
 $Port = if ($env:PORT -and $env:PORT -ne "0") { $env:PORT } else { "8000" }
 
-# ---- credenciais Telegram (do .env, se existir) -------------------------
+# ---- credenciais (do .env, se existir) ----------------------------------
+# Carrega o .env para o ambiente do processo SEM sobrepor variáveis já
+# definidas (mesma semântica do load_dotenv(override=False) do main.py): um
+# `MT5_DRY_RUN=0` passado explicitamente tem de chegar ao servidor, senão o
+# .env (MT5_DRY_RUN=1) forçava sempre dry-run e o arranque documentado
+# (execução real na demo) nunca funcionava.
 if (Test-Path .env) {
   Get-Content .env | ForEach-Object {
     if ($_ -match '^\s*([A-Z0-9_]+)=(.*)\s*$') {
-      [Environment]::SetEnvironmentVariable($matches[1], $matches[2], "Process")
+      $name = $matches[1]
+      if ($null -eq [Environment]::GetEnvironmentVariable($name, "Process")) {
+        [Environment]::SetEnvironmentVariable($name, $matches[2], "Process")
+      }
     }
   }
+}
+
+# ---- 0. Caddy (reverse proxy HTTPS: n3xg3n.duckdns.org) -----------------
+# O dominio publico so responde enquanto o Caddy servir as portas 80/443.
+# Garante-o SEMPRE, mesmo quando o servidor ja esta no ar (era o caso em
+# que um reinicio do servidor deixava o link fora de servico). Idempotente:
+# se a porta 443 ja estiver a escutar nao lanca outro processo.
+$caddyUp = $false
+try {
+  $caddyListen = Get-NetTCPConnection -LocalPort 443 -State Listen -ErrorAction SilentlyContinue
+  if ($caddyListen) { $caddyUp = $true }
+} catch { }
+if ($caddyUp) {
+  Write-Host "[OK] Caddy ja no ar (porta 443 - n3xg3n.duckdns.org)"
+} elseif (Test-Path "C:\caddy\caddy.exe") {
+  try {
+    Start-Process -FilePath "C:\caddy\caddy.exe" `
+      -ArgumentList "run","--config","C:\caddy\Caddyfile" `
+      -WorkingDirectory "C:\caddy" -WindowStyle Hidden | Out-Null
+    Write-Host "[OK] Caddy arrancado (https://n3xg3n.duckdns.org)"
+    Start-Sleep -Seconds 2
+  } catch {
+    Write-Host "[!] Falha ao arrancar o Caddy: $_"
+  }
+} else {
+  Write-Host "[i]  Caddy nao instalado (C:\caddy\caddy.exe) - o dominio publico fica fora."
 }
 
 # ---- detetar o que ja esta no ar (idempotente) --------------------------
@@ -46,6 +82,25 @@ if ($serverUp) {
     Write-Host "[OK] Listener do Telegram ja no ar - nada a fazer."
   } else {
     Write-Host "[i]  Listener OFFLINE - o watchdog do servidor arranca-o em ~10s."
+  }
+  $waUp = $false
+  try {
+    $waListen = Get-NetTCPConnection -LocalPort 8765 -State Listen -ErrorAction SilentlyContinue
+    if ($waListen) { $waUp = $true }
+  } catch { }
+  if ($waUp) { Write-Host "[OK] Bridge WhatsApp no ar (porta 8765)" }
+  else { Write-Host "[i]  Bridge WhatsApp OFFLINE - reinicia o servidor para o arrancar." }
+  $wkPort = if ($env:LANE2_WORKER_PORT -and $env:LANE2_WORKER_PORT -ne "0") { $env:LANE2_WORKER_PORT } else { "8770" }
+  $wkUp = $false
+  try {
+    $wkListen = Get-NetTCPConnection -LocalPort $wkPort -State Listen -ErrorAction SilentlyContinue
+    if ($wkListen) { $wkUp = $true }
+  } catch { }
+  if ($env:LANE2_WORKER_ENABLED -eq "1") {
+    if ($wkUp) { Write-Host "[OK] Worker lane 2 no ar (porta $wkPort)" }
+    else { Write-Host "[i]  Worker lane 2 OFFLINE - o healthcheck reinicia-o." }
+  } elseif ($wkUp) {
+    Write-Host "[i]  Worker lane 2 NO AR mas LANE2_WORKER_ENABLED!=1 no .env (o servidor nao o usa)."
   }
   Write-Host "     Para reiniciar de facto: taskkill //IM python.exe //F e volta a correr."
   return
@@ -102,6 +157,57 @@ $lst = Start-Process -FilePath $Py -ArgumentList "-u -m app.telegram_listener" `
   -PassThru -WindowStyle Hidden
 $lst.Id | Out-File listener.pid
 Write-Host "[OK] Listener do Telegram a arrancar (log: listener.log)"
+
+# ---- bridge WhatsApp (Baileys) ---------------------------------------------
+# Publica resultados de trades reais no grupo configurado (WHATSAPP_GROUP_JID
+# no .env). Node tem de estar instalado; pareia 1x por QR no Diagnóstico.
+$waUp = $false
+try {
+  $waListen = Get-NetTCPConnection -LocalPort 8765 -State Listen -ErrorAction SilentlyContinue
+  if ($waListen) { $waUp = $true }
+} catch { }
+if ($waUp) {
+  Write-Host "[OK] Bridge WhatsApp ja no ar (porta 8765)"
+} elseif (Test-Path "whatsapp\node_modules") {
+  try {
+    Start-Process -FilePath "node" -ArgumentList "whatsapp/bridge.js" `
+      -WorkingDirectory "$PSScriptRoot\whatsapp" -WindowStyle Hidden `
+      -RedirectStandardOutput "$PSScriptRoot\whatsapp\bridge.log" `
+      -RedirectStandardError "$PSScriptRoot\whatsapp\bridge.err.log" | Out-Null
+    Write-Host "[OK] Bridge WhatsApp a arrancar (porta 8765 - pareia com QR no Diagnostico)"
+  } catch {
+    Write-Host "[i]  Node nao encontrado - instala Node.js LTS e corre 'npm install' em whatsapp/"
+  }
+} else {
+  Write-Host "[i]  Bridge WhatsApp nao instalado - corre: cd whatsapp && npm install"
+}
+
+# ---- 2a lane MT5: worker isolado (execucao real da 2.a conta, opcional) --
+# A API MetaTrader5 so permite UMA ligacao por processo: a 2.a conta precisa
+# do worker (processo separado, app/lane2_worker.py) + 2.o terminal portable
+# (MT5_2_TERMINAL_PATH, arrancado pelo boot.ps1). Idempotente por porta.
+$wkUp = $false
+$wkPort = if ($env:LANE2_WORKER_PORT -and $env:LANE2_WORKER_PORT -ne "0") { $env:LANE2_WORKER_PORT } else { "8770" }
+try {
+  $wkListen = Get-NetTCPConnection -LocalPort $wkPort -State Listen -ErrorAction SilentlyContinue
+  if ($wkListen) { $wkUp = $true }
+} catch { }
+if ($env:LANE2_WORKER_ENABLED -eq "1") {
+  if (-not $env:MT5_2_TERMINAL_PATH) {
+    Write-Host "[!] Worker lane 2 NAO arranca: MT5_2_TERMINAL_PATH vazio no .env (fail-closed - sem terminal portable o worker trocaria a conta do terminal principal)."
+  } elseif ($wkUp) {
+    Write-Host "[OK] Worker lane 2 ja no ar (porta $wkPort)"
+  } else {
+    $wk = Start-Process -FilePath $Py -ArgumentList "-u -m app.lane2_worker" `
+      -PassThru -WindowStyle Hidden
+    $wk.Id | Out-File lane2_worker.pid
+    Write-Host "[OK] Worker lane 2 a arrancar (porta $wkPort, log: lane2_worker.log)"
+  }
+} elseif ($wkUp) {
+  Write-Host "[i]  Worker lane 2 NO AR mas LANE2_WORKER_ENABLED!=1 no .env (o servidor nao o usa - lane 2 em dry-run)"
+} else {
+  Write-Host "[i]  Worker lane 2 desligado (LANE2_WORKER_ENABLED!=1) - a 2.a conta corre em dry-run"
+}
 
 Start-Sleep -Seconds 6
 Write-Host ""

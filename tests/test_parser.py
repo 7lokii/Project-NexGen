@@ -3,6 +3,32 @@ import pytest
 from app.signals.parser import ParseError, parse
 
 
+def test_parse_entry_zone_is_preserved_for_freshness_guard():
+    s = parse("BUY XAUUSD\n4584-4580\nSL 4578\nTP1 4586\nTP2 4588")
+    assert s.entry == 4584.0
+    assert s.entry_zone_low == 4580.0
+    assert s.entry_zone_high == 4584.0
+
+
+def test_parse_or_error_preserves_partial_signal_fields():
+    """A primeira edição do grupo pode conter apenas direção + zona; esses
+    campos têm de sobreviver ao erro para o revive e a auditoria."""
+    from app.signals.parser import parse_or_error
+
+    s = parse_or_error("I’m buying XAUUSD\n\n4642.50-4638")
+    assert s.error
+    assert s.symbol == "XAUUSD"
+    assert s.direction == "buy"
+    assert s.entry == 4642.5
+    assert (s.entry_zone_low, s.entry_zone_high) == (4638.0, 4642.5)
+
+
+def test_parse_labeled_entry_zone_is_preserved():
+    s = parse("BUY XAUUSD\nEntry: 4584-4580\nSL 4578\nTP1 4586\nTP2 4588")
+    assert s.entry == 4584.0
+    assert (s.entry_zone_low, s.entry_zone_high) == (4580.0, 4584.0)
+
+
 def test_parse_english_layout():
     s = parse("BUY EURUSD @ 1.0850\nSL 1.0820\nTP1 1.0890\nTP2 1.0920")
     assert s.symbol == "EURUSD"
@@ -76,6 +102,18 @@ def test_parse_tp_out_of_order_raises():
     # TP3 closer than TP2 (buy) is a typo — never trade it
     with pytest.raises(ParseError):
         parse("BUY XAUUSD @ 4385.0 SL 4381.0 TP1 4389.0 TP2 4395.0 TP3 4392.0")
+
+
+def test_parse_equal_tps_are_valid():
+    """TPs iguais são válidos: o grupo enviou a sério "TP1 4280 / TP2 4280"
+    (15/09 12:26 UTC) — ambas as pernas saem ao mesmo nível. Só TPs que
+    INVERTEM a direção (ex.: TP3 mais perto que TP2) continuam rejeitados."""
+    s = parse("BUY XAUUSD @ 4275.0 SL 4270.0 TP1 4280.0 TP2 4280.0")
+    assert s.take_profit_1 == 4280.0
+    assert s.take_profit_2 == 4280.0
+    # sell igual também passa
+    s2 = parse("SELL XAUUSD @ 2450.0 SL 2458.0 TP1 2435.0 TP2 2435.0")
+    assert s2.take_profit_2 == 2435.0
 
 
 def test_parse_sell_tps_ordered_descending():
@@ -174,3 +212,43 @@ def test_parse_accepts_wide_but_legit_zone():
               "TP4 4089 SL 4070")
     assert s.entry == 4078.5
     assert s.take_profit_1 == 4081.0
+
+
+def test_parse_golden_circle_single_entry():
+    """Golden Circle format: a single (unlabelled) entry price right after
+    the symbol — "I'm buying XAUUSD  4331  TP1 4336 TP2 4341 SL 4325"."""
+    s = parse("I’m buying XAUUSD  4331  TP1 4336 TP2 4341 SL 4325")
+    assert s.symbol == "XAUUSD"
+    assert s.direction == "buy"
+    assert s.entry == 4331.0
+    assert s.stop_loss == 4325.0
+    assert s.take_profit_1 == 4336.0
+    assert s.take_profit_2 == 4341.0
+
+
+def test_parse_golden_circle_single_entry_sell():
+    s = parse("I’m Selling XAUUSD  4390  TP1 4380 TP2 4370  SL 4400")
+    assert s.symbol == "XAUUSD"
+    assert s.direction == "sell"
+    assert s.entry == 4390.0
+    assert s.stop_loss == 4400.0
+    assert s.take_profit_1 == 4380.0
+    assert s.take_profit_2 == 4370.0
+
+
+def test_parse_symbol_followed_by_zone_still_prefers_zone():
+    """A symbol followed by a range is a zone, not a single entry — the zone
+    path must win (the (?!zone) guard in the single-entry pattern)."""
+    s = parse("I’m selling XAUUSD  4323-4327   TP1 4320 TP2 4318 TP3 4316 TP4 4312  SL 4331")
+    assert s.entry == 4323.0
+    assert s.entry_zone_low == 4323.0
+    assert s.entry_zone_high == 4327.0
+
+
+def test_parse_single_entry_not_triggered_by_conversation():
+    """Conversa com números perto do símbolo não vira sinal — falta TP1/TP2
+    e o regex de entrada isolada nunca cria uma entrada operacional."""
+    with pytest.raises(ParseError):
+        parse("XAUUSD at 4331 right now, watching closely")
+    with pytest.raises(ParseError):
+        parse("BTC to watch: 65000 zone chart https://tradingview.com/x/abc")

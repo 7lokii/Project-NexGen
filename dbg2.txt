@@ -1,0 +1,52 @@
+ in st.db.list_trade_recounts(limit=200)
+                      if x["message_id"] == "971"][0]
+            cc = _json.loads(stored["candle_check"] or "{}")
+            assert cc["futures_shift"] == 0.0, cc
+            assert cc["spot_plausible"] is True, cc
+            assert cc["futures_plausible"] is False, cc
+            assert cc["verdict_kind"] == "feed_divergence", cc
+    
+            # 2) com um fill REAL do dia (spot do guard 4350 vs close GC=F 4400)
+            #    o offset diário passa a +50 e o GC=F volta a plausível
+            st.db.insert_trade(Trade(
+                id="tr-offset", signal_id="tg-g-970", strategy_id="nova_gestao",
+                symbol="XAUUSD", direction="sell", entry=4357.0,
+                stop_loss=4367.0, take_profit_1=4347.0, take_profit_2=4337.0,
+                take_profit_3=0.0, take_profit_4=0.0, take_profit_5=0.0,
+                risk_pct=1.0, lots_1=0.01, lots_2=0.0, lots_3=0.0,
+                lots_4=0.0, lots_5=0.0, status="open",
+                opened_at=day + "T09:00:00+00:00", pnl=0.0, exit_reason=None,
+                entry_zone_low=4357.0, entry_zone_high=4361.0,
+                market_price_at_open=4350.0, entry_distance=0.0,
+                entry_guard="{}", execution_mode="mt5-real", lane_id="main",
+                entry_style="pending",
+            ))
+            st._recount_day_offset_cache.clear()
+            rc2 = client.post(f"/api/recounts/{rid}/recheck").json()
+            cc2 = rc2["audit"]["candle_check"]
+            assert cc2["futures_shift"] == 50.0, cc2
+            assert cc2["futures_plausible"] is True, cc2
+            assert cc2["plausible"] is True, cc2
+            assert cc2["feed_divergence"] is False, cc2
+            assert cc2["verdict_kind"] == "plausible", cc2
+    
+            # 3) o re-check em LOTE (diário) conta o flip RESOLVIDO: o veredicto
+            #    persistido passou de feed_divergence para plausível com o offset
+            batch2 = client.post("/api/recounts/recheck-all").json()
+            assert batch2["ok"] is True
+>           assert batch2["resolved"] >= 1, batch2
+E           AssertionError: {'ok': True, 'total': 1, 'rechecked': 1, 'changed': 0, ...}
+E           assert 0 >= 1
+
+tests\test_api.py:1459: AssertionError
+============================== warnings summary ===============================
+.venv\Lib\site-packages\fastapi\testclient.py:1
+  C:\Users\Administrator\Desktop\Project NexGen\.venv\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_api.py::test_recount_candle_check_daily_futures_offset - As...
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!
+1 failed, 1 warning in 1.36s
+

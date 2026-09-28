@@ -1,7 +1,7 @@
 # 🤖 Project NexGen
 
 Copy-trading **semi-automático**: lê sinais do grupo de Telegram **Golden
-Moves**, espera a janela de edição (8s por defeito) e executa a estratégia de **N pernas
+Moves**, espera a janela de edição (20s por defeito) e executa a estratégia de **N pernas
 (TP1..TP5 + breakeven)** no **MetaTrader 5** — atualmente numa **conta demo**
 (não é dinheiro real). Tudo visível numa dashboard web estilo Cyberpunk 2077.
 
@@ -11,7 +11,7 @@ Moves**, espera a janela de edição (8s por defeito) e executa a estratégia de
 
 ## Funcionalidades
 
-- 📨 **Pipeline de sinais** com janela de edição de 8s e tratamento de
+- 📨 **Pipeline de sinais** com janela de edição de 20s e tratamento de
   mensagens apagadas (fecha a posição ao mercado)
 - 📡 **Listener de Telegram** (Telethon) que lê o Golden Moves, captura a
   relação de **resposta (reply)** entre mensagens e carrega o histórico
@@ -35,6 +35,11 @@ Moves**, espera a janela de edição (8s por defeito) e executa a estratégia de
   sem alvo) + resumo diário
 - 🩺 **Saúde operacional**: exceções, spread MT5 mensal, reconexões semanais
   e modifies de SL recusados em `/api/operations`
+- 👻 **Shadow-paper forward**: sinais live alimentam `auto_escada_3` e
+  `auto_escada_5` em contas paper separadas, mesmo com Manual/kill switch,
+  com gestão e deduplicação, sem chamar o MT5
+- ⏱️ **Resolução/latência auditável**: `/api/analysis/resolution` compara M1
+  nativo quando disponível, fallback explícito e atrasos 0/8/60/300 s
 - ✅ **CI GitHub Actions**: suite completa e validação das regras documentais
   em cada push/pull request
 
@@ -54,7 +59,7 @@ python -m venv .venv
 Testes:
 
 ```bash
-.venv/Scripts/python -m pytest -q     # 308 testes
+.venv/Scripts/python -m pytest -q     # 337 testes
 ```
 
 > **Windows**: para reiniciar o servidor, usa `taskkill //PID <pid> //F` (o
@@ -100,10 +105,12 @@ app/
   execution/           # SimEngine + MT5Engine (mesma interface)
   backtest.py          # Backtest de sinais reais em candles históricos
   analysis.py          # Edge: A/B/C, walk-forward
-  notify/telegram.py   # Notificador
+  notify/telegram.py   # Notificador (Telegram)
+  notify/whatsapp.py   # Notificador WhatsApp (resultados de trades, bridge Baileys)
   telegram_listener.py # Listener de Telegram (Telethon)
   static/              # Dashboard (index.html, login.html)
-tests/                 # 308 testes (parser, gestão, API, auth, backtest, docs)
+whatsapp/              # Sidecar Node/Baileys (bridge HTTP para o WhatsApp)
+tests/                 # 389+ testes (parser, gestão, API, auth, backtest, docs, shadow-paper, whatsapp)
 docs/                  # Documentação técnica, pública, deploy, changelog
 ```
 
@@ -121,3 +128,29 @@ docs/                  # Documentação técnica, pública, deploy, changelog
 | `SIGNALBOT_TG_PHONE` | Teu número (com indicativo) para o listener |
 | `SIGNALBOT_TG_GROUP` | Grupo de sinais (ex.: `Golden Moves`) |
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | (opcional) notificações via bot |
+| `WHATSAPP_ENABLED` | (opcional) `1` liga o push dos resultados de trades para o WhatsApp |
+| `WHATSAPP_BRIDGE_URL` | (opcional) URL do sidecar Baileys (default `http://127.0.0.1:8765`) |
+| `WHATSAPP_GROUP_JID` | (opcional) JID do grupo WhatsApp (ex. `1203630...@g.us`) |
+| `DASHBOARD_URL` | (opcional) link público da dashboard nas mensagens (default `https://n3xg3n.duckdns.org`) |
+
+## Resultados de trades no WhatsApp (opcional)
+
+Quando uma **trade real da conta principal** (MT5 demo) fecha, o bot publica no
+grupo configurado o resumo (símbolo, direção, entrada, **P&L por perna**, razão
+de saída, P&L total) **+ link da dashboard**. A corrida paper/shadow e o modo
+sim não enviam nada.
+
+Setup (1×, na VPS):
+
+1. Instala **Node.js LTS** e corre `cd whatsapp && npm install`.
+2. O `start.ps1` arranca o bridge (porta `8765`); abre **Diagnóstico →
+   WhatsApp** e pareia com o QR (telemóvel: *WhatsApp → Dispositivos ligados →
+   Ligar dispositivo*).
+3. No Diagnóstico copia o **JID** do grupo (secção "Grupos disponíveis") e
+   define no `.env`: `WHATSAPP_ENABLED=1` e `WHATSAPP_GROUP_JID=<jid>`.
+4. Reinicia o servidor. A sessão fica guardada em `whatsapp/session/` (não
+   volta a pedir QR).
+
+> ⚠️ A sessão usa o WhatsApp Web não-oficial (Baileys) — viola os termos do
+> WhatsApp e a conta que pareia o QR pode ser banida. Risco baixo para poucas
+> mensagens/dia, mas real.

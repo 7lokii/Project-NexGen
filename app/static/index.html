@@ -1,75 +1,26 @@
 <!DOCTYPE html>
-<html lang="pt" data-theme="cyberpunk">
+<html lang="pt">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Project NexGen — Dashboard</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2307080f'/%3E%3Crect x='4' y='4' width='56' height='56' rx='11' fill='none' stroke='%2300f0ff' stroke-width='3'/%3E%3Ctext x='32' y='46' font-family='Arial Black, Arial' font-size='36' font-weight='900' fill='%2300f0ff' text-anchor='middle'%3EN%3C/text%3E%3C/svg%3E">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@600;800&family=Chakra+Petch:wght@400;600;700&display=swap" rel="stylesheet">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%232562eb'/%3E%3Ctext x='32' y='46' font-family='Arial Black, Arial' font-size='36' font-weight='900' fill='%23ffffff' text-anchor='middle'%3EN%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="style.css">
+<script>try{if(localStorage.getItem("nx_theme")==="dark"||(localStorage.getItem("nx_theme")==null&&matchMedia("(prefers-color-scheme: dark)").matches))document.documentElement.dataset.theme="dark"}catch(e){}</script>
 </head>
 <body>
-<nav class="term-menu" id="termMenu" aria-label="Navegação">
-  <span class="term-menu-label">▚ NAV</span>
-  <a class="term-menu-item main" data-page="principal" href="/"><span class="cur">▸</span>PRINCIPAL<span class="sub">conta MT5 · estratégia ativa</span><span class="best"></span></a>
-  <span class="term-menu-label term-drop-toggle" id="dropEstrategiasToggle" role="button" tabindex="0" aria-expanded="true">▚ ESTRATÉGIAS <span class="drop-caret">▾</span></span>
-  <div class="term-drop" id="dropEstrategias">
-    <a class="term-menu-item" data-page="teste-nova_gestao" href="/teste?s=nova_gestao"><span class="cur">▸</span>TP1..TP5 + gestão<span class="sub">principal · referência</span><span class="best"></span></a>
-    <a class="term-menu-item" data-page="teste-tp2_protect" href="/teste?s=tp2_protect"><span class="cur">▸</span>Sair no TP2 + protect only<span class="sub">só protect do grupo</span><span class="best"></span></a>
-    <a class="term-menu-item" data-page="teste-auto_3" href="/teste?s=auto_3"><span class="cur">▸</span>Auto 3 TPs<span class="sub">3 pernas</span><span class="best"></span></a>
-    <a class="term-menu-item" data-page="teste-auto_escada_3" href="/teste?s=auto_escada_3"><span class="cur">▸</span>Auto 3 TPs + escada<span class="sub">Fase 2 · escada + trailing</span><span class="best"></span></a>
-    <a class="term-menu-item" data-page="teste-auto_escada_3_hibrida" href="/teste?s=auto_escada_3_hibrida"><span class="cur">▸</span>Auto 3 TPs + escada + protect híbrido<span class="sub">paper · proteção mecânica + grupo</span><span class="best"></span></a>
-    <a class="term-menu-item" data-page="teste-auto_escada_5" href="/teste?s=auto_escada_5"><span class="cur">▸</span>Auto 5 TPs + escada + confirmação<span class="sub">5 pernas + confirmação</span><span class="best"></span></a>
+<!-- chrome global (barra superior: navegação + estado + preços) renderizado
+     pelo common.js — a fonte única vive em common.js -->
+<div id="appChrome"></div>
+<main class="wrap">
+
+  <h1 class="sr-only">Project NexGen — Dashboard</h1>
+
+  <div class="view-switch" role="group" aria-label="Vista da dashboard">
+    <span class="eyebrow">▚ VISTA</span>
+    <button id="viewOperator" type="button" class="active">Operador</button>
+    <button id="viewAnalyst" type="button">Analista</button>
   </div>
-  <span class="term-menu-label">▚ SISTEMA</span>
-  <a class="term-menu-item" data-page="diagnostico" href="/diagnostico"><span class="cur">▸</span>DIAGNÓSTICO<span class="sub">MT5 · listener · BD</span></a>
-  <a class="term-menu-item" data-page="help" href="/help"><span class="cur">▸</span>HELP<span class="sub">estratégias · conceitos</span></a>
-</nav>
-<aside class="term-right" id="termRight" aria-label="Conta e sessão">
-  <div class="ts-head">
-    <p class="term-menu-label">▚ STATE</p>
-    <button id="btnTermRightCollapse" class="ts-toggle" title="Colapsar/expandir terminal" aria-label="Colapsar terminal">‹</button>
-  </div>
-  <div class="hdr-badges" id="hdrBadges">
-    <span id="modeBadge" class="badge manual">manual</span>
-    <span id="strategyBadge" class="badge violet" style="display:none" title="Estratégia ativa da conta principal"></span>
-    <span id="execBadge" class="badge mt5-dry" style="display:none"></span>
-    <span id="marketBadge" class="badge manual">🎲 simulação</span>
-    <span id="killBadge" class="badge paused" style="display:none">PAUSADO</span>
-  </div>
-  <div class="term-side" id="termSide" aria-label="Estado do sistema">
-    <div class="ts-head">
-      <p class="term-menu-label">▚ MARKET</p>
-      <button id="btnTermCollapse" class="ts-toggle" title="Colapsar/expandir terminal" aria-label="Colapsar terminal">‹</button>
-    </div>
-    <span id="priceStrip" class="price-strip"></span>
-  </div>
-  <div class="ts-meta">
-    <span class="online-users" id="onlineUsers" title="Utilizadores com a dashboard aberta">👥 —</span>
-    <span class="clock" id="clock">—</span>
-  </div>
-  <span class="hdr-actions">
-    <button id="btnKill" class="danger">🛑 Kill switch</button>
-    <button id="btnLogout" class="ghost" style="display:none" title="Terminar sessão">Sair</button>
-  </span>
-</aside>
-<div class="bg-reticle" aria-hidden="true"></div>
-<div id="dashBoot"><div class="dash-boot-inner">
-  <div class="boot-title">PROJECT NEXGEN</div>
-  <pre id="dashBootText"></pre>
-</div></div>
-<div class="wrap">
-  <header>
-    <button id="btnMenu" class="ghost" title="Menu: testes · diagnóstico" aria-label="Abrir menu">☰</button>
-    <div class="brand">
-      <h1 data-text="🤖 Project NexGen">🤖 Project NexGen</h1>
-      <span class="sub" id="subTitle">copy-trading · execução real (demo MT5)</span>
-    </div>
-    <div class="spacer"></div>
-    <button id="btnMenuStatus" class="ghost" title="Estado do sistema" aria-label="Abrir estado">▦</button>
-  </header>
 
   <div class="statusbar" id="statusBar">
     <span class="dot" id="stDot"></span>
@@ -77,11 +28,16 @@
     <span class="st-sep"></span>
     <span id="stLast">—</span>
   </div>
+  <div id="healthBanner" class="health-banner" role="status" aria-live="polite">
+    <span class="health-icon" aria-hidden="true">●</span>
+    <div><b id="healthTitle">A verificar saúde operacional…</b><span id="healthDetail" class="muted">A recolher MT5, listener e estado da execução.</span></div>
+    <span id="healthUpdated" class="health-updated">—</span>
+  </div>
   <div id="paperRaceWarn" style="display:none" class="paper-warn"></div>
 
-  <div id="paperRaceMini" class="paper-race-mini" style="display:none">
+  <div id="paperRaceMini" class="paper-race-mini analyst-only" style="display:none">
     <div class="lbl" style="display:flex;align-items:center;gap:8px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:2px 0 4px">
-      <span>🏁 Corrida paralela (paper) — quem está a ganhar</span>
+      <span>Corrida paralela (paper) — quem está a ganhar</span>
       <select id="paperRaceHours" title="Horizonte da curva (histórico de saldo)" style="margin-left:auto;font-size:11px;background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:2px 5px">
         <option value="24">24h</option>
         <option value="168">7 dias</option>
@@ -94,9 +50,19 @@
     </div>
   </div>
 
-  <div id="phase2Panel" class="card" style="display:none;margin-bottom:14px">
+  <div id="promotionPanel" class="card analyst-only" style="display:none;margin-bottom:14px;background:var(--panel2)">
     <div class="lbl" style="display:flex;align-items:center;gap:8px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:0 0 6px">
-      <span>🧪 Fase 2 — auto-gestão em corrida paper (ESTRATEGIAS.md Parte VIII)</span>
+      <span>Quanto falta para promover a auto_escada_3</span>
+      <span id="promotionWindowStatus" class="muted" style="margin-left:auto;text-transform:none"></span>
+    </div>
+    <div id="promotionStats" class="mini-stats"></div>
+    <div id="promotionMissing" class="muted" style="font-size:12px;margin-top:8px"></div>
+  </div>
+
+  <div id="phase2Panel" class="card analyst-only" style="display:none;margin-bottom:14px">
+    <div class="lbl phase-panel-head" style="display:flex;align-items:center;gap:8px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:0 0 6px">
+      <span>Fase 2 — auto-gestão em corrida paper</span>
+      <button id="phase2Toggle" class="panel-toggle" type="button" aria-expanded="false">Detalhes ▾</button>
     </div>
     <div class="mini-stats" id="phase2Stats"></div>
     <div id="phase2Candidates" style="display:flex;flex-direction:column;gap:6px;margin-top:8px"></div>
@@ -106,16 +72,17 @@
     </div>
     <div id="phase2Verdict" style="margin-top:8px;font-size:12px"></div>
     <div id="phase2Promote" style="margin-top:10px;display:none">
-      <button id="btnPhase2Promote" class="primary" style="border-color:var(--green);color:var(--green)" title="Passa a conta principal (MT5 real) a usar a auto_escada_3 — arranca a Fase 3 (grava o snapshot da auditoria de SL/divergências)">⬆️ Promover a principal (Fase 3)</button>
+      <button id="btnPhase2Promote" class="primary" style="border-color:var(--green);color:var(--green)" title="Passa a conta principal (MT5 real) a usar a auto_escada_3 — arranca a Fase 3 (grava o snapshot da auditoria de SL/divergências)">⬆️ Promover a principal (Fase 3)</button><span id="phase2PromotionGate" class="muted" style="font-size:11px;margin-left:8px"></span>
     </div>
     <div class="lbl" style="font-size:11px;color:var(--muted);margin:10px 0 4px">Ritmo de sinais/dia (60 dias) — a tendência que alimenta o ETA da Fase 3</div>
     <div id="phase2PaceCurve" style="display:flex;align-items:flex-end;gap:2px;height:36px"></div>
     <div class="muted" style="font-size:11px;margin-top:4px"><span style="color:#9A4FE8">▮</span> auto_escada_3 · <span style="color:var(--blue)">▮</span> nova_gestao (referência)</div>
   </div>
 
-  <div id="phase3Panel" class="card" style="display:none;margin-bottom:14px">
-    <div class="lbl" style="display:flex;align-items:center;gap:8px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:0 0 6px">
-      <span>🚀 Fase 3 — pronto a arrancar (ESTRATEGIAS.md Parte X)</span>
+  <div id="phase3Panel" class="card analyst-only" style="display:none;margin-bottom:14px">
+    <div class="lbl phase-panel-head" style="display:flex;align-items:center;gap:8px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:0 0 6px">
+      <span>Fase 3 — pronto a arrancar</span>
+      <button id="phase3Toggle" class="panel-toggle" type="button" aria-expanded="false">Detalhes ▾</button>
     </div>
     <div class="mini-stats" id="phase3Stats"></div>
     <div class="lbl" style="font-size:11px;color:var(--muted);margin:10px 0 4px">Checklist dos gates do spec</div>
@@ -129,7 +96,7 @@
       <div id="phase3TargetLog" style="font-size:12px;line-height:1.6"></div>
     </details>
     <div id="phase3Promote" style="margin-top:10px;display:none">
-      <button id="btnPhase3Promote" class="primary" style="border-color:var(--green);color:var(--green)" title="Passa a conta principal (MT5 real) a usar a auto_escada_3 — arranca a Fase 3">⬆️ Promover a principal (Fase 3)</button>
+      <button id="btnPhase3Promote" class="primary" style="border-color:var(--green);color:var(--green)" title="Passa a conta principal (MT5 real) a usar a auto_escada_3 — arranca a Fase 3">⬆️ Promover a principal (Fase 3)</button><span id="phase3PromotionGate" class="muted" style="font-size:11px;margin-left:8px"></span>
     </div>
     <details id="phase3Audit" style="margin-top:10px">
       <summary style="cursor:pointer;font-size:12px;color:var(--muted)">🔬 Auditoria de SL (target → valid → applied) · <span id="phase3AuditCount">0</span> trades</summary>
@@ -155,23 +122,54 @@
     <div id="phase3Snapshot" style="margin-top:8px;font-size:12px;display:none"></div>
   </div>
 
-  <div class="stats">
-    <div class="stat" title="Valor atual da conta (saldo + P&L aberto)"><div class="lbl">💰 Equity</div><div class="val" id="equity">—</div></div>
-    <div class="stat" title="Saldo da conta (equity sem P&L aberto)"><div class="lbl">🏦 Balance</div><div class="val" id="balance">—</div></div>
-    <div class="stat" title="Lucro/prejuízo das posições abertas agora"><div class="lbl">📊 P&L aberto</div><div class="val" id="openPnl">—</div></div>
-    <div class="stat" title="Resultado de hoje (trades fechadas)"><div class="lbl">📈 P&L hoje</div><div class="val" id="todayPnl">—</div></div>
-    <div class="stat" title="Posições abertas neste momento"><div class="lbl">🧾 Trades abertas</div><div class="val" id="openTrades">—</div></div>
-    <div class="stat" title="Sinais a aguardar aprovação (modo manual)"><div class="lbl">⏳ Sinais pendentes</div><div class="val" id="pendingSignals">—</div></div>
-  </div>
+  <section class="card analyst-only" style="margin-bottom:14px;background:var(--panel2)">
+    <div class="lbl" style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Narrativa do grupo · auditoria passiva</div>
+    <div class="muted" style="font-size:12px;margin:4px 0 8px">+pips e níveis como “Let’s say hi to 4600” podem sugerir um TP, mas nunca alteram ordens.</div>
+    <div id="groupAudits" style="font-size:12px;line-height:1.45"></div>
+  </section>
 
-  <div class="controls">
-    <div class="ctl">
-      <span class="lbl">Modo</span>
-      <div class="seg" id="modeSeg">
-        <button id="btnManual" class="active">Manual</button>
-        <button id="btnAuto">Auto</button>
+  <section id="shadowPaperPanel" class="card analyst-only" style="margin-bottom:14px;background:var(--panel2)">
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <div>
+        <div class="lbl" style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Shadow-paper · evidência forward sem ordens demo</div>
+        <div class="muted" style="font-size:12px;margin-top:3px">Recebe sinais live independentemente do modo/kill switch. Fica sempre em <b style="color:var(--green)">papel</b>; nunca chama o MT5.</div>
       </div>
+      <label style="margin-left:auto;display:flex;align-items:center;gap:7px;font-size:12px;cursor:pointer">
+        <input id="shadowPaperEnabled" type="checkbox">
+        ativo
+      </label>
     </div>
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:9px">
+      <label class="lbl" for="shadowPaperStrategies" style="font-size:11px">Estratégias shadow (Ctrl/Cmd para várias)</label>
+      <select id="shadowPaperStrategies" multiple size="3" style="min-width:260px;background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:4px;font-size:12px">
+        <option value="auto_escada_3">Auto 3 TPs + escada</option>
+        <option value="auto_escada_3_hibrida">Auto 3 TPs + protect híbrido</option>
+        <option value="auto_escada_5">Auto 5 TPs + escada</option>
+        <option value="auto_3">Auto 3 TPs</option>
+        <option value="tp2_protect">Sair no TP2 + protect</option>
+        <option value="nova_gestao">TP1..TP5 + gestão</option>
+      </select>
+      <span id="shadowPaperStatus" class="muted" style="font-size:12px"></span>
+    </div>
+    <div id="strategyLifecycleSummary" class="strategy-lifecycle-summary" aria-label="Estado das estratégias"></div>
+  </section>
+
+  <section class="dashboard-overview" aria-label="Resumo operacional">
+    <div class="overview-heading"><div><span class="eyebrow">▚ OPERAÇÕES</span><h2>Resumo operacional</h2></div><span class="muted overview-note">Estado atual da conta e execução</span></div>
+  <div class="stats">
+    <div class="stat" title="Valor atual da conta (saldo + P&L aberto)"><div class="lbl">Equity</div><div class="val" id="equity">—</div></div>
+    <div class="stat" title="Saldo/equity oficial reportado pelo broker MT5"><div class="lbl">Broker balance</div><div class="val" id="balance">—</div></div>
+    <div class="stat" title="Saldo/equity local quando MT5 está em dry-run"><div class="lbl">Sim equity</div><div class="val" id="simEquity">—</div></div>
+    <div class="stat" title="Lucro/prejuízo das posições abertas agora"><div class="lbl">P&L aberto</div><div class="val" id="openPnl">—</div></div>
+    <div class="stat" title="Resultado de hoje (trades fechadas)"><div class="lbl">P&L hoje</div><div class="val" id="todayPnl">—</div></div>
+    <div class="stat" title="Posições abertas neste momento"><div class="lbl">Trades abertas</div><div class="val" id="openTrades">—</div></div>
+    <div class="stat" title="Sinais a aguardar confirmação de gate (fora da zona / risco do lote mínimo)"><div class="lbl">Sinais pendentes</div><div class="val" id="pendingSignals">—</div></div>
+  </div>
+  </section>
+
+  <details class="advanced-controls">
+    <summary>Parâmetros da dashboard <span class="muted">risco · limites · janela de edição</span></summary>
+  <div class="controls">
     <div class="ctl">
       <span class="lbl tooltip" title="Risco POR TRADE: é a % do total da conta que perdes se o SL bater nesta trade. Não é o capital usado (a margem é menor).">Risco por trade</span>
       <div style="display:flex;align-items:center;gap:8px;">
@@ -182,19 +180,31 @@
     <div class="ctl">
       <span class="lbl">Limites</span>
       <div style="display:flex;flex-direction:column;gap:3px;">
-        <span class="val" style="font-size:12px;color:var(--muted)" id="limitsLbl">—</span>
         <div style="display:flex;align-items:center;gap:8px;">
-          <span class="lbl tooltip" style="font-size:11px;font-weight:400" title="Quanto tempo o bot espera pelas edições do Telegram antes de executar o sinal. Menos = executa mais depressa (mas menos tempo para o grupo corrigir).">janela edição</span>           <input type="range" id="editWinSlider" min="1" max="120" step="1" value="8" style="width:90px">
-          <span class="val" id="editWinVal">30s</span>
+          <span class="lbl tooltip" style="font-size:11px;font-weight:400" title="Perda máxima diária — se o P&L realizado de hoje chegar a esta % do saldo, o kill switch pausa tudo automaticamente. 0 = sem limite diário.">perda diária</span>
+          <input type="range" id="dailyLossSlider" min="0" max="15" step="0.5" value="3" style="width:90px">
+          <span class="val" id="dailyLossVal">3.0%</span>
         </div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span class="lbl tooltip" style="font-size:11px;font-weight:400" title="Quanto tempo o bot espera pelas edições do Telegram antes de executar o sinal. Menos = executa mais depressa (mas menos tempo para o grupo corrigir).">janela edição</span>
+          <input type="range" id="editWinSlider" min="1" max="120" step="1" value="20" style="width:90px">
+          <span class="val" id="editWinVal">20s</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span class="lbl tooltip" style="font-size:11px;font-weight:400" title="Margem automática fora da zona de entrada, em unidades de preço. Até este valor o sinal pode executar; acima disso pede confirmação manual.">tolerância zona</span>
+          <input type="range" id="entryGuardTolSlider" min="0" max="2" step="0.05" value="0.5" style="width:90px">
+          <span class="val" id="entryGuardTolVal">0.50</span>
+        </div>
+        <span class="val" style="font-size:12px;color:var(--muted)" id="limitsLbl">—</span>
       </div>
     </div>
     <div class="ctl" style="margin-left:auto;flex-direction:row;gap:8px;align-items:flex-end;">
-      <button id="btnSummary">📊 Resumo diário</button>
+      <button id="btnSummary">Resumo diário</button>
     </div>
   </div>
+  </details>
 
-  <button id="btnRiskToggle" class="risk-toggle" type="button" title="Mostrar/esconder o detalhe do risco por trade">⚙️ Detalhes de risco <span class="chev">▾</span></button>
+  <button id="btnRiskToggle" class="risk-toggle" type="button" title="Mostrar/esconder o detalhe do risco por trade">Detalhes de risco <span class="chev">▾</span></button>
   <div class="controls" id="autoPreview" style="margin-top:-4px">
     <div style="flex:1;min-width:280px">
       <span class="lbl" style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">
@@ -211,26 +221,45 @@
         <div class="risk-chip rc-warn" title="P&L de hoje vs limite diário — perda perto do limite pausa tudo"><div class="rc-lbl">P&L hoje</div><div class="rc-val" id="rcToday">—</div></div>
       </div>
     </div>
+    <div class="lane2-risk" id="riskLane2" style="display:none">
+      <div class="rc-lbl" style="display:flex;align-items:center;gap:6px">💠 Lane tp2 (2ª conta) — dimensionamento próprio
+        <span class="badge auto" style="font-size:10px" id="rc2Strategy"></span>
+      </div>
+      <div class="risk-preview">
+        <div class="risk-chip" title="Saldo/equity da 2ª conta (broker)"><div class="rc-lbl">Saldo lane 2</div><div class="rc-val" id="rc2Balance">—</div></div>
+        <div class="risk-chip" title="Perda se o SL bater na 2ª conta com o risco efetivo dela"><div class="rc-lbl">Perda se o SL bater</div><div class="rc-val" id="rc2PerTrade">—</div></div>
+        <div class="risk-chip" title="Lotes que o risco% da 2ª conta representa (estratégia própria — pernas/TPs dela)"><div class="rc-lbl">Lotes ≈ (lane 2)</div><div class="rc-val" id="rc2Lots">—</div></div>
+        <div class="risk-chip" title="Limite de perda diária sobre o saldo da 2ª conta"><div class="rc-lbl">Limite diário</div><div class="rc-val" id="rc2Daily">—</div></div>
+        <div class="risk-chip rc-warn" title="P&L de hoje da 2ª conta"><div class="rc-lbl">P&L hoje (lane 2)</div><div class="rc-val" id="rc2Today">—</div></div>
+        <div class="risk-chip" id="rc2SimBox" style="display:none" title="Resumo simulado da 2ª conta (MT5 dry-run) — lado a lado com o saldo broker"><div class="rc-lbl">Sim dry (lane 2)</div><div class="rc-val" id="rc2Sim">—</div></div>
+      </div>
+    </div>
     <div class="mode-hint" id="modeHint" style="flex:1;min-width:260px"></div>
   </div>
 
-  <div class="tabs">
-    <button class="active" data-tab="sinais">📥 Sinais<span class="tab-count" id="tabCountSinais" style="display:none"></span></button>
-    <button data-tab="posicoes">💼 Posições<span class="tab-count" id="tabCountPosicoes" style="display:none"></span></button>
-    <button data-tab="historico">📜 Histórico</button>
-    <button data-tab="relatorio">📊 Relatório</button>
-    <button data-tab="ignoradas">🚫 Ignoradas<span class="tab-count" id="tabCountIgnoradas" style="display:none"></span></button>
+  <div class="operator-focus">
+    <div class="eyebrow">▚ FOCO OPERACIONAL</div>
+    <div class="operator-focus-grid"><div><span class="lbl">Execução</span><b id="operatorExecState">—</b></div><div><span class="lbl">Posições</span><b id="operatorOpenState">—</b></div><div><span class="lbl">Último sinal</span><b id="operatorLastSignal">—</b></div><div><span class="lbl">Ação necessária</span><b id="operatorActionState">—</b></div></div>
+  </div>
+
+  <div class="tabs operator-tabs">
+    <button class="active" data-tab="sinais">Sinais<span class="tab-count" id="tabCountSinais" style="display:none"></span></button>
+    <button data-tab="posicoes">Posições<span class="tab-count" id="tabCountPosicoes" style="display:none"></span></button>
+    <button data-tab="historico">Histórico</button>
+    <button data-tab="relatorio">Relatório</button>
+    <button data-tab="confronto">⚔️ Confronto<span class="tab-count" id="tabCountConfronto" style="display:none"></span></button>
+    <button data-tab="ignoradas">Ignoradas<span class="tab-count" id="tabCountIgnoradas" style="display:none"></span></button>
   </div>
 
   <div class="layout">
-    <main>
+    <div class="layout-main">
       <!-- Sinais -->
-      <div id="tab-sinais" class="card">
+      <div id="tab-sinais" class="card" data-origin="live">
         <h2>Histórico de sinais recebidos
-          <select id="groupFilter"><option value="">Todos os grupos</option></select>
+          <select id="groupFilter" aria-label="Filtrar por grupo"><option value="">Todos os grupos</option></select>
         </h2>
         <div class="scroll"><table id="signalsTable">
-          <thead><tr><th>Quando</th><th>Grupo</th><th>Símbolo</th><th>Dir</th><th>Entrada</th><th>SL</th><th>TPs</th><th>Estado</th><th></th></tr></thead>
+          <thead><tr><th>Quando</th><th>Grupo</th><th>Símbolo</th><th>Dir</th><th>Entrada</th><th>SL</th><th>TPs</th><th>Estado</th><th><span class="sr-only">Ações</span></th></tr></thead>
           <tbody></tbody>
         </table></div>
       </div>
@@ -247,11 +276,34 @@
 
       <!-- Histórico de trades -->
       <div id="tab-historico" class="card" style="display:none">
-        <h2>Histórico de trades</h2>
+        <h2>Histórico de trades
+          <select id="laneFilter"><option value="">Todas as contas</option></select>
+        </h2>
         <div class="scroll"><table id="tradesTable">
-          <thead><tr><th>Aberto</th><th>Símbolo</th><th>Dir</th><th title="Lotes por perna (TP1..TP5), separados por +">Lotes (por perna)</th><th>Entrada</th><th>TPs</th><th>Estado</th><th title="Razão do fecho + contrafactual sem gestão (variante TP1..TP5 da corrida paper)">Saída / sem gestão</th><th>P&L</th></tr></thead>
+          <thead><tr><th>Aberto</th><th>Símbolo</th><th>Dir</th><th title="Lotes por perna (TP1..TP5), separados por +">Lotes (por perna)</th><th>Entrada</th><th>TPs</th><th>Estado</th><th>Conta</th><th title="Razão do fecho + contrafactual sem gestão (variante TP1..TP5 da corrida paper)">Saída / sem gestão</th><th>P&L</th></tr></thead>
           <tbody></tbody>
         </table></div>
+        <section id="tradeReplayPanel" class="card" style="display:none;margin-top:14px;background:var(--panel2)">
+          <h2>Replay determinístico da trade</h2>
+          <div id="tradeReplaySummary" class="muted" style="font-size:12px;margin-bottom:8px"></div>
+          <label class="muted" style="font-size:12px">Passo:
+            <select id="tradeReplayStep" style="margin-left:5px;background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:4px"></select>
+          </label>
+          <pre id="tradeReplaySnapshot" style="max-height:360px;overflow:auto;white-space:pre-wrap;font-size:11px;line-height:1.4;background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:8px;margin-top:8px"></pre>
+        </section>
+      </div>
+
+      <!-- Confronto perna-a-perna das lanes -->
+      <div id="tab-confronto" class="card" style="display:none">
+        <h2>⚔️ Confronto perna-a-perna — main vs tp2 no mesmo sinal
+          <span class="muted" style="font-size:12px;font-weight:400">fills, moves de SL, timing e P&L (read-only)</span>
+        </h2>
+        <div id="confrontoVerdict" class="confronto-verdict muted" style="font-size:12px;margin-bottom:10px">A carregar…</div>
+        <div class="scroll"><table id="confrontoTable">
+          <thead><tr><th>Sinal</th><th>Dir</th><th>Entrada</th><th>main (P&L · saída)</th><th>tp2 (P&L · saída)</th><th>Δ</th><th><span class="sr-only">Ações</span></th></tr></thead>
+          <tbody></tbody>
+        </table></div>
+        <p class="muted" style="font-size:11px;margin:6px 0 0">Fechos <b>phantom</b> (ordens recusadas pelo broker sem fill — ex.: AutoTrading OFF) ficam fora da comparação e contam em “voids”.</p>
       </div>
 
       <!-- Relatório -->
@@ -280,7 +332,7 @@
           <tbody></tbody>
         </table></div>
         <section id="operationalMetricsPanel" class="card" style="margin-top:20px;background:var(--panel2)">
-          <h2>🩺 Saúde operacional (Item 10)</h2>
+          <h2>Saúde operacional (Item 10)</h2>
           <p class="muted" style="margin:0 0 8px;font-size:13px">
             Métricas persistentes de exceções, spread MT5, reconexões e modifies de SL recusados.
             A tendência só é interpretável depois de pelo menos <b>2 semanas</b> de observações.
@@ -304,7 +356,36 @@
             </table></div>
           </details>
         </section>
-        <h2 style="margin-top:20px">⚖️ Divergências auto vs referência (Fase 2)</h2>
+        <section id="rejectionsPanel" class="card" style="margin-top:20px;background:var(--panel2)">
+          <h2>Porquê sem trade</h2>
+          <p class="muted" style="margin:0 0 8px;font-size:13px">
+            Sinais rejeitados/falhados no período, contados por categoria (modo autónomo:
+            nada fica à espera de humano — executa, rejeita ou expira com aviso).
+            Para cada sinal com parse completo, o replay mostra o que <b>teria</b>
+            acontecido (candles reais + gestão, read-only).
+          </p>
+          <div id="rejectionsStats" class="mini-stats"></div>
+          <div id="rejFilters" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:4px 0 8px;font-size:12px">
+            <label class="muted">Símbolo
+              <select id="rejSym" onchange="applyRejFilters()" style="margin-left:4px"><option value="">Todos os símbolos</option></select>
+            </label>
+            <label class="muted">Distância à zona — mín
+              <input id="rejDistMin" type="number" min="0" step="0.5" placeholder="0" oninput="applyRejFilters()" style="width:60px;margin-left:4px">
+            </label>
+            <label class="muted">máx (pips)
+              <input id="rejDistMax" type="number" min="0" step="0.5" placeholder="∞" oninput="applyRejFilters()" style="width:60px;margin-left:4px">
+            </label>
+            <button type="button" onclick="rejResetFilters()" style="font-size:11px">✕ limpar</button>
+            <span id="rejFilterCount" class="muted" style="font-size:11px"></span>
+          </div>
+          <div class="scroll" style="max-height:340px;overflow-y:auto"><table id="rejectionsTable">
+            <thead><tr><th>Quando</th><th>Símbolo</th><th>Categoria</th><th>Zona vs preço real</th><th>Razão</th><th>Replay (o que teria acontecido)</th></tr></thead>
+            <tbody></tbody>
+          </table></div>
+          <div id="rejFillsZone" style="margin-top:12px"></div>
+          <div id="rejectionsOrphans" style="margin-top:14px"></div>
+        </section>
+        <h2 style="margin-top:20px">Divergências auto vs referência (Fase 2)</h2>
         <p class="muted" style="margin:0 0 8px;font-size:13px">
           A <b>auto_escada_3</b> vs a <b>nova_gestao</b> no mesmo sinal: saídas com
           razão/P&L diferentes, ou a referência fechou por gestão do grupo e a auto
@@ -315,7 +396,7 @@
           <tbody></tbody>
         </table></div>
         <section id="protectLatencyPanel" class="card" style="margin-top:20px;display:block;background:var(--panel2)">
-          <h2>⏱️ Protect híbrido — latência auto vs grupo</h2>
+          <h2>Protect híbrido — latência auto vs grupo</h2>
           <p class="muted" style="margin:0 0 8px;font-size:13px">Quando a mensagem <b>protect</b> chega, compara a proteção mecânica da híbrida com o nível do grupo. O backtest não escreve na BD; paper/MT5 ficam auditados aqui.</p>
           <div id="protectLatencyStats" class="mini-stats"></div>
           <div class="scroll"><table id="protectLatencyTable">
@@ -323,7 +404,7 @@
             <tbody></tbody>
           </table></div>
         </section>
-        <h2 style="margin-top:20px">⚡ Real vs backtest (slippage + timing)</h2>
+        <h2 style="margin-top:20px">Real vs backtest (slippage + timing)</h2>
         <p class="muted" style="margin:0 0 8px;font-size:13px">
           Cada trade <b>real</b> fechada na conta demo vs o backtest do mesmo sinal na
           estratégia principal: diferença de <b>entrada</b> (preço real vs o fill do
@@ -336,7 +417,7 @@
           <thead><tr><th>Fecho</th><th>Símbolo</th><th>Entrada real</th><th>Fill do sim</th><th>Δ entrada</th><th>Δ saída</th><th>Razão</th><th>P&L real</th><th>P&L backtest</th><th>Atraso</th></tr></thead>
           <tbody></tbody>
         </table></div>
-        <h2 style="margin-top:20px">🔄 Auto paper vs Auto MT5 (Fase 3)</h2>
+        <h2 style="margin-top:20px">Auto paper vs Auto MT5 (Fase 3)</h2>
         <p class="muted" style="margin:0 0 8px;font-size:13px">
           Quando uma estratégia <b>auto</b> for promovida a principal (Fase 3), cada trade
           <b>real</b> fechada no MT5 é comparada com a trade de <b>papel</b> da mesma
@@ -349,11 +430,27 @@
           <thead><tr><th>Fecho real</th><th>Símbolo</th><th>Saída real</th><th>Saída paper</th><th>Δ preço</th><th>Δ timing</th><th>P&L real</th><th>P&L paper</th><th>Mesma saída?</th></tr></thead>
           <tbody></tbody>
         </table></div>
+        <h2 style="margin-top:20px">Recounts do grupo vs fills reais (R2)</h2>
+        <p class="muted" style="margin:0 0 8px;font-size:13px">
+          Cada <b>"Signal #N … +N pips"</b> que o grupo publica é comparado com a trade
+          <b>real</b> fechada no mesmo dia (direção + entrada mais próxima), com a
+          <b>excursão/reversão</b> reportadas verificadas contra o range real dos candles
+          do dia e a <b>causa provável</b> quando o bot não negociou. Divergência de
+          <b>entrada ≥ 20 pips</b>, de <b>pips ≥ 30</b>, <b>direção oposta</b> ou
+          excursão implausível fica marcada a vermelho e dispara alerta no feed — um
+          fill-audit externo grátis enquanto a demo negocia.
+        </p>
+        <div class="lbl" style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:10px 0 6px">Estado por semana (coerentes · divergentes · sem trade)</div>
+        <canvas id="recountsWeeklyChart" width="760" height="110" style="width:100%;height:110px;background:var(--panel2);border:1px solid var(--border);border-radius:10px;margin-bottom:12px"></canvas>
+        <div class="scroll"><table id="recountsTable">
+          <thead><tr><th>Quando</th><th>Signal</th><th>Direção</th><th>Entrada grupo</th><th>Excursão</th><th>Pips grupo</th><th>Trade real</th><th>Entrada bot</th><th>Pips bot</th><th>Candles do dia</th><th>Estado</th></tr></thead>
+          <tbody></tbody>
+        </table></div>
       </div>
 
       <!-- Auditoria: mensagens ignoradas -->
       <div id="tab-ignoradas" class="card" style="display:none">
-        <h2>🚫 Mensagens ignoradas
+        <h2>Mensagens ignoradas
           <span style="display:inline-flex;gap:8px;align-items:center">
             <input id="ignoredSearch" type="text" placeholder="🔍 filtrar…"
               style="background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:7px 12px;font-size:12.5px;width:180px;outline:none">
@@ -363,7 +460,7 @@
               <option value="30">últimos 30 dias</option>
               <option value="0">tudo</option>
             </select>
-            <button id="btnIgnoredRefresh" class="primary">🔄 Atualizar</button>
+            <button id="btnIgnoredRefresh" class="primary">Atualizar</button>
           </span>
         </h2>
         <p class="muted" style="margin:0 0 8px;font-size:13px">
@@ -378,17 +475,23 @@
         </table></div>
       </div>
 
-    </main>
+    </div>
 
     <aside>
       <div class="card">
         <h2>Notificações</h2>
+        <div class="feed-chips" id="feedChips" role="group" aria-label="Filtrar notificações">
+          <button type="button" class="chip active" data-feed-filter="all">tudo</button>
+          <button type="button" class="chip" data-feed-filter="main">main</button>
+          <button type="button" class="chip" data-feed-filter="tp2">tp2</button>
+          <button type="button" class="chip" data-feed-filter="risco">risco</button>
+        </div>
         <div class="feed" id="feed"><div class="empty">Sem eventos ainda.</div></div>
       </div>
-    </aside>
-  </div>
-  <div class="footer">🤖 <b>Project NexGen</b> · copy-trading · execução real (demo MT5) · conta <b id="acctFooter">—</b> · <span id="acctServerFooter">MetaQuotes-Demo</span></div>
-</div>
+    </aside>  </div>
+
+  <footer class="footer">🤖 <b>Project NexGen</b> · copy-trading · execução real (demo MT5) · conta <b id="acctFooter">—</b> · <span id="acctServerFooter">MetaQuotes-Demo</span></footer>
+</main>
 
 <script src="common.js"></script>
 <script>
@@ -399,12 +502,84 @@
 
 let groupFilter = "";
 
+let laneFilter = "";
+/* vista de lane: `?lane=tp2` (ou main) filtra o card de conta, posições,
+   histórico, relatório e risco — a página /segundaria serve este mesmo
+   HTML com ?lane=tp2 (history.replaceState no servidor) */
+const LANE_VIEW = (() => {
+  const v = new URLSearchParams(location.search).get("lane") || "";
+  return v === "tp2" || v === "main" ? v : "";
+})();
+/* chips do feed: tudo | main | tp2 | risco (na vista de lane começa na
+   própria lane para o feed acompanhar o card) */
+let feedFilter = LANE_VIEW || "all";
 /* -------------------------------------------------- conteúdo (snapshot) */
+
+function laneEntry(s) {
+  if (!LANE_VIEW) return null;
+  return (s.lanes || []).find(l => l.lane_id === LANE_VIEW) || null;
+}
+
+/* o card de conta na vista de lane usa os valores da própria lane (a
+   entrada `lanes[]` é autocontida: balanço/equity/P&L/risco) */
+function laneAccount(s) {
+  const le = laneEntry(s);
+  if (!le) return null;
+  return {
+    balance: le.balance,
+    equity: le.equity,
+    open_pnl: le.open_pnl,
+    realized_today: le.realized_today,
+    open_trades: le.open_trades,
+    currency: (le.account || {}).currency,
+    login: (le.account || {}).login,
+  };
+}
+function renderGroupAudits(rows) {
+  const host = $("groupAudits");
+  if (!host) return;
+  const items = (rows || []).slice(0, 8);
+  if (!items.length) { host.innerHTML = '<span class="muted">Sem progresso do grupo auditado.</span>'; return; }
+  host.innerHTML = items.map(a => {
+    const kind = a.kind === "level_mention" ? "nível" : a.kind === "tp5_reported" ? "TP5" : "pips";
+    const detail = a.reported_level != null ? `nível ${fmt(a.reported_level)}` :
+      a.reported_pips != null ? `+${fmt(a.reported_pips)} pips · TP provável ${a.inferred_tp == null ? "—" : fmt(a.inferred_tp)}` : "reportado";
+    const div = a.feed_divergence ? ' · <b style="color:var(--red)">⚠️ feed divergente</b>' : '';
+    return `<div style="padding:4px 0;border-bottom:1px solid var(--border)"><b>${esc(kind)}</b> · ${esc(detail)} · ${esc(a.confidence || "—")}${div} <span class="muted">${when(a.received_at)}</span></div>`;
+  }).join("");
+}
+
 function pageRender(s) {
-  const a = s.account, c = s.config;
+  const c = s.config;
+  /* na vista de lane o card de conta (equity/balance/P&L/abertas) passa a
+     mostrar a conta da lane, não a principal */
+  const a = laneAccount(s) || s.account;
   window._lastSnap = s;
   $("equity").textContent = cur(a.equity);
-  $("balance").textContent = cur(a.balance);
+  const balanceEl = $("balance");
+  if (LANE_VIEW) {
+    balanceEl.innerHTML = `${cur(a.balance)} <span class="muted" style="font-size:11px">· ${esc(LANE_VIEW)} · ${esc((laneEntry(s) || {}).strategy_name || "")}</span>`;
+  } else {
+    balanceEl.textContent = cur(a.balance);
+  }
+  const sim = (s.execution || {}).simulation || {};
+  const simEl = $("simEquity");
+  if (simEl) {
+    /* na vista de lane mostra o resumo SIMULADO da própria lane (dry-run
+       local) lado a lado com o saldo broker do card */
+    const leSim = LANE_VIEW ? (laneEntry(s) || {}).dry_run : null;
+    if (LANE_VIEW && leSim && leSim.enabled) {
+      simEl.textContent = leSim.equity != null ? cur(leSim.equity) : "—";
+      simEl.title = `P&L dry-run da lane ${LANE_VIEW}: ${money(leSim.realized_pnl || 0)} · saldo inicial ${cur(leSim.starting_balance || 0)} · broker não é alterado`;
+      simEl.className = "val " + (leSim.realized_pnl ? cls(leSim.realized_pnl) : "muted");
+    } else {
+      simEl.textContent = sim.enabled ? cur(sim.equity) : "—";
+      simEl.title = sim.enabled
+        ? `P&L dry-run ${money(sim.realized_pnl || 0)} · broker não é alterado`
+        : "Sem conta simulada separada";
+      simEl.className = "val " + (sim.enabled ? cls(sim.realized_pnl || 0) : "muted");
+    }
+  }
   const op = $("openPnl"); op.textContent = money(a.open_pnl); op.className = "val " + cls(a.open_pnl);
   const tp = $("todayPnl"); tp.textContent = money(a.realized_today); tp.className = "val " + cls(a.realized_today);
   if (_prevBalance !== null && a.balance !== _prevBalance) {
@@ -418,21 +593,80 @@ function pageRender(s) {
   $("pendingSignals").textContent = (s.signals || []).filter(x => x.status === "pending").length;
 
   renderPaperRaceWarn(s);
-  renderMt5Positions(s.mt5_positions, (s.execution && s.execution.account || {}).currency);
+  const execState = $("operatorExecState"), openState = $("operatorOpenState"), lastSignal = $("operatorLastSignal"), actionState = $("operatorActionState");
+  if (execState) execState.textContent = c.kill_switch ? "PAUSADO" : ((s.execution || {}).connected && (s.execution || {}).trade_allowed ? "MT5 online" : "verificar MT5");
+  if (openState) openState.textContent = `${a.open_trades || 0} aberta(s) · ${money(a.open_pnl || 0)}`;
+  if (lastSignal) { const ls = (s.signals || [])[0]; lastSignal.textContent = ls ? `${ls.symbol || "—"} · ${when(ls.received_at)}` : "sem sinais"; }
+  if (actionState) actionState.textContent = c.kill_switch ? "Reativar trading" : ((s.execution || {}).connected && (s.execution || {}).trade_allowed ? "Nenhuma" : "Verificar ligação");
 
-  $("btnManual").className = c.mode === "manual" ? "active" : "";
-  $("btnAuto").className = c.mode === "auto" ? "auto-active" : "";
+  const mt5pos = LANE_VIEW ? (s.mt5_positions || []).filter(p => (p.lane_id || "main") === LANE_VIEW) : s.mt5_positions;
+  if (contentChanged("mt5pos", (mt5pos || []).map(p => [p.trade_id || p.ticket, p.leg, p.profit, p.volume]))) renderMt5Positions(mt5pos, (s.execution && s.execution.account || {}).currency);
 
+  const posList = LANE_VIEW ? (s.positions || []).filter(p => (p.lane_id || "main") === LANE_VIEW) : s.positions;
   renderGroupFilter(s.signals);
-  renderSignals(s.signals);
-  renderPositions(s.positions);
-  renderTrades(s.trades);
-  renderFeed(s.notifications);
-  renderRiskPreview(s);
-  renderModeHint(s);
-  renderPhase2(s);
-  renderPhase3(s);
+  renderLaneFilter(s.trades);
+  /* otimização de render: o snapshot chega ~1×/s — só se reconstrói o DOM
+     da tab ATIVA e só quando o conteúdo mudou de facto (signature). A tab
+     oculta mantém o DOM (display:none) e é re-renderizada ao voltar a ela. */
+  const tab = window._activeTab || "sinais";
+  if (tab === "sinais" && (contentChanged("signals", s.signals) || (s.signals || []).some(x => x.status === "awaiting_edit"))) renderSignals(s.signals);
+  if (tab === "posicoes" && contentChanged("positions", posList)) renderPositions(posList);
+  if (tab === "historico" && contentChanged("trades", s.trades)) renderTrades(s.trades);
+  if (contentChanged("feed", (s.notifications || []).slice(0, 60).map(n => [n.id || n.created_at, n.kind, n.text, n.lane]))) renderFeed(s.notifications);
+  if (contentChanged("groupaudits", s.group_audits)) renderGroupAudits(s.group_audits);
+  if (contentChanged("risk", [a.equity, a.realized_today, c.risk_pct, c.daily_loss_limit_pct, c.kill_switch, c.risk_preview, c.risk_preview_by_lane, (s.lanes || []).map(l => [l.lane_id, l.balance, l.realized_today, l.effective_risk_pct])])) renderRiskPreview(s);
+  if (contentChanged("modehint", [c.kill_switch, c.edit_window_seconds, c.risk_pct, a.equity, (s.execution || {}).connected, (s.execution || {}).trade_allowed])) renderModeHint(s);
+  if (contentChanged("promo", [s.window, c.strategy])) renderPromotion(s);
+  if (contentChanged("phase2", [(s.paper || {}).accounts, s.fase3_eta, window._phase3dd, c.strategy])) renderPhase2(s);
+  if (contentChanged("phase3", [(s.paper || {}).accounts, s.fase3_eta, s.fase3_verdict, s.fase3_verdicts, s.fase3_snapshot, s.fase3_target_log, window._phase3dd, window._phase3pvr, window._phase3rvb, c.strategy, c.fase3_target])) renderPhase3(s);
+  if (contentChanged("shadow", [c.shadow_paper_enabled, c.shadow_paper_strategies, s.shadow_paper])) renderShadowPaper(s);
   updateTabCounts(s);
+}
+
+function renderPromotion(s) {
+  const box = $("promotionPanel");
+  if (!box) return;
+  const w = s.window || {};
+  const p = w.promotion || {};
+  const gate = p.forward_gate || {};
+  const gates = gate.gates || {};
+  box.style.display = "";
+  const ci = gate.mean_pnl_ci95 || {};
+  const dd = gate.drawdown || {};
+  const eta = p.eta || {};
+  const n = Number(gate.closed || 0);
+  const pf = gate.profit_factor;
+  const nOk = !!gates.enough_trades;
+  const pfOk = !!gates.profit_factor;
+  const ciOk = !!gates.positive_mean_ci95;
+  const ddOk = !!gates.drawdown;
+  const fmtGate = (ok, value) => `<span class="${ok ? "win" : "loss"}">${ok ? "✓" : "✗"}</span> ${value}`;
+  $("promotionStats").innerHTML =
+    `<div class="mini"><div class="lbl">N shadow</div><div class="val">${n}/20 ${fmtGate(nOk, "")}</div></div>` +
+    `<div class="mini"><div class="lbl">PF</div><div class="val">${pf == null ? "—" : fmt(pf, 2)} ${fmtGate(pfOk, "")}</div></div>` +
+    `<div class="mini"><div class="lbl">IC95 média</div><div class="val">${ci.low == null ? "—" : fmt(ci.low, 2)} ${fmtGate(ciOk, "")}</div></div>` +
+    `<div class="mini"><div class="lbl">DD</div><div class="val">${dd.pct_start == null ? "—" : fmt(dd.pct_start, 1) + "%"} ${fmtGate(ddOk, "")}</div></div>` +
+    `<div class="mini"><div class="lbl">Ritmo / ETA</div><div class="val" style="font-size:12px">${eta.pace == null ? "—" : fmt(eta.pace, 2) + "/dia"} · ${eta.eta ? esc(eta.eta.slice(0, 10)) : "—"}</div></div>`;
+  const missing = p.missing || [];
+  $("promotionMissing").innerHTML = p.eligible
+    ? `<span class="win">✅ Todos os gates forward passaram.</span> A promoção continua manual.`
+    : `🔒 Ainda falta: <b>${missing.length ? esc(missing.join(" · ")) : "evidência suficiente"}</b> — promoção bloqueada.`;
+  $("promotionWindowStatus").textContent = w.label ? `${w.label} · ${w.trades_closed || 0} reais fechadas` : "";
+}
+
+function renderShadowPaper(s) {
+  const enabled = $("shadowPaperEnabled");
+  const select = $("shadowPaperStrategies");
+  const status = $("shadowPaperStatus");
+  if (!enabled || !select || !status) return;
+  const c = s.config || {};
+  enabled.checked = !!c.shadow_paper_enabled;
+  const selected = new Set(c.shadow_paper_strategies || []);
+  for (const option of select.options) option.selected = selected.has(option.value);
+  const sp = s.shadow_paper || {};
+  status.textContent = c.shadow_paper_enabled
+    ? `✅ ${selected.size || 0} estratégia(s) · ${sp.open_trades || 0} trade(s) shadow aberta(s) · isolado do MT5`
+    : "desligado — não abre novas trades de papel";
 }
 
 /* painel da Fase 2: auto_escada_3 vs referência nova_gestao — saldo, PF,
@@ -789,9 +1023,13 @@ const nLegsFrom = (sigs) => {
 };
 
 function renderRiskPreview(s) {
-  const c = s.config, a = s.account;
+  const c = s.config;
+  /* na vista de lane o dimensionamento é o DA LANE (saldo, risco efetivo e
+     pernas da estratégia da lane); fora dela, o da principal */
+  const le = laneEntry(s);
+  const a = laneAccount(s) || s.account;
   const eq = Number(a.equity || 0);
-  const risk = Number(c.risk_pct || 0);
+  const risk = Number(le ? (le.effective_risk_pct != null ? le.effective_risk_pct : c.risk_pct) : c.risk_pct);
   const nLegs = nLegsFrom(s.signals);
   const perTrade = eq * risk / 100;
   const perLeg = perTrade / nLegs;
@@ -799,33 +1037,73 @@ function renderRiskPreview(s) {
   const today = Number(a.realized_today || 0);
   $("rcPerTrade").textContent = cur(perTrade);
   $("rcPerLeg").textContent = cur(perLeg);
-  const rp = c.risk_preview || {};
+  const rp = LANE_VIEW ? ((c.risk_preview_by_lane || {})[LANE_VIEW] || {}) : (c.risk_preview || {});
+  const nPr = (rp && rp.n_legs) ? rp.n_legs : nLegs;
+  $("rcPerLeg").textContent = cur(perTrade / nPr);
   const rcLots = $("rcLots");
   if (rcLots && rp.lots_total) {
     rcLots.textContent = `${rp.lots_total} total · ${rp.lots_per_leg} / perna`;
-    rcLots.title = `≈ ${rp.lots_total} lotes no total (${rp.lots_per_leg} por perna) numa trade de ${rp.symbol || "XAUUSD"}, com o risco de ${fmt(c.risk_pct, 1)}% e SL a ${fmt(rp.sl_dist, 1)} do preço — o lote exato depende do SL de cada sinal.`;
+    rcLots.title = `≈ ${rp.lots_total} lotes no total (${rp.lots_per_leg} por perna) numa trade de ${rp.symbol || "XAUUSD"}, com o risco de ${fmt(risk, 1)}% e SL a ${fmt(rp.sl_dist, 1)} do preço — o lote exato depende do SL de cada sinal.`;
   } else {
     rcLots.textContent = "—";
   }
   $("rcDaily").textContent = cur(dailyLimit);
   const tc = $("rcToday"); tc.textContent = (today > 0 ? "+" : "") + cur(today); tc.style.color = today < 0 && Math.abs(today) >= dailyLimit * 0.8 ? "var(--red)" : "";
-  $("riskModeTag").textContent = c.kill_switch ? "pausado" : (c.mode === "auto" ? "auto" : "manual");
-  $("riskModeTag").className = "badge " + (c.kill_switch ? "paused" : c.mode);
+  $("riskModeTag").textContent = c.kill_switch ? "pausado" : "auto";
+  $("riskModeTag").className = "badge " + (c.kill_switch ? "paused" : "auto");
   $("autoPreview").style.display = eq > 0 ? "" : "none";
+  /* card de dimensionamento da lane tp2 na dashboard principal (sempre que
+     a 2ª conta estiver ativa) — lado a lado com o da principal */
+  const rp2 = (c.risk_preview_by_lane || {}).tp2;
+  const le2 = (s.lanes || []).find(l => l.lane_id === "tp2");
+  const box2 = $("riskLane2");
+  if (!box2) return;
+  if (LANE_VIEW === "tp2" || !rp2 || !le2) { box2.style.display = "none"; return; }
+  box2.style.display = "";
+  const eq2 = Number(le2.balance || le2.equity || 0);
+  const risk2 = Number(le2.effective_risk_pct != null ? le2.effective_risk_pct : 1);
+  const perTrade2 = eq2 * risk2 / 100;
+  const daily2 = eq2 * Number(c.daily_loss_limit_pct || 0) / 100;
+  const today2 = Number(le2.realized_today || 0);
+  const s2 = $("rc2Strategy"); if (s2) s2.textContent = esc(le2.strategy_name || "") + " · " + (rp2.n_legs || "?") + " pernas";
+  $("rc2Balance").textContent = cur(eq2);
+  $("rc2PerTrade").textContent = cur(perTrade2);
+  $("rc2Lots").textContent = `${rp2.lots_total || "—"} total · ${rp2.lots_per_leg || "—"} / perna`;
+  $("rc2Lots").title = `≈ ${rp2.lots_total} lotes (${rp2.lots_per_leg} por perna, estratégia ${esc(le2.strategy_name || "")} · ${rp2.n_legs} pernas)`;
+  $("rc2Daily").textContent = cur(daily2);
+  const t2 = $("rc2Today"); t2.textContent = (today2 > 0 ? "+" : "") + cur(today2); t2.style.color = today2 < 0 && Math.abs(today2) >= daily2 * 0.8 ? "var(--red)" : "";
+  /* resumo simulado (dry-run) da 2ª conta, quando o terminal 2 está em dry */
+  const d2 = le2.dry_run || {};
+  const simBox = $("rc2SimBox");
+  if (simBox) {
+    if (d2.enabled) {
+      simBox.style.display = "";
+      $("rc2Sim").textContent = d2.equity != null
+        ? cur(d2.equity) + ` <span class="muted" style="font-size:10px">(P&L ${money(d2.realized_pnl || 0)})</span>`
+        : "—";
+    } else {
+      simBox.style.display = "none";
+    }
+  }
 }
 
 function renderModeHint(s) {
   const c = s.config, ex = s.execution || {};
   const el = $("modeHint");
-  el.className = "mode-hint " + (c.mode === "auto" ? "auto" : "manual");
+  el.className = "mode-hint auto"; // Item 12: só existe o caminho auto
+  /* na vista de lane o valor em risco é o da CONTA da lane, não o da
+     principal (o slider de risco é global, mas a leitura é por conta) */
+  const a = laneAccount(s) || s.account;
+  const eqA = Number(a.equity || 0);
+  const nLegsHint = (LANE_VIEW && (s.config.risk_preview_by_lane || {})[LANE_VIEW])
+    ? s.config.risk_preview_by_lane[LANE_VIEW].n_legs
+    : 5;
   if (c.kill_switch) {
     el.innerHTML = `<b>Pausado.</b> O kill switch está ativo — nenhum sinal executa. Clica <b>▶ Reativar</b> no topo para retomar.`;
-  } else if (c.mode === "auto") {
+  } else {
     const st = ex.connected ? (ex.trade_allowed ? "ordens a sério na conta demo" : "⚠️ AutoTrading OFF no terminal") : "⚠️ terminal MT5 não ligado";
     el.innerHTML = `<b>Próximo sinal do grupo</b>: entra na janela de edição (${fmt(c.edit_window_seconds, 0)}s) e executa sozinho · ${st} · ` +
-      `se o SL bater, perdes <b>${fmt(c.risk_pct, 1)}% da conta</b> (${cur(Number((s.account.equity || 0)) * Number(c.risk_pct) / 100)}), dividido por pernas TP1..TP5.`;
-  } else {
-    el.innerHTML = `<b>Manual</b>: os sinais do grupo ficam <b>pendentes</b> na tab Sinais (Aprovar / Rejeitar) · nada executa sem a tua confirmação.`;
+      `se o SL bater, perdes <b>${fmt(c.risk_pct, 1)}% da conta</b> (${cur(eqA * Number(c.risk_pct) / 100)}), dividido por ${nLegsHint} pernas.`;
   }
 }
 
@@ -837,6 +1115,25 @@ function renderGroupFilter(signals) {
   sel.innerHTML = '<option value="">Todos os grupos</option>' +
     groups.map(g => `<option value="${esc(g)}">${esc(g)}</option>`).join("");
   groupFilter = keep; sel.value = keep;
+}
+
+function renderLaneFilter(trades) {
+  const sel = $("laneFilter");
+  if (!sel) return;
+  if (LANE_VIEW) {
+    // vista de lane: o histórico fica FIXO na lane (o select mostra só ela)
+    if (sel.options.length !== 1 || sel.value !== LANE_VIEW) {
+      sel.innerHTML = '<option value="' + LANE_VIEW + '">' + (LANE_VIEW === "tp2" ? "tp2 (2ª conta)" : "main (principal)") + '</option>';
+    }
+    laneFilter = LANE_VIEW; sel.value = LANE_VIEW;
+    return;
+  }
+  const lanes = [...new Set((trades || []).map(x => x.lane_id || "main"))];
+  if (lanes.length <= 1 && sel.options.length === 1) return;
+  const keep = lanes.includes(laneFilter) ? laneFilter : "";
+  sel.innerHTML = '<option value="">Todas as contas</option>' +
+    lanes.map(l => `<option value="${esc(l)}">${esc(l)}</option>`).join("");
+  laneFilter = keep; sel.value = keep;
 }
 
 function replyTargetLabel(s, all) {
@@ -858,28 +1155,63 @@ function renderSignals(all) {
   for (const s of list) {
     const tr = document.createElement("tr");
     const time = when(s.received_at);
+    const pk = s.pending_kind;
+    const meta = s.pending_meta || {};
+    const rg = meta.risk_gate || {};
+    const gd = meta.guard || {};
+    const riskLine = (rg.risk_amount != null) ? `${fmt(rg.risk_amount)} € · perda máx ${fmt(rg.max_loss_est)} €` : "";
+    const zoneLine = (gd.zone_low != null && gd.zone_high != null) ? `zona ${fmt(gd.zone_low)}–${fmt(gd.zone_high)}` : "";
+    const extraTitle = [riskLine, zoneLine].filter(Boolean).join(" · ");
     let action = "";
-    if (s.status === "pending") {
-      action = `<button class="small green" style="padding:4px 9px" onclick="act('/api/signals/${s.id}/approve')">Aprovar</button>
-                <button class="small danger" style="padding:4px 9px" onclick="act('/api/signals/${s.id}/reject')">Rejeitar</button>`;
+    // Item 12: sem modo manual não há Aprovar/Rejeitar genéricos. Um sinal
+    // pendente é sempre um gate à espera de confirmação (zona/risco lote).
+    if (s.status === "pending" && (pk === "entry_guard" || pk === "min_lot_risk")) {
+      action = `<button class="small amber" style="padding:4px 9px" data-confirm-signal="${esc(s.id)}" title="${esc(extraTitle)}">⚠️ Confirmar</button>
+                <button class="small danger" style="padding:4px 9px" onclick="act('/api/signals/${s.id}/reject')">Descartar</button>`;
     }
     let statusText = s.status;
+    let riskHint = "";
     if (s.status === "awaiting_edit") {
       const rem = s.edit_deadline ? Math.max(0, Math.ceil((new Date(s.edit_deadline) - Date.now()) / 1000)) : "?";
-      statusText = "⏳ " + rem + "s";
+      statusText = rem + "s";
     } else if (s.status === "historical") statusText = "histórico";
     else if (s.status === "management") {
       const reply = replyTargetLabel(s, all);
-      statusText = reply ? `📨 gestão · ${reply}` : "📨 gestão";
+      statusText = reply ? `gestão · ${reply}` : "gestão";
+    } else if (s.status === "pending" && pk === "entry_guard") {
+      statusText = "fora da zona";
+      if (riskLine) riskHint = `<div class="muted" style="font-size:11px">risco ${fmt(rg.risk_amount)} € · perda máx ${fmt(rg.max_loss_est)} €</div>`;
+    } else if (s.status === "pending" && pk === "min_lot_risk") {
+      statusText = "risco excede";
+      if (riskLine) riskHint = `<div class="muted" style="font-size:11px">risco ${fmt(rg.risk_amount)} € · perda máx ${fmt(rg.max_loss_est)} €</div>`;
+    }
+    // marcador de revive: o grupo reabriu a janela de um sinal que tinha
+    // sido rejeitado/falhado — fica visível mesmo depois de executar (ou de
+    // ser rejeitado outra vez) para o operador ver à primeira vista.
+    let reviveBadge = "";
+    if (s.revived_from) {
+      const why = s.revived_reason ? " · motivo anterior: " + s.revived_reason : "";
+      const at = s.revived_at ? " às " + when(s.revived_at) : "";
+      reviveBadge = `<span class="tag revived" style="margin-left:4px" title="Reaberto${at} de ${esc(s.revived_from)}${esc(why)}">🔄 de ${esc(s.revived_from)}</span>`;
     }
     tr.innerHTML = `<td class="muted">${time}</td><td>${esc(s.source || "—")}</td><td>${esc(s.symbol) || "—"}</td>
       <td>${dirLabel(s.direction)}</td><td>${s.entry || "—"}</td><td>${s.stop_loss || "—"}</td>
       <td>${tpsCell(s)}</td>
-      <td><span class="tag ${s.status}" title="${esc(s.error || "")}">${statusText}</span></td><td>${action}</td>`;
+      <td><span class="tag ${s.status}" title="${esc(s.error || "")}">${statusText}</span>${reviveBadge}${riskHint}</td><td>${action}</td>`;
     tr.title = esc(s.raw_text || "");
     tb.appendChild(tr);
   }
 }
+
+document.querySelector("#signalsTable")?.addEventListener("click", async (ev) => {
+  const btn = ev.target.closest("[data-confirm-signal]");
+  if (!btn) return;
+  const id = btn.dataset.confirmSignal;
+  const reason = prompt("Confirmação manual fora da zona/risco — motivo (obrigatório, curto):");
+  if (reason === null) return;
+  if (!reason.trim()) { toast("Motivo obrigatório para confirmar", "err"); return; }
+  await act("/api/signals/" + encodeURIComponent(id) + "/confirm", { reason: reason.trim() });
+});
 
 function renderPositions(list) {
   const tb = document.querySelector("#positionsTable tbody");
@@ -916,21 +1248,67 @@ function renderMt5Positions(mt5pos, currency) {
 
 function renderTrades(list) {
   const tb = document.querySelector("#tradesTable tbody");
-  tb.innerHTML = "";
-  if (!list.length) { tb.innerHTML = '<tr><td colspan="9" class="empty">Sem trades ainda.</td></tr>'; return; }
-  for (const t of list) {
+  const filtered = laneFilter ? list.filter(t => (t.lane_id || "main") === laneFilter) : list;
+  if (!filtered.length) { tb.innerHTML = laneFilter ? `<tr><td colspan="10" class="empty">Sem trades para a conta ${esc(laneFilter)}.</td></tr>` : `<tr><td colspan="10" class="empty">Sem trades ainda.</td></tr>`; return; }
+  for (const t of filtered) {
     const tr = document.createElement("tr");
     const time = when(t.opened_at);
     const perLeg = lotsPerLeg(t);
+    const lane = (t.lane_id || "main") + (t.strategy_id ? " · " + t.strategy_id : "");
     tr.innerHTML = `<td class="muted">${time}</td><td>${esc(t.symbol)}</td><td>${dirLabel(t.direction)}</td>
       <td title="${esc(perLeg.title)}">${perLeg.html}</td><td>${t.entry}</td><td>${tpsCell(t)}</td>
-      <td><span class="tag ${t.status}">${tradeStatusLabel(t.status)}</span></td>${exitCell(t)}
+      <td><span class="tag ${t.status}">${tradeStatusLabel(t.status)}</span></td>
+      <td class="muted" style="font-size:11px">${esc(lane)}</td>${exitCell(t)}
       <td class="${cls(t.pnl)}">${money(t.pnl)}</td>`;
     tb.appendChild(tr);
   }
 }
 
-const EXIT_LABELS = { sl: "🛑 SL", tp1: "🎯 TP1", tp2: "🎯 TP2", tp3: "🎯 TP3", tp4: "🎯 TP4", tp5: "🎯 TP5", be: "⚖️ BE", protect: "🛡 protect", close_all: "📦 close_all", close_tp1: "📦 close_tp1", close_tp: "📦 close_tp", move_sl: "🔧 move_sl", killswitch: "⏹ kill", manual: "✋ manual", mixed: "🔀 misto" };
+const EXIT_LABELS = { sl: "SL", tp1: "TP1", tp2: "TP2", tp3: "TP3", tp4: "TP4", tp5: "TP5", be: "BE", protect: "protect", close_all: "close_all", close_tp1: "close_tp1", close_tp: "close_tp", move_sl: "move_sl", killswitch: "kill", manual: "manual", mixed: "misto" };
+async function replaySignal(signalId) {
+  const panel = $("tradeReplayPanel");
+  const summary = $("tradeReplaySummary");
+  const snapshot = $("tradeReplaySnapshot");
+  const steps = $("tradeReplayStep");
+  if (!panel || !summary || !snapshot || !steps) return;
+  panel.style.display = "";
+  summary.textContent = `A exportar a fita de ${signalId}…`;
+  snapshot.textContent = "";
+  try {
+    const tape = await fetch(`/api/operations/replay/tape?signal_id=${encodeURIComponent(signalId)}&limit=10000`).then(r => r.json());
+    if (!tape.ok) throw new Error(tape.error || "exportação falhou");
+    if (!tape.events || !tape.events.length) {
+      summary.textContent = "Sem eventos de journal para esta trade. Liga o journal antes de recolher a evidência.";
+      steps.innerHTML = "";
+      return;
+    }
+    const report = await fetch("/api/operations/replay", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ events: tape.events, include_snapshots: true }),
+    }).then(r => r.json());
+    if (!report.ok) throw new Error(report.error || "replay falhou");
+    const diff = report.parity && report.parity.equal ? "✅ paridade igual" : "⚠️ divergência encontrada";
+    const snaps = report.snapshots || [];
+    summary.innerHTML = `${esc(signalId)} · ${tape.meta.total} evento(s) · ${snaps.length} passo(s) · <b>${diff}</b>`;
+    steps.innerHTML = snaps.map((s, i) => `<option value="${i}">#${i} · ${esc(s.kind)} · ${esc(s.at)}</option>`).join("");
+    const show = () => {
+      const row = snaps[Number(steps.value) || 0];
+      snapshot.textContent = row ? JSON.stringify(row, null, 2) : "Sem snapshot.";
+    };
+    steps.onchange = show;
+    show();
+  } catch (e) {
+    summary.textContent = "Erro no replay: " + (e.message || e);
+    steps.innerHTML = "";
+    snapshot.textContent = "";
+  }
+}
+
+document.querySelector("#tradesTable")?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-replay-signal]");
+  if (button) replaySignal(button.dataset.replaySignal);
+});
+
 function exitCell(t) {
   const r = t.exit_reason;
   let html = "";
@@ -941,11 +1319,22 @@ function exitCell(t) {
     const c2 = cf > 0 ? "win" : (cf < 0 ? "loss" : "muted");
     html += `<div class="muted" style="font-size:11px;margin-top:3px" title="Contrafactual: o que teria dado sem gestão (variante TP1..TP5 da corrida paper, mesmo sinal)">sem gestão: <span class="${c2}">${money(cf)}</span>${delta !== 0 ? ` <span class="muted">(${delta > 0 ? "+" : ""}${money(delta)} gestão)</span>` : ""}</div>`;
   }
-  return html ? `<td>${html}</td>` : '<td><span class="muted">—</span></td>';
+  const replay = t.signal_id
+    ? `<button class="small" style="padding:3px 7px;margin-top:4px" data-replay-signal="${esc(t.signal_id)}" title="Exportar a fita e reproduzir esta trade nos três motores">replay</button>`
+    : "";
+  return html ? `<td>${html}${replay}</td>` : `<td><span class="muted">—</span>${replay}</td>`;
 }
 
 const FEED_GROUP_LABEL = { trade_open: "🚀 Aberturas", trade_close: "📦 Fechos", risk: "⚠️ Risco", system: "⚙️ Sistema", summary: "📊 Resumos", management: "📨 Gestão", revived: "🔄 Revives", race: "🏁 Corrida", divergence: "⚖️ Divergências auto vs referência" };
 
+/* chips do feed: tudo | main | tp2 | risco — aplicam-se ao render e ao
+   prepend (o WS em common.js chama prependFeed por notificação nova) */
+function feedPasses(n) {
+  const f = feedFilter;
+  if (!f || f === "all") return true;
+  if (f === "risco") return n.kind === "risk";
+  return (n.lane || "") === f || (!n.lane && f === "main");
+}
 function renderFeed(list) {
   const feed = $("feed");
   feed.innerHTML = "";
@@ -955,9 +1344,14 @@ function renderFeed(list) {
   const groups = {};
   const order = [];
   for (const n of list.slice(0, 60)) {
+    if (!feedPasses(n)) continue;
     const k = n.kind || "system";
     if (!groups[k]) { groups[k] = []; order.push(k); }
     groups[k].push(n);
+  }
+  if (!order.length) {
+    feed.innerHTML = '<div class="empty">Sem eventos para este filtro.</div>';
+    return;
   }
   for (const k of order) {
     const h = document.createElement("div");
@@ -987,17 +1381,37 @@ function feedHtml(m) {
     const t = m.action.slice(13);
     actionBtn = `<button class="feed-act" data-fase3-target="${esc(t)}" title="Baixar o alvo da janela da Fase 3 de 20 para ${esc(t)} sinais">🎯 Reduzir alvo para ${esc(t)}</button>`;
   }
-  return `<span class="t">${esc(when(m.created_at))}</span> <span class="ic" style="color:${color}">${icon}</span> ${esc(m.text)}${actionBtn}`;
+  const laneTag = m.lane === "tp2" ? ' <span class="feed-lane" title="Evento da 2ª conta (lane tp2)">💠 tp2</span>'
+    : (m.lane === "main" ? ' <span class="feed-lane main" title="Evento da conta principal">◆ main</span>' : "");
+  return `<span class="t">${esc(when(m.created_at))}</span> <span class="ic" style="color:${color}">${icon}</span> ${esc(m.text)}${laneTag}${actionBtn}`;
 }
 function prependFeed(m) {
-  playNotifSound(m.kind);
   const feed = $("feed");
+  if (!feed) return;
+  if (!feedPasses(m)) return;  // chips de filtro: fora do filtro atual não entra
   const d = document.createElement("div");
   d.className = "feed-item";
   d.innerHTML = feedHtml(m);
-  d.classList.add("fade-in");
   feed.prepend(d);
   while (feed.children.length > 60) feed.lastChild.remove();
+}
+
+/* clique nos chips do feed — estado partilhado por renderFeed/prependFeed */
+function bindFeedChips() {
+  const host = $("feedChips");
+  if (!host) return;
+  const setActive = (f) => {
+    feedFilter = f;
+    host.querySelectorAll(".chip").forEach(b => b.classList.toggle("active", b.dataset.feedFilter === f));
+    if (window._lastSnap) renderFeed(window._lastSnap.notifications);
+  };
+  host.querySelectorAll(".chip").forEach(b => {
+    b.onclick = () => setActive(b.dataset.feedFilter);
+  });
+  // normaliza o estado inicial (a "all" vem com active estático no HTML;
+  // na vista de lane o feed arranca na própria lane)
+  host.querySelectorAll(".chip").forEach(b =>
+    b.classList.toggle("active", b.dataset.feedFilter === feedFilter));
 }
 
 // botão de ação no feed (ex.: "⬆️ Promover" numa sugestão de troca) —
@@ -1027,21 +1441,93 @@ $("feed").addEventListener("click", async (ev) => {
 /* detalhe de risco colapsável (menos ruído na principal) */
 const btnRiskToggle = $("btnRiskToggle");
 if (btnRiskToggle) {
-  btnRiskToggle.onclick = () => document.body.classList.toggle("risk-collapsed");
+  btnRiskToggle.onclick = () => {
+    document.body.classList.toggle("risk-collapsed");
+    btnRiskToggle.setAttribute("aria-expanded", String(!document.body.classList.contains("risk-collapsed")));
+  };
 }
+["phase2", "phase3"].forEach((name) => {
+  const panel = $(name + "Panel");
+  const toggle = $(name + "Toggle");
+  if (!panel || !toggle) return;
+  panel.classList.add("phase-collapsed");
+  toggle.onclick = () => {
+    const collapsed = panel.classList.toggle("phase-collapsed");
+    toggle.setAttribute("aria-expanded", String(!collapsed));
+    toggle.textContent = collapsed ? "Detalhes ▾" : "Ocultar ▴";
+  };
+});
 
 /* ------------------------------------------------------------- actions */
-$("btnManual").onclick = async () => { const d = await act("/api/config", { mode: "manual" }); if (!d.error) toast("Modo manual", "ok"); };
-$("btnAuto").onclick = async () => { const d = await act("/api/config", { mode: "auto" }); if (!d.error) toast("Modo automático ativado — sinais executam sozinhos", "ok"); };
 $("btnSummary").onclick = async () => { const d = await act("/api/summary"); if (!d.error) toast("📊 Resumo diário enviado", "ok"); };
+const shadowEnabled = $("shadowPaperEnabled");
+if (shadowEnabled) shadowEnabled.onchange = async () => {
+  const d = await act("/api/config", { shadow_paper_enabled: shadowEnabled.checked });
+  if (!d.error) toast(shadowEnabled.checked ? "👻 Shadow-paper ativo" : "Shadow-paper desligado", "ok");
+};
+const shadowStrategies = $("shadowPaperStrategies");
+if (shadowStrategies) shadowStrategies.onchange = async () => {
+  const ids = Array.from(shadowStrategies.selectedOptions).map(o => o.value);
+  if (!ids.length) {
+    toast("Seleciona pelo menos uma estratégia shadow", "err");
+    if (last && last.config && last.config.shadow_paper_strategies) {
+      const old = new Set(last.config.shadow_paper_strategies);
+      for (const option of shadowStrategies.options) option.selected = old.has(option.value);
+    }
+    return;
+  }
+  const d = await act("/api/config", { shadow_paper_strategies: ids });
+  if (!d.error) toast("👻 Estratégias shadow atualizadas", "ok");
+};
 let riskTimer = null;
-function updateRiskPreviewLocal() {
-  if (!last) return;
-  const eq = Number((last.account || {}).equity || 0);
+function previewLots(balance, riskPct, slDist, nLegs) {
+  /* espelho da fórmula do backend (app/lanes.py::risk_preview):
+     XAUUSD contract=100, pip=0.01, step=0.01, vol_min=0.01 */
+  const contract = 100, pip = 0.01, step = 0.01, vmin = 0.01;
+  const riskAmount = balance * riskPct / 100;
+  const riskPips = slDist / pip;
+  let total = riskAmount / (riskPips * contract * pip);
+  total = Math.max(vmin, Math.min(100, Math.round(total / step) * step));
+  const perLeg = Math.max(vmin, total / nLegs);
+  return { total: +total.toFixed(2), perLeg: +perLeg.toFixed(2) };
+}
+function lpView() {
+  /* parâmetros de dimensionamento da vista atual (lane ou principal) */
+  const c = last.config, a = laneAccount(last) || last.account;
+  const eq = Number(a.equity || 0);
   const risk = parseFloat($("riskSlider").value);
-  const nLegs = nLegsFrom(last.signals);
+  const rp = LANE_VIEW
+    ? ((c.risk_preview_by_lane || {})[LANE_VIEW] || {})
+    : (c.risk_preview || {});
+  const nLegs = (rp && rp.n_legs) ? rp.n_legs : nLegsFrom(last.signals);
+  return { eq, risk, nLegs, slDist: (rp && rp.sl_dist) ? Number(rp.sl_dist) : 30.0 };
+}
+function updateRiskPreviewLocal() {
+  /* feedback imediato do slider: usa a CONTA DA VISTA (lane em /segundaria)
+     e o número de pernas da estratégia dessa lane — antes usava sempre o
+     saldo da primária e o slider parecia não responder na 2ª conta */
+  if (!last) return;
+  const { eq, risk, nLegs, slDist } = lpView();
   $("rcPerTrade").textContent = cur(eq * risk / 100);
   $("rcPerLeg").textContent = cur(eq * risk / 100 / nLegs);
+  /* lotes também acompanham o slider (antes ficavam no valor do snapshot) */
+  const lp = previewLots(eq, risk, slDist, nLegs);
+  const rcLots = $("rcLots");
+  if (rcLots) {
+    rcLots.textContent = `${lp.total} total · ${lp.perLeg} / perna`;
+    rcLots.title = `≈ ${lp.total} lotes no total (${lp.perLeg} por perna) numa trade de XAUUSD, com o risco de ${fmt(risk, 1)}% e SL a ${fmt(slDist, 1)} do preço — o lote exato depende do SL de cada sinal.`;
+  }
+  /* card da lane tp2 na dashboard principal também responde ao slider */
+  if (LANE_VIEW !== "tp2") {
+    const le2 = (last.lanes || []).find(l => l.lane_id === "tp2");
+    const rp2 = (last.config.risk_preview_by_lane || {}).tp2;
+    const box2 = $("riskLane2");
+    if (box2 && box2.style.display !== "none" && le2 && rp2) {
+      const lp2 = previewLots(Number(le2.balance || le2.equity || 0), Number(rp2.risk_pct) || risk, Number(rp2.sl_dist) || 30, rp2.n_legs || 2);
+      const rc2 = $("rc2Lots");
+      if (rc2) rc2.textContent = `${lp2.total} total · ${lp2.perLeg} / perna`;
+    }
+  }
   const hint = $("modeHint");
   if (hint && last.config.mode === "auto" && !last.config.kill_switch) {
     hint.innerHTML = hint.innerHTML.replace(/<b>[^<]*% da conta<\/b> \([^)]*\)/, `<b>${fmt(risk, 1)}% da conta</b> (${cur(eq * risk / 100)})`);
@@ -1051,7 +1537,12 @@ $("riskSlider").oninput = (e) => {
   $("riskVal").textContent = fmt(e.target.value, 1) + "%";
   updateRiskPreviewLocal();
   clearTimeout(riskTimer);
-  riskTimer = setTimeout(() => act("/api/config", { risk_pct: parseFloat(e.target.value) }), 250);
+  /* base POR LANE: a /segundaria altera só o risco da 2ª conta
+     (risk_pct:tp2); a principal continua no risk_pct/risk_pct:main */
+  const v = parseFloat(e.target.value);
+  const payload = LANE_VIEW === "tp2" ? { risk_pct_tp2: v }
+    : (LANE_VIEW === "main" ? { risk_pct_main: v } : { risk_pct: v });
+  riskTimer = setTimeout(() => act("/api/config", payload), 250);
 };
 let editWinTimer = null;
 const editWinSlider = $("editWinSlider");
@@ -1061,7 +1552,24 @@ if (editWinSlider) editWinSlider.oninput = (e) => {
   clearTimeout(editWinTimer);
   editWinTimer = setTimeout(() => act("/api/config", { edit_window_seconds: v }), 250);
 };
-$("groupFilter").onchange = (e) => { groupFilter = e.target.value; if (last) renderSignals(last.signals); };
+let entryGuardTolTimer = null;
+const entryGuardTolSlider = $("entryGuardTolSlider");
+if (entryGuardTolSlider) entryGuardTolSlider.oninput = (e) => {
+  const v = parseFloat(e.target.value);
+  $("entryGuardTolVal").textContent = fmt(v, 2);
+  clearTimeout(entryGuardTolTimer);
+  entryGuardTolTimer = setTimeout(() => act("/api/config", { entry_guard_tolerance: v }), 250);
+};
+let dailyLossTimer = null;
+const dailyLossSlider = $("dailyLossSlider");
+if (dailyLossSlider) dailyLossSlider.oninput = (e) => {
+  const v = parseFloat(e.target.value);
+  $("dailyLossVal").textContent = v === 0 ? "off" : fmt(v, 1) + "%";
+  clearTimeout(dailyLossTimer);
+  dailyLossTimer = setTimeout(() => act("/api/config", { daily_loss_limit_pct: v }), 250);
+};
+$("groupFilter").onchange = (e) => { groupFilter = e.target.value; if (last && (window._activeTab || "sinais") === "sinais") renderSignals(last.signals); };
+$("laneFilter").onchange = (e) => { laneFilter = e.target.value; if (last && (window._activeTab || "sinais") === "historico") renderTrades(last.trades); };
 
 /* ---------------------------------------------------------------- tabs */
 document.querySelectorAll(".tabs button").forEach((b) => {
@@ -1070,12 +1578,22 @@ document.querySelectorAll(".tabs button").forEach((b) => {
     document.querySelectorAll("main .card[id^=tab-]").forEach(x => x.style.display = "none");
     b.classList.add("active");
     const id = b.dataset.tab;
+    window._activeTab = id;
     const target = document.getElementById("tab-" + id);
     target.style.display = "";
     if (id === "relatorio") loadReport();
     if (id === "ignoradas") loadIgnored();
+    if (id === "confronto") loadConfronto();
+    else if (window._lastSnap) {
+      // re-render imediato da tab ativa (a cache de diff pode estar velha)
+      const s = window._lastSnap;
+      if (id === "sinais") renderSignals(s.signals);
+      if (id === "posicoes") renderPositions(LANE_VIEW ? (s.positions || []).filter(p => (p.lane_id || "main") === LANE_VIEW) : s.positions);
+      if (id === "historico") renderTrades(s.trades);
+    }
   };
 });
+bindFeedChips();
 
 /* --------------------------------------------------------------- report */
 $("reportDays").onchange = () => loadReport();
@@ -1114,9 +1632,95 @@ async function loadIgnored() {
   }
 }
 
+async function loadConfronto() {
+  const tb = document.querySelector("#confrontoTable tbody");
+  if (!tb) return;
+  try {
+    const r = await fetch("/api/lanes/ab").then(res => res.json());
+    if (!r.ok) throw new Error(r.error || "falhou");
+    const ver = r.verdict || {};
+    const vd = $("confrontoVerdict");
+    const cor = !r.sufficient ? "var(--muted)" : (r.suggestion ? "var(--amber)" : "var(--green)");
+    vd.style.color = cor;
+    vd.innerHTML = `<b>${r.n}/${r.min_comparable}</b> sinais comparáveis · delta total <b>${fmt(r.delta_total, 2)} €</b> ` +
+      `(main ${fmt(r.main.total_pnl, 2)} € · tp2 ${fmt(r.tp2.total_pnl, 2)} €) · per-sinal main ${r.per_signal.main_wins}/${r.per_signal.tp2_wins} (${r.per_signal.ties} iguais)` +
+      (r.void_count ? ` · ⚠️ ${r.void_count} fecho(s) phantom sem fill (main ${r.main.voids || 0} · tp2 ${r.tp2.voids || 0})` : "") +
+      ` · ${esc(ver.message || "")}`;
+    const cnt = $("tabCountConfronto"); if (cnt) { cnt.textContent = r.n || ""; cnt.style.display = (r.n || 0) ? "" : "none"; }
+    tb.innerHTML = "";
+    const rows = r.signals || [];
+    if (!rows.length) {
+      tb.innerHTML = '<tr><td colspan="7" class="empty">Sem sinais com trades fechadas nas DUAS lanes — a amostra começa a contar quando ambas fecharem o mesmo sinal.</td></tr>';
+      return;
+    }
+    for (const s of rows) {
+      const tr = document.createElement("tr");
+      const d = (s.main_reason ? esc(s.main_reason) : "—");
+      const d2 = (s.tp2_reason ? esc(s.tp2_reason) : "—");
+      tr.innerHTML = `<td class="muted">${esc(s.symbol || "")} · ${esc((s.signal_id || "").slice(0, 8))}</td>` +
+        `<td>${dirLabel(s.direction)}</td><td>${s.entry || "—"}</td>` +
+        `<td class="${cls(s.main_pnl)}">${money(s.main_pnl)} <span class="muted" style="font-size:11px">· ${d}</span></td>` +
+        `<td class="${cls(s.tp2_pnl)}">${money(s.tp2_pnl)} <span class="muted" style="font-size:11px">· ${d2}</span></td>` +
+        `<td class="${cls(s.delta)}">${s.delta > 0 ? "+" : ""}${money(s.delta)}</td>` +
+        `<td><button class="small" style="padding:3px 8px" data-legs-signal="${esc(s.signal_id)}">pernas</button></td>`;
+      tb.appendChild(tr);
+    }
+  } catch (e) {
+    tb.innerHTML = '<tr><td colspan="7" class="empty">Erro ao carregar o confronto: ' + esc(e.message || e) + '</td></tr>';
+  }
+}
+
+/* perna-a-perna de UM sinal: pernas lado a lado + linha temporal do journal */
+async function renderConfrontoLegs(signalId, tr) {
+  const detail = document.getElementById("legs-" + signalId);
+  if (detail) { detail.remove(); return; }
+  let data;
+  try {
+    data = await fetch("/api/lanes/ab/legs?signal_id=" + encodeURIComponent(signalId)).then(res => res.json());
+    if (!data.ok) throw new Error(data.error || "falhou");
+  } catch (e) {
+    tr.insertAdjacentHTML("afterend", `<tr id="legs-${esc(signalId)}"><td colspan="7" class="empty">Erro: ${esc(e.message || e)}</td></tr>`);
+    return;
+  }
+  const t = data.trades || {};
+  const mk = (laneId) => {
+    const lane = t[laneId];
+    if (!lane) {
+      return `<div class="mini" style="font-size:12px;color:var(--muted)">${laneId === "main" ? "◆" : "💠"} ${laneId}: sem trade real para este sinal</div>`;
+    }
+    const legs = (lane.legs || []).map(p =>
+      `<tr><td class="muted">#${p.leg}</td><td>${p.lots}</td><td>${p.entry}</td><td>${p.stop_loss}</td><td>${p.take_profit}</td>` +
+      `<td>${p.status === "closed" ? esc(p.exit_reason || "—") + (p.close_price != null ? " @ " + p.close_price : "") : "aberta"}</td>` +
+      `<td class="muted">${p.status === "closed" ? esc((p.closed_at || "").slice(11, 19)) : esc((p.opened_at || "").slice(11, 19))} UTC</td>` +
+      `<td class="${cls(p.pnl)}">${money(p.pnl)}</td></tr>`).join("");
+    const voidNote = lane.void ? ` <span class="muted" style="font-size:11px">(fecho phantom${lane.retcodes ? " · retcodes " + esc(lane.retcodes.join(",")) : ""})</span>` : "";
+    return `<div class="mini" style="margin:0">` +
+      `<div class="lbl">${laneId === "main" ? "◆ main" : "💠 tp2"} · ${esc(lane.strategy_id || "")} · ` +
+      `${lane.status === "closed" ? `fechada · P&L <span class="${cls(lane.pnl)}">${money(lane.pnl)}</span> · ${esc(lane.exit_reason || "—")}` : `aberta desde ${esc((lane.opened_at || "").slice(11, 19))} UTC`}${voidNote}</div>` +
+      `<table style="width:100%;margin-top:6px"><thead><tr><th>Perna</th><th>Lotes</th><th>Entrada</th><th>SL</th><th>TP</th><th>Saída</th><th>UTC</th><th>P&L</th></tr></thead><tbody>${legs || '<tr><td colspan="8" class="muted">sem pernas registadas</td></tr>'}</tbody></table>` +
+      `</div>`;
+  };
+  const journalHtml = (data.journal || []).map(j => j.error
+    ? `<div class="muted">⚠️ ${esc(j.error)}</div>`
+    : `<div><span class="muted">${esc((j.at || "").slice(11, 19))} UTC</span> ${j.lane === "tp2" ? "💠" : "◆"} <span class="muted">${esc(j.kind)}</span> · ${esc(j.summary || "")}</div>`
+  ).join("") || '<div class="muted">Sem eventos de execução gravados.</div>';
+  tr.insertAdjacentHTML("afterend", `<tr id="legs-${esc(signalId)}"><td colspan="7" style="padding:10px">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">${mk("main")}${mk("tp2")}</div>
+    <div style="margin-top:10px"><div class="lbl" style="font-size:11px;color:var(--muted);margin-bottom:4px">📼 Fita do journal (fills · SL moves · retcodes)${data.journal_enabled ? "" : " — journal desligado, só pernas da BD"}</div>
+    <div style="font-size:11px;line-height:1.7;max-height:180px;overflow:auto">${journalHtml}</div></div>
+  </td></tr>`);
+}
+
+document.querySelector("#confrontoTable")?.addEventListener("click", (ev) => {
+  const btn = ev.target.closest("[data-legs-signal]");
+  if (!btn) return;
+  const tr = btn.closest("tr");
+  renderConfrontoLegs(btn.dataset.legsSignal, tr);
+});
+
 async function loadReport() {
   const days = $("reportDays").value;
-  const r = await fetch("/api/report?days=" + days).then(res => res.json());
+  const r = await fetch("/api/report?days=" + days + (LANE_VIEW ? "&lane=" + LANE_VIEW : "")).then(res => res.json());
   $("rSignals").textContent = r.signals.total;
   $("rTrades").textContent = r.trades.closed;
   $("rWinRate").textContent = fmt(r.trades.win_rate, 1) + "%";
@@ -1130,8 +1734,10 @@ async function loadReport() {
   loadOperationalMetrics();
   loadDivergences();
   loadProtectLatency();
+  loadRejections($("reportDays").value || 30);
   loadRealVsBacktest();
   loadPaperVsRealAuto();
+  loadRecounts();
 
   const tb = document.querySelector("#reportGroupsTable tbody");
   tb.innerHTML = "";
@@ -1239,6 +1845,205 @@ async function loadDivergences() {
       tb.appendChild(tr);
     }
   } catch (e) { /* silencioso */ }
+}
+
+/* 'Porquê sem trade' (Fase 2): rejeições por categoria + replay hipotético */
+async function loadRejections(days) {
+  const panel = $("rejectionsPanel");
+  const tb = document.querySelector("#rejectionsTable tbody");
+  if (!panel || !tb) return;
+  try {
+    const r = await fetch("/api/analysis/rejections?days=" + (days || 30)).then(res => res.json());
+    const labels = {
+      zone: "Fora da zona / cap", min_lot: "Lote mínimo vs risco",
+      global_risk: "Kill switch / limite / max posições",
+      pending_expired: "Expirou sem confirmação", broker: "Ordem recusada pelo broker",
+      parse: "Sinal incompleto", llm: "Só registo (IA)",
+      execution_failed: "Nenhuma lane abriu", outro: "Outro",
+      ignored: "Conversa do grupo (ignorada)",
+    };
+    const colors = {
+      zone: "amber", min_lot: "red", global_risk: "red", pending_expired: "muted",
+      broker: "red", parse: "muted", llm: "muted", execution_failed: "amber", outro: "muted",
+      ignored: "muted",
+    };
+    let stats = `<div class="mini"><div class="lbl">Sinais rejeitados</div><div class="val">${r.total || 0}</div></div>`;
+    for (const [k, v] of Object.entries(r.by_kind || {})) {
+      if (!v) continue;
+      stats += `<div class="mini"><div class="lbl">${esc(labels[k] || k)}</div><div class="val ${colors[k] === "red" ? "loss" : colors[k] === "amber" ? "warn" : "muted"}">${v}</div></div>`;
+    }
+    if (r.replayed) {
+      stats += `<div class="mini"><div class="lbl">Com replay</div><div class="val">${r.replayed}</div></div>`;
+    }
+    $("rejectionsStats").innerHTML = stats;
+    renderRejFillsZone(r);
+    // símbolos para o filtro (rejeitados + órfãs)
+    const syms = [...new Set([...(r.items || []).map(i => i.symbol),
+      ...(r.orphans || []).map(o => o.symbol)].filter(Boolean))].sort();
+    const sel = $("rejSym");
+    sel.innerHTML = '<option value="">Todos os símbolos</option>' +
+      syms.map(s => `<option value="${esc(s)}">${esc(s)}</option>`).join("");
+    if (!syms.includes(rejFilterSym)) rejFilterSym = "";
+    sel.value = rejFilterSym;
+    applyRejFilters();
+  } catch (e) { /* silencioso — o bloco fica vazio se a API falhar */ }
+}
+
+let rejData = null;
+let rejFilterSym = "";
+
+/* filtros do bloco 'porquê sem trade': símbolo + intervalo de distância à zona */
+function applyRejFilters() {
+  rejData = rejData || {};
+  const sel = $("rejSym");
+  rejFilterSym = sel ? sel.value : "";
+  const dmin = parseFloat($("rejDistMin").value);
+  const dmax = parseFloat($("rejDistMax").value);
+  const hasDistFilter = $("rejDistMin").value !== "" || $("rejDistMax").value !== "";
+  const items = (rejData.items || []).filter(it => {
+    if (rejFilterSym && it.symbol !== rejFilterSym) return false;
+    const zp = it.zone_vs_price;
+    if (hasDistFilter) {
+      if (!zp) return false; // sem zona-vs-preço (conversa/parse) só sem filtro de distância
+      const d = zp.distance || 0;
+      if (!isNaN(dmin) && d < dmin) return false;
+      if (!isNaN(dmax) && d > dmax) return false;
+    }
+    return true;
+  });
+  renderRejRows(items);
+  const total = (rejData.items || []).length;
+  $("rejFilterCount").textContent =
+    (rejFilterSym || hasDistFilter) ? `mostrando ${items.length} de ${total}` : "";
+  renderRejectionOrphans(rejData, rejFilterSym || null);
+}
+
+function rejResetFilters() {
+  $("rejSym").value = "";
+  $("rejDistMin").value = "";
+  $("rejDistMax").value = "";
+  applyRejFilters();
+}
+
+function renderRejRows(items) {
+  const tb = document.querySelector("#rejectionsTable tbody");
+  if (!tb) return;
+  tb.innerHTML = "";
+  if (!items || !items.length) {
+    tb.innerHTML = '<tr><td colspan="6" class="empty">Sem rejeições com este filtro. 🎉</td></tr>';
+    return;
+  }
+  const outLbl = { win: "win", loss: "loss", be: "BE", open: "ficava aberta", no_data: "sem dados", erro: "erro replay" };
+  const labels = {
+    zone: "Fora da zona / cap", min_lot: "Lote mínimo vs risco",
+    global_risk: "Kill switch / limite / max posições",
+    pending_expired: "Expirou sem confirmação", broker: "Ordem recusada pelo broker",
+    parse: "Sinal incompleto", llm: "Só registo (IA)",
+    execution_failed: "Nenhuma lane abriu", outro: "Outro",
+    ignored: "Conversa do grupo (ignorada)",
+  };
+  const colors = {
+    zone: "amber", min_lot: "red", global_risk: "red", pending_expired: "muted",
+    broker: "red", parse: "muted", llm: "muted", execution_failed: "amber", outro: "muted",
+    ignored: "muted",
+  };
+  for (const it of items) {
+    const rep = it.replay;
+    let repHtml = "—";
+    if (rep) {
+      repHtml = `<span class="tag ${rep.outcome === "win" ? "open" : rep.outcome === "loss" ? "closed" : ""}">${outLbl[rep.outcome] || esc(rep.outcome)}</span>` +
+        `<span class="${cls(rep.pnl)}" style="font-size:12px"> ${rep.outcome === "erro" ? "" : money(rep.pnl)}</span>` +
+        (rep.mgmt_applied ? `<span class="muted" style="font-size:11px"> · ${rep.mgmt_applied} gestão</span>` : "");
+    }
+    // zona vs preço real na hora — mostra de imediato quão longe a entrada ficou
+    let zp = "—";
+    if (it.zone_vs_price) {
+      const z = it.zone_vs_price;
+      const inZone = z.in_zone ? `<span class="tag open">na zona</span>`
+        : `<span class="tag ${z.distance > 30 ? "closed" : "warn"}">${z.direction || "fora"}</span>`;
+      zp = `<div style="font-size:12px">${inZone}<div class="muted" style="font-size:11px;margin-top:2px">preço ${z.price} · zona ${z.zone_low ?? ""}–${z.zone_high ?? ""}${z.distance ? " · dist " + z.distance : ""}</div></div>`;
+    }
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td class="muted" style="font-size:12px">${when(it.received_at)}</td>` +
+      `<td>${esc(it.symbol || "—")} ${esc((it.direction || "").toUpperCase())}</td>` +
+      `<td><span class="tag ${colors[it.kind] === "red" ? "closed" : colors[it.kind] === "amber" ? "warn" : ""}">${esc(labels[it.kind] || it.kind)}</span></td>` +
+      `<td>${zp}</td>` +
+      `<td class="muted" style="font-size:12px;max-width:240px;overflow:hidden;text-overflow:ellipsis">${esc(it.error || (it.raw_text || "").slice(0, 80))}</td>` +
+      `<td style="font-size:12px">${repHtml}</td>`;
+    tb.appendChild(tr);
+  }
+}
+
+/* fills reais que entraram — zona vs preço na hora (na zona vs persecuções fora) */
+function renderRejFillsZone(r) {
+  const el = document.querySelector("#rejFillsZone");
+  if (!el) return;
+  const fz = r.fills_zone || {};
+  if (!fz.total_fills) { el.innerHTML = ""; return; }
+  let html = `<div style="font-size:13px;font-weight:600;margin-bottom:4px">🎯 Fills reais — dentro da zona vs persecuções fora dela</div>`;
+  html += `<div class="mini-stats">` +
+    `<div class="mini"><div class="lbl">Fills reais (janela)</div><div class="val">${fz.total_fills}</div></div>` +
+    `<div class="mini"><div class="lbl">Dentro da zona</div><div class="val win">${fz.in_zone || 0}</div></div>` +
+    `<div class="mini"><div class="lbl">Fora da zona (perseguição)</div><div class="val ${(fz.chases || 0) > 0 ? "warn" : ""}">${fz.chases || 0}</div></div>` +
+    `<div class="mini"><div class="lbl">% na zona</div><div class="val">${fz.pct_in_zone == null ? "—" : fmt(fz.pct_in_zone, 1) + "%"}</div></div>` +
+    (fz.max_distance != null ? `<div class="mini"><div class="lbl">Máx fora (pips)</div><div class="val warn">${fz.max_distance}</div></div>` : "") +
+    `</div>`;
+  if (fz.rows && fz.rows.length) {
+    html += `<div class="scroll" style="max-height:220px;overflow-y:auto"><table style="margin-top:8px"><thead><tr><th>Aberto</th><th>Símbolo</th><th>Entrada</th><th>Zona</th><th>Preço na hora</th><th>Distância</th><th>P&L</th></tr></thead><tbody>`;
+    for (const f of fz.rows.slice(0, 20)) {
+      const zone = Array.isArray(f.zone) ? `${f.zone[0]}–${f.zone[1]}` : (f.entry ?? "");
+      const badge = f.in_zone ? `<span class="tag open">na zona</span>`
+        : `<span class="tag ${(f.distance || 0) > 30 ? "closed" : "warn"}">${esc(f.distance_txt || "fora")}</span>`;
+      let px = f.price != null ? esc(f.price) : "—";
+      if (f.market_price != null) {
+        px = `${esc(f.market_price)} <span class="muted" style="font-size:11px">spot</span>`;
+        if (f.feed_divergence != null)
+          px += `<div class="muted" style="font-size:10px" title="preço GC=F (Yahoo) à hora do sinal — diverge do spot">GC=F ${esc(f.price ?? "")} · offset ${f.feed_divergence} pips</div>`;
+      }
+      html += `<tr><td class="muted" style="font-size:12px">${when(f.opened_at)}</td>` +
+        `<td>${esc(f.symbol)} ${esc((f.direction || "").toUpperCase())}</td>` +
+        `<td>${esc(f.entry ?? "")}</td><td>${esc(zone)}</td>` +
+        `<td>${px}</td>` +
+        `<td>${badge}</td>` +
+        `<td class="${cls(f.pnl)}" style="font-size:12px">${money(f.pnl)}</td></tr>`;
+    }
+    html += "</tbody></table></div>";
+  }
+  el.innerHTML = html;
+}
+
+/* órfãs — pendentes na zona que nunca preencheram e porque o preço não voltou */
+function renderRejectionOrphans(r, sym) {
+  const el = document.querySelector("#rejectionsOrphans");
+  if (!el) return;
+  let rows = (r.orphans || []).slice(0, 25);
+  if (sym) rows = rows.filter(o => o.symbol === sym);
+  if (!r.orphans_total) {
+    el.innerHTML = "";
+    return;
+  }
+  const reasonLbl = { pending_expired: "expirada (TTL)", pending_orphan: "órfã (ticket perdido)", pending_cancelled: "cancelada pelo broker" };
+  let html = `<div style="font-size:13px;font-weight:600;margin-bottom:4px">🧨 ${r.orphans_total} ordem(ns) pendente(s) que nunca preencheram</div>`;
+  html += `<div class="muted" style="font-size:12px;margin-bottom:8px">Ordens na zona enviadas ao broker que não entraram — e porquê o preço não voltou ao nível da entrada (range de preços durante a vida da ordem).</div>`;
+  html += `<table style="margin-top:6px"><thead><tr><th>Fecho</th><th>Perna</th><th>Zona</th><th>Porquê não entrou</th><th>Razão</th></tr></thead><tbody>`;
+  for (const o of rows) {
+    const w = o.why;
+    let whyHtml = "<span class=muted>sem candles</span>";
+    if (w) {
+      const range = (w.high != null && w.low != null) ? `${w.low} – ${w.high}` : "—";
+      let tag = "";
+      if (w.entry_in_range) tag = `<span class="tag warn">tocou a entrada</span>`;
+      else tag = `<span class="tag closed">nunca tocou</span>`;
+      whyHtml = `${tag}<div class="muted" style="font-size:11px;margin-top:2px">${esc(w.verdict)} · range ${range}${w.max_miss ? " · faltou " + w.max_miss + " (nível entrada " + o.entry + ")" : ""}</div>`;
+    }
+    const zone = Array.isArray(o.zone) ? `${o.zone[0]}–${o.zone[1]}` : (o.entry || "");
+    html += `<tr><td class="muted" style="font-size:12px">${when(o.closed_at)}</td>` +
+      `<td>${esc(o.symbol || "")} leg${o.leg} ${esc((o.direction || "").toUpperCase())}</td>` +
+      `<td>${esc(zone)}</td><td>${whyHtml}</td>` +
+      `<td><span class="tag warn">${esc(reasonLbl[o.exit_reason] || o.exit_reason)}</span></td></tr>`;
+  }
+  html += "</tbody></table>";
+  el.innerHTML = html;
 }
 
 /* telemetria do protect híbrido (backtest/paper/MT5) */
@@ -1352,15 +2157,143 @@ async function loadPaperVsRealAuto() {
   }
 }
 
+/* recounts do grupo vs fills reais (R2) — fill-audit externo lado a lado */
+async function loadRecounts() {
+  const tb = document.querySelector("#recountsTable tbody");
+  if (!tb) return;
+  try {
+    const r = await fetch("/api/recounts").then(res => res.json());
+    const rows = r.recounts || [];
+    drawRecountsWeekly(r.weekly || []);
+    tb.innerHTML = "";
+    if (!rows.length) {
+      tb.innerHTML = '<tr><td colspan="11" class="empty">Sem recounts do grupo ainda — quando o admin publicar o recap "Signal #N … +N pips", aparece aqui comparado com as trades reais do dia.</td></tr>';
+      return;
+    }
+    for (const item of rows) {
+      const rc = item.recount || {};
+      const au = item.audit || {};
+      const cc = au.candle_check || {};
+      const tr = document.createElement("tr");
+      let estado;
+      if (au.alert) estado = `<span class="tag loss" title="${esc(au.reason || "")}">✗ ${esc(au.reason || "divergente")}</span>`;
+      else if (au.matched) estado = '<span class="tag win">✓ coerente</span>';
+      else estado = `<span class="tag closed" title="${esc(au.probable_cause || "")}">sem trade no dia</span>`;
+      const exc = rc.excursion_price ?
+        `${rc.excursion_dir === "up" ? "↑" : "↓"} ${fmt(rc.excursion_price, 2)} → ${fmt(rc.reversal_price, 2)}` : "—";
+      // tooltip do candle-check: range do dia + janela ±3h à volta do sinal,
+      // com cada flag (excursão/reversão) — o operador vê a plausibilidade
+      // sem abrir logs
+      let ccTip = "";
+      if (cc.checked) {
+        const parts = [
+          `dia ${cc.day_high}/${cc.day_low}`,
+          `excursão ok=${cc.excursion_ok}`,
+          `reversão ok=${cc.reversal_ok}`,
+        ];
+        if (cc.window_plausible !== undefined) {
+          parts.push(`janela ±${cc.window_hours || 3}h ${cc.window_high}/${cc.window_low}`);
+          parts.push(`janela plausível=${cc.window_plausible}`);
+        }
+        ccTip = parts.join(" · ");
+      }
+      let candle;
+      if (!cc.checked) candle = "—";
+      else {
+        // veredicto combinado spot MT5 + GC=F: implausível no GC=F mas
+        // plausível no spot é divergência do feed de futuros, não relato
+        // suspeito (o grupo negocia spot)
+        if (cc.verdict_kind === "feed_divergence") {
+          candle = `<span class="tag pending" title="${esc(ccTip)} · spot MT5 plausível · GC=F implausível (${esc(cc.feed_divergence === true ? "divergência do feed de futuros" : "")})">⚠️ divergência de feed</span>`;
+        } else {
+        // badge da janela ±3h do sinal (veredicto da sessão) + contexto do
+        // dia: verde se a janela é plausível, vermelho se não — visível sem
+        // depender do tooltip
+        const winBadge = cc.window_plausible !== undefined
+          ? (cc.window_plausible
+              ? `<span class="tag win" title="janela ±${cc.window_hours || 3}h ${cc.window_high}/${cc.window_low} · ${esc(ccTip)}">✓ janela ok</span>`
+              : `<span class="tag loss" title="janela ±${cc.window_hours || 3}h ${cc.window_high}/${cc.window_low} · ${esc(ccTip)}">✗ janela implausível</span>`)
+          : (cc.plausible
+              ? `<span class="tag win" title="${esc(ccTip)}">✓ range ok</span>`
+              : `<span class="tag loss" title="${esc(ccTip)}">✗ fora do range</span>`);
+        const dayCtx = cc.window_plausible !== undefined
+          ? (cc.day_plausible
+              ? `<span class="tag" title="dia ${cc.day_high}/${cc.day_low} (outra sessão)">dia ok</span>`
+              : `<span class="tag loss" title="dia ${cc.day_high}/${cc.day_low}">dia fora</span>`)
+          : "";
+        candle = `${winBadge}${dayCtx ? " " + dayCtx : ""}`;
+        }
+      }
+      const tradeCell = au.matched ?
+        `<span class="tag">${esc(au.trade_id || "")}</span>` +
+        (au.direction_mismatch ? ` <span class="tag loss">direção oposta</span>` : "") :
+        `<span class="muted" title="${esc(au.probable_cause || "")}">sem trade</span>`;
+      tr.innerHTML =
+        `<td class="muted" style="white-space:nowrap" title="${esc(rc.received_at || "")}">${when(rc.received_at)}</td>` +
+        `<td>#${rc.signal_number}</td>` +
+        `<td>${rc.direction === "sell" ? "▼ SELL" : "▲ BUY"}</td>` +
+        `<td>${fmt(rc.entry, 2)}</td>` +
+        `<td>${exc}</td>` +
+        `<td>${fmt(rc.pips, 0)}</td>` +
+        `<td>${tradeCell}</td>` +
+        `<td>${au.matched ? fmt(au.bot_entry, 2) : "—"}</td>` +
+        `<td>${au.matched ? fmt(au.bot_pips, 0) : "—"}</td>` +
+        `<td>${candle}</td>` +
+        `<td>${estado}</td>`;
+      tb.appendChild(tr);
+    }
+  } catch (e) {
+    tb.innerHTML = '<tr><td colspan="11" class="empty">Erro ao carregar recounts.</td></tr>';
+  }
+}
+
+/* estado dos recounts por semana — barras empilhadas (coerente/divergente/sem trade) */
+function drawRecountsWeekly(weekly) {
+  const canvas = $("recountsWeeklyChart");
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  const pal = chartPalette();
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  if (!weekly.length) {
+    ctx.fillStyle = pal.axis; ctx.font = "13px sans-serif";
+    ctx.fillText("Sem recounts ainda — as barras aparecem quando o grupo publicar os recaps.", 20, H / 2);
+    return;
+  }
+  const padL = 46, padR = 10, padT = 14, padB = 24;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const max = Math.max(1, ...weekly.map(w => w.total));
+  const bw = Math.min(46, plotW / weekly.length * 0.55);
+  const colors = { coherent: "#089981", divergent: "#f23645", no_trade: pal.axis };
+  weekly.forEach((w, i) => {
+    const x = padL + i * (plotW / weekly.length) + (plotW / weekly.length - bw) / 2;
+    let y = padT + plotH;
+    for (const key of ["coherent", "divergent", "no_trade"]) {
+      const h = (w[key] || 0) / max * plotH;
+      if (h <= 0) continue;
+      ctx.fillStyle = colors[key];
+      ctx.fillRect(x, y - h, bw, h);
+      y -= h;
+    }
+    ctx.fillStyle = pal.axis; ctx.font = "10px sans-serif"; ctx.textAlign = "center";
+    ctx.fillText(w.week.replace("W", "S"), x + bw / 2, H - 8);
+  });
+  ctx.textAlign = "left"; ctx.font = "10px sans-serif";
+  ctx.fillStyle = "#089981"; ctx.fillText("■ coerente", padL + 4, padT + 4);
+  ctx.fillStyle = "#f23645"; ctx.fillText("■ divergente", padL + 84, padT + 4);
+  ctx.fillStyle = pal.axis; ctx.fillText("■ sem trade", padL + 170, padT + 4);
+}
+
 /* --------------------------------------------------------------- chart */
 function drawDailyChart(days) {
   const canvas = $("dailyChart");
   if (!canvas) return;
   const ctx = canvas.getContext("2d");
+  const pal = chartPalette();
   const W = canvas.width, H = canvas.height;
   ctx.clearRect(0, 0, W, H);
   if (!days.length) {
-    ctx.fillStyle = "#8a94a6"; ctx.font = "13px sans-serif";
+    ctx.fillStyle = pal.axis; ctx.font = "13px sans-serif";
     ctx.fillText("Sem trades fechadas no período — as barras aparecem quando houver dias com fecho.", 20, H / 2);
     return;
   }
@@ -1372,31 +2305,31 @@ function drawDailyChart(days) {
   const step = plotW / days.length;
   const x0 = i => padL + step * i + (step - bw) / 2;
   const y = v => padT + plotH - ((v + max) / (2 * max)) * plotH;
-  ctx.strokeStyle = "#263040"; ctx.lineWidth = 1;
+  ctx.strokeStyle = pal.grid; ctx.lineWidth = 1;
   ctx.beginPath(); ctx.moveTo(padL, y(0)); ctx.lineTo(W - padR, y(0)); ctx.stroke();
   days.forEach((d, i) => {
     const bx = x0(i);
     const h = Math.abs(d.pnl) / max * (plotH / 2);
     const by = d.pnl >= 0 ? y(d.pnl) : y(0);
-    ctx.fillStyle = d.pnl >= 0 ? "#22c55e" : "#ef4444";
+    ctx.fillStyle = d.pnl >= 0 ? "#089981" : "#f23645";
     ctx.fillRect(bx, by, bw, Math.max(1, h));
-    ctx.fillStyle = "#8a94a6"; ctx.font = "10px sans-serif";
+    ctx.fillStyle = pal.axis; ctx.font = "10px sans-serif";
     ctx.fillText(ddmm(d.day), bx, H - 8);
   });
-  ctx.strokeStyle = "#3b82f6"; ctx.lineWidth = 1.5; ctx.beginPath();
+  ctx.strokeStyle = "#2962ff"; ctx.lineWidth = 1.5; ctx.beginPath();
   days.forEach((d, i) => {
     const cy = padT + plotH - (d.win_rate / 100) * plotH;
     i === 0 ? ctx.moveTo(x0(i) + bw / 2, cy) : ctx.lineTo(x0(i) + bw / 2, cy);
   });
   ctx.stroke();
-  ctx.fillStyle = "#8a94a6"; ctx.font = "9px sans-serif";
+  ctx.fillStyle = pal.axis; ctx.font = "9px sans-serif";
   ctx.fillText("WR", W - padR - 18, padT - 3);
   days.forEach((d, i) => {
     const cy = padT + plotH - (d.win_rate / 100) * plotH;
-    ctx.fillStyle = "#3b82f6";
+    ctx.fillStyle = "#2962ff";
     ctx.beginPath(); ctx.arc(x0(i) + bw / 2, cy, 2.5, 0, Math.PI * 2); ctx.fill();
   });
-  ctx.fillStyle = "#8a94a6"; ctx.font = "9px sans-serif";
+  ctx.fillStyle = pal.axis; ctx.font = "9px sans-serif";
   const lastD = days[days.length - 1];
   ctx.fillText(`${ddmm(lastD.day)} · ${lastD.trades} trades · WR ${fmt(lastD.win_rate, 0)}% · ${money(lastD.pnl)}`, padL + 2, padT - 3);
 }
@@ -1404,10 +2337,11 @@ function drawDailyChart(days) {
 function drawEquityChart(points) {
   const canvas = $("equityChart");
   const ctx = canvas.getContext("2d");
+  const pal = chartPalette();
   const W = canvas.width, H = canvas.height;
   ctx.clearRect(0, 0, W, H);
   if (!points || points.length < 2) {
-    ctx.fillStyle = "#8a94a6"; ctx.font = "13px sans-serif";
+    ctx.fillStyle = pal.axis; ctx.font = "13px sans-serif";
     ctx.fillText("Sem dados suficientes para a curva de equity.", 20, H / 2);
     return;
   }
@@ -1417,21 +2351,21 @@ function drawEquityChart(points) {
   if (max - min < 1) max = min + 1;
   const x = i => pad + (i / (points.length - 1)) * (W - pad * 2);
   const y = v => H - pad - ((v - min) / (max - min)) * (H - pad * 2);
-  ctx.strokeStyle = "#263040"; ctx.lineWidth = 1;
+  ctx.strokeStyle = pal.grid; ctx.lineWidth = 1;
   for (let g = 0; g <= 4; g++) {
     const gy = pad + (g / 4) * (H - pad * 2);
     ctx.beginPath(); ctx.moveTo(pad, gy); ctx.lineTo(W - pad, gy); ctx.stroke();
   }
   if (min < 0 && max > 0) {
-    ctx.strokeStyle = "#8a94a6"; ctx.setLineDash([4, 4]);
+    ctx.strokeStyle = pal.axis; ctx.setLineDash([4, 4]);
     ctx.beginPath(); ctx.moveTo(pad, y(0)); ctx.lineTo(W - pad, y(0)); ctx.stroke();
     ctx.setLineDash([]);
   }
   ctx.beginPath();
   points.forEach((p, i) => i === 0 ? ctx.moveTo(x(i), y(p.pnl)) : ctx.lineTo(x(i), y(p.pnl)));
-  ctx.strokeStyle = "#3b82f6"; ctx.lineWidth = 2; ctx.stroke();
+  ctx.strokeStyle = "#2962ff"; ctx.lineWidth = 2; ctx.stroke();
   const last = points[points.length - 1];
-  ctx.fillStyle = last.pnl >= 0 ? "#22c55e" : "#ef4444";
+  ctx.fillStyle = last.pnl >= 0 ? "#089981" : "#f23645";
   ctx.font = "bold 12px sans-serif";
   ctx.fillText((last.pnl > 0 ? "+" : "") + last.pnl.toFixed(0), W - pad - 60, y(last.pnl) - 6);
 }
@@ -1459,6 +2393,7 @@ function drawPaperRaceCurve(series, canvasId, legendId, height) {
   const canvas = $(canvasId);
   if (!canvas) return;
   const ctx = canvas.getContext("2d");
+  const pal = chartPalette();
   const W = canvas.width, H = canvas.height;
   ctx.clearRect(0, 0, W, H);
   const pad = 30;
@@ -1473,19 +2408,19 @@ function drawPaperRaceCurve(series, canvasId, legendId, height) {
   const nMax = Math.max(...seriesN.map(s => s.pts.length));
   const x = i => pad + (nMax <= 1 ? 0 : (i / (nMax - 1)) * (W - pad * 2));
   const y = v => H - pad - ((v - min) / (max - min)) * (H - pad * 2);
-  ctx.strokeStyle = "#263040"; ctx.lineWidth = 1;
+  ctx.strokeStyle = pal.grid; ctx.lineWidth = 1;
   for (let g = 0; g <= 3; g++) {
     const gy = pad + (g / 3) * (H - pad * 2);
     ctx.beginPath(); ctx.moveTo(pad, gy); ctx.lineTo(W - pad, gy); ctx.stroke();
   }
   if (min < 0 && max > 0) {
-    ctx.strokeStyle = "#8a94a6"; ctx.setLineDash([4, 4]);
+    ctx.strokeStyle = pal.axis; ctx.setLineDash([4, 4]);
     ctx.beginPath(); ctx.moveTo(pad, y(0)); ctx.lineTo(W - pad, y(0)); ctx.stroke();
     ctx.setLineDash([]);
   }
   for (const s of seriesN) {
     if (s.is_real) continue; // a linha real desenha-se por cima, no fim
-    const col = RACE_COLORS[s.strategy_id] || "#22c55e";
+    const col = RACE_COLORS[s.strategy_id] || "#089981";
     const isMain = !!s.is_main;
     ctx.strokeStyle = col;
     ctx.lineWidth = isMain ? 3 : 2;
@@ -1501,7 +2436,7 @@ function drawPaperRaceCurve(series, canvasId, legendId, height) {
   // referência: saldo real da MT5 (tracejado claro, por cima das virtuais)
   for (const s of seriesN) {
     if (!s.is_real) continue;
-    const col = "#f8fafc";
+    const col = pal.axis;
     ctx.strokeStyle = col;
     ctx.lineWidth = 1.5;
     ctx.setLineDash([2, 4]);
@@ -1513,7 +2448,7 @@ function drawPaperRaceCurve(series, canvasId, legendId, height) {
     ctx.fillStyle = col; ctx.font = "bold 11px sans-serif";
     ctx.fillText((lastV > 0 ? "+" : "") + lastV.toFixed(1) + "%", Math.min(W - pad - 60, x(s.pts.length - 1) - 24), y(lastV) - 4);
   }
-  ctx.fillStyle = "#8a94a6"; ctx.font = "10px sans-serif";
+  ctx.fillStyle = pal.axis; ctx.font = "10px sans-serif";
   const t0 = seriesN[0].points[0].ts || "", t1 = seriesN[0].points[seriesN[0].points.length - 1].ts || "";
   ctx.fillText(t0.slice(5, 16).replace("T", " "), pad, H - 8);
   ctx.fillText(t1.slice(5, 16).replace("T", " "), W - pad - 80, H - 8);
@@ -1529,7 +2464,7 @@ function drawPaperRaceCurve(series, canvasId, legendId, height) {
     const mini = document.createElement("div");
     mini.className = "mini";
     mini.innerHTML =
-      `<div class="lbl" style="color:${RACE_COLORS[s.strategy_id] || "#22c55e"}">${esc(s.nome || s.strategy_id)}${s.is_main ? " 🧠" : ""}</div>` +
+      `<div class="lbl" style="color:${RACE_COLORS[s.strategy_id] || "#089981"}">${esc(s.nome || s.strategy_id)}${s.is_main ? " · principal" : ""}</div>` +
       `<div class="val" style="font-size:13px;color:${lastV >= 0 ? "var(--green)" : "var(--red)"}">${(lastV > 0 ? "+" : "") + lastV.toFixed(1)}% · ${money(absPnl)} <span class="muted">(${cur(bal)})</span></div>` +
       `<div class="muted" style="font-size:10px">${s.closed || 0} fechadas · WR ${fmt(s.win_rate ?? 0, 1)}%</div>`;
     legend.appendChild(mini);
@@ -1545,7 +2480,7 @@ function drawPaperRaceCurve(series, canvasId, legendId, height) {
     const mini = document.createElement("div");
     mini.className = "mini";
     mini.innerHTML =
-      `<div class="lbl" style="color:#f8fafc">⚡ ${esc(s.nome || "MT5 real")} <span class="muted" style="font-size:10px">conta real</span></div>` +
+      `<div class="lbl" style="color:#94a3b8">${esc(s.nome || "MT5 real")} <span class="muted" style="font-size:10px">conta real</span></div>` +
       `<div class="val" style="font-size:13px;color:${lastV >= 0 ? "var(--green)" : "var(--red)"}">${(lastV > 0 ? "+" : "") + lastV.toFixed(1)}% · ${money(absPnl)} <span class="muted">(${cur(bal)})</span></div>`;
     legend.appendChild(mini);
   }
@@ -1555,7 +2490,7 @@ function drawPaperRaceCurve(series, canvasId, legendId, height) {
   if (!canvas._raceTip) {
     canvas._raceTip = document.createElement("div");
     canvas._raceTip.className = "chart-tip";
-    canvas._raceTip.style.cssText = "position:absolute;pointer-events:none;display:none;background:rgba(10,8,18,.95);border:1px solid var(--border);border-radius:8px;padding:6px 9px;font-size:11px;z-index:50;box-shadow:0 4px 14px rgba(0,0,0,.5)";
+    canvas._raceTip.style.cssText = "position:absolute;pointer-events:none;display:none;background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:6px 9px;font-size:11px;z-index:50;box-shadow:0 6px 18px rgba(16,24,40,.2)";
     canvas.parentElement.style.position = "relative";
     canvas.parentElement.appendChild(canvas._raceTip);
   }
@@ -1580,7 +2515,7 @@ function drawPaperRaceCurve(series, canvasId, legendId, height) {
       const base = s.points[0].balance || 0;
       const bal = s.points[idx].balance || 0;
       const absPnl = bal - base;
-      const col = RACE_COLORS[s.strategy_id] || "#22c55e";
+      const col = RACE_COLORS[s.strategy_id] || "#089981";
       html += `<div style="color:${col}">${esc(s.nome || s.strategy_id)}</div>` +
         `<div style="color:${v >= 0 ? "var(--green)" : "var(--red)"}">${(v > 0 ? "+" : "") + v.toFixed(1)}% · ${money(absPnl)} <span class="muted">(${cur(bal)})</span></div>`;
     }
@@ -1601,12 +2536,50 @@ setInterval(loadPaperRaceMini, 60000);
 setTimeout(refreshPhase3Instruments, 1500);
 setInterval(refreshPhase3Instruments, 60000);
 
+/* A promoção das auto-escadas exige o mesmo gate forward objetivo do endpoint.
+   O botão permanece visível, mas desativado e explicado enquanto a janela não
+   tem N/PF/IC95%/DD/referência suficientes. */
+async function refreshForwardPromotionGate() {
+  const ids = ["phase2Promote", "phase3Promote"];
+  const buttons = [$("btnPhase2Promote"), $("btnPhase3Promote")];
+  const labels = [$("phase2PromotionGate"), $("phase3PromotionGate")];
+  try {
+    const report = await fetch("/api/analysis/forward-gate?days=30").then(r => r.json());
+    window._forwardPromotionGate = report;
+    const candidate = (report.strategies || []).find(x => x.strategy_id === "auto_escada_3");
+    const ok = !!(candidate && candidate.eligible);
+    buttons.forEach((button, i) => {
+      if (!button) return;
+      button.disabled = !ok;
+      button.title = ok
+        ? "Todos os gates forward passaram; a promoção continua manual"
+        : "Bloqueada até todos os gates forward passarem (N, PF, IC95%, DD e referência)";
+      if (labels[i]) labels[i].textContent = ok
+        ? "✅ gates forward completos"
+        : "🔒 janela forward incompleta — promoção bloqueada";
+    });
+  } catch (e) {
+    buttons.forEach((button, i) => {
+      if (button) button.disabled = true;
+      if (labels[i]) labels[i].textContent = "🔒 gate indisponível — promoção bloqueada";
+    });
+  }
+}
+setTimeout(refreshForwardPromotionGate, 1500);
+setInterval(refreshForwardPromotionGate, 60000);
+
 /* ⬆️ Promover a auto_escada_3 a principal (arranca a Fase 3 no MT5) — o
    botão vive nos painéis Fase 2 (gate 3/3 cumprido) e Fase 3; ambos fazem
    POST /api/config {strategy}, que grava o snapshot da auditoria de
    SL/divergências para a janela de validação (estado.py::update_config) */
 function promoteAutoEscada3() {
   return async () => {
+    const candidate = ((window._forwardPromotionGate || {}).strategies || [])
+      .find(x => x.strategy_id === "auto_escada_3");
+    if (!candidate || !candidate.eligible) {
+      toast("Promoção bloqueada: a janela forward ainda não passou todos os gates", "err");
+      return;
+    }
     if (!confirm("Passar a conta principal (MT5 real) a usar a estratégia “auto_escada_3”? A execução passa a usar escada + trailing (auto_mgmt) e abre a janela de validação de 10 trades (ESTRATEGIAS.md Parte X).")) return;
     const d = await act("/api/config", { strategy: "auto_escada_3" });
     if (d && d.error) { toast("Erro: " + d.error, "err"); return; }

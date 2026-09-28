@@ -6,8 +6,14 @@ from app.db import DB
 
 
 def _stamp(days_ago: int, hour: int = 12) -> str:
-    dt = datetime.now(timezone.utc) - timedelta(days=days_ago)
-    return dt.replace(hour=hour, minute=0, second=0, microsecond=0).isoformat()
+    """Timestamp no MÊS ANTERIOR (dia 15+days_ago). O agregado mensal do
+    spread separa por mês e as amostras XAUUSD têm de cair no MESMO mês —
+    dias relativos (-1/-2) cruzavam o fim de mês a 01/09 e o
+    `gold.observations == 2` passava a falhar (1+1 em meses diferentes)."""
+    now = datetime.now(timezone.utc)
+    prev = (now.replace(day=1) - timedelta(days=1)).replace(
+        day=15 + days_ago, hour=hour, minute=0, second=0, microsecond=0)
+    return prev.isoformat()
 
 
 def test_operational_metrics_aggregate_exceptions_spread_and_mt5(tmp_path):

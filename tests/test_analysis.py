@@ -104,3 +104,42 @@ def test_analysis_replays_global_chronology_and_excludes_management_after_until(
         db.close()
         if os.path.exists(path):
             os.remove(path)
+
+
+def test_history_resolution_marks_native_m1_and_long_horizon_fallback():
+    native = analysis.history_resolution(7, "1m")
+    assert native["effective"] == "1m"
+    assert native["fallback"] is False
+    assert native["range"] == "7d"
+
+    fallback = analysis.history_resolution(30, "1m")
+    assert fallback["effective"] == "15m"
+    assert fallback["fallback"] is True
+    assert "7 dias" in fallback["fallback_reason"]
+
+
+def test_resolution_analysis_reports_delay_sensitivity_without_db_writes(monkeypatch):
+    calls = []
+
+    async def fake_run_analysis(**kwargs):
+        calls.append((kwargs["resolution"], kwargs["delay"]))
+        effective = analysis.history_resolution(7, kwargs["resolution"])
+        return {
+            "signals": 10, "simulated": 10,
+            "aggregate": {"resolved": 8, "win_rate": 50.0,
+                           "profit_factor": 1.5,
+                           "pnl": 100.0 - kwargs["delay"]},
+            "drawdown": {"amount": 20.0, "pct": 2.0},
+            "delay_seconds": kwargs["delay"], "resolution": effective,
+        }
+
+    monkeypatch.setattr(analysis, "run_analysis", fake_run_analysis)
+    result = asyncio.run(analysis.run_resolution_analysis(
+        db=None, group="Golden Moves", days=7,
+        strategy_id="auto_escada_3", resolution="1m", delay=60,
+    ))
+    assert result["requested"]["resolution"]["effective"] == "1m"
+    assert result["reference_15m"]["resolution"]["effective"] == "15m"
+    assert len(result["delay_sensitivity"]) == 4
+    assert {delay for _, delay in calls} == {0, 8, 60, 300}
+    assert result["comparison"]["pnl_delta"] == 0.0

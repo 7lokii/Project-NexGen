@@ -120,12 +120,46 @@ class AutoProtectionPolicy:
     trail_factor: Optional[float] = None
     stair_levels: Optional[int] = None
     stair_from: int = 1
+    protect_trigger: Optional[float] = None
+    protect_buffer: Optional[float] = None
+    # BE+ (tp2_protect): após o TP1 o SL das restantes vai para
+    # entrada ± be_buffer_pips × pip_size (cobre o spread) em vez de entrada
+    # seca — nunca ultrapassa o TP1. None = BE clássico (entrada).
+    be_buffer_pips: Optional[float] = None
+    pip_size: float = 0.01
 
-    def initial_floor(self) -> float:
-        """SL after TP1: TP1 for the first stair mode, otherwise breakeven."""
+    def initial_floor(self, anchor: Optional[float] = None) -> float:
+        """SL after TP1: TP1 for the first stair mode, otherwise breakeven
+        (entry + a small positive buffer when ``be_buffer_pips`` is set).
+
+        ``anchor`` é o preço de FILL da perna (quando o adapter o tem) e só
+        se aplica no BE+ (com buffer): o chão parte do PIOR custo entre a
+        entrada do sinal e o fill — um fill adversário nunca fica com SL
+        abaixo do próprio preço de entrada (BE+ tem de ser sem perda).
+        Sem buffer (BE clássico) ou sem ``anchor``, comporta-se exatamente
+        como antes (entrada do sinal).
+        """
         if self.stair_levels and self.stair_from == 1 and self.tp1:
             return float(self.tp1)
-        return float(self.entry)
+        entry = float(self.entry)
+        buffer = float(self.be_buffer_pips or 0.0) * float(self.pip_size or 0.0)
+        base = entry
+        if buffer > 0.0 and anchor is not None:
+            try:
+                fill = float(anchor)
+            except (TypeError, ValueError):
+                fill = None
+            if fill and fill > 0:
+                # pior custo: o nível mais desfavorável entre sinal e fill
+                base = max(entry, fill) if self.direction == "buy" \
+                    else min(entry, fill)
+        if buffer > 0.0 and self.tp1:
+            # o SL protegido nunca cruza o TP1 (sentido invertido = sem sentido)
+            room = abs(float(self.tp1) - base) - float(self.pip_size)
+            buffer = min(buffer, room) if room > 0 else 0.0
+        if buffer <= 0.0:
+            return entry
+        return base + buffer if self.direction == "buy" else base - buffer
 
     def trail_distance(self, *, atr: Optional[float] = None,
                        atr_k: Optional[float] = None) -> float:
@@ -174,23 +208,119 @@ class AutoProtectionPolicy:
 
 def hybrid_protect_eligible(auto_sl: Optional[float],
                              auto_protection_at: Optional[str]) -> bool:
-    """Allow group ``protect`` only after auto protection exists.
+    """Allow group ``protect`` to act on open legs.
 
-    Before TP1/mechanical protection, a group stop can lock a tiny gain and
-    then cut a trade that the same auto policy would have allowed to reach a
-    later TP.  Refusing that pre-protection intervention is a causal safety
-    gate, not look-ahead: it uses only the already-recorded auto trigger.
+    O gate original existia para não deixar o grupo fechar a perna 1 cedo
+    demais antes de proteção mecânica. O incidente 15/09 11:49 mostrou o
+    outro lado: um protect do grupo (“Trade is risk free now”) quando o
+    preço já está acima da entrada é ESTRITAMENTE protetor — subiu o SL na
+    direção do lucro, nunca o alarga — e recusá-lo deixou a perna correr
+    com o SL completo até −38,58 €. Desde 15/09 o protect do grupo é
+    sempre elegível: o merge monotónico (`decide_protect` →
+    `more_protective_sl` + clamp de mercado) garante que nunca aplica um
+    SL pior do que o atual nem fecha a perna 1 a preço desfavorável. O
+    `auto_protection_at` continua registado para a telemetria de latência.
     """
-    return auto_sl is not None and bool(auto_protection_at)
+    return True
 
 
 def group_protect_sl(*, direction: str, entry: float,
-                     stop_loss: float, tp1: float) -> float:
-    """Calculate the existing group's protect level without side effects."""
+                     stop_loss: float, tp1: float,
+                     buffer_fraction: Optional[float] = None) -> float:
+    """Calculate the group's protect level without side effects.
+
+    ``buffer_fraction`` is deliberately a fraction of the original risk, not
+    of the current price.  ``None`` preserves the historical group rule
+    (10%, with a 1% minimum); the autonomous candidate can make the same rule
+    explicit in its strategy registry and all engines then share the formula.
+    """
     risk = abs(entry - stop_loss)
-    buffer = (min(max(risk * 0.1, risk * 0.01), abs(tp1 - entry))
+    fraction = 0.1 if buffer_fraction is None else max(0.0, float(buffer_fraction))
+    buffer = (min(max(risk * fraction, risk * 0.01), abs(tp1 - entry))
               if risk > 0 else 0.0)
     return entry + buffer if direction == "buy" else entry - buffer
+
+
+def protect_trigger_level(*, direction: str, entry: float,
+                          tp1: float, fraction: Optional[float]) -> Optional[float]:
+    """Return the favorable price at which autonomous protect activates.
+
+    The trigger is a deterministic fraction of entry→TP1. Invalid/disabled
+    fractions and TPs on the wrong side of entry return ``None``. No candle,
+    broker or wall-clock access belongs here, keeping the rule reusable by
+    backtest, paper, SimEngine and MT5.
+    """
+    if fraction is None:
+        return None
+    try:
+        f = float(fraction)
+    except (TypeError, ValueError):
+        return None
+    if not 0.0 < f <= 1.0 or not entry or not tp1:
+        return None
+    distance = float(tp1) - float(entry)
+    if direction == "buy" and distance <= 0:
+        return None
+    if direction == "sell" and distance >= 0:
+        return None
+    return float(entry) + distance * f
+
+
+def protect_trigger_hit(*, direction: str, price: float, entry: float,
+                        tp1: float, fraction: Optional[float]) -> bool:
+    """Whether the current known price has reached the autonomous trigger."""
+    level = protect_trigger_level(
+        direction=direction, entry=entry, tp1=tp1, fraction=fraction,
+    )
+    if level is None:
+        return False
+    return float(price) >= level if direction == "buy" else float(price) <= level
+
+
+@dataclass(frozen=True)
+class AutoProtectDecision:
+    """Pure reducer output for one autonomous early-protect transition.
+
+    Adapters apply the returned actions to their own DB/broker. The reducer
+    owns the trigger, monotonic group-protect level and idempotence gate, so
+    backtest, paper, dry-run and MT5 cannot silently disagree on the rule.
+    """
+
+    triggered: bool
+    trigger_level: Optional[float]
+    group_sl: Optional[float]
+    move_sls: Tuple[Tuple[int, float], ...] = ()
+
+
+def reduce_auto_protect(*, direction: str, price: float, entry: float,
+                        stop_loss: float, tp1: float,
+                        leg1_open: bool, remaining_sls: dict,
+                        trigger_fraction: Optional[float],
+                        buffer_fraction: Optional[float],
+                        already_triggered: bool = False) -> AutoProtectDecision:
+    """Reduce the current tick to a deterministic early-protect decision.
+
+    ``remaining_sls`` maps leg number to its current SL. Only improving levels
+    are returned. No DB, broker, clock or fill side effect belongs here.
+    """
+    level = protect_trigger_level(
+        direction=direction, entry=entry, tp1=tp1, fraction=trigger_fraction,
+    )
+    if (already_triggered or not leg1_open or level is None
+            or not protect_trigger_hit(
+                direction=direction, price=price, entry=entry, tp1=tp1,
+                fraction=trigger_fraction)):
+        return AutoProtectDecision(False, level, None)
+    group_sl = group_protect_sl(
+        direction=direction, entry=entry, stop_loss=stop_loss, tp1=tp1,
+        buffer_fraction=buffer_fraction,
+    )
+    moves = []
+    for leg, current in sorted((remaining_sls or {}).items()):
+        improved = monotonic_sl(direction, current, group_sl)
+        if improved is not None:
+            moves.append((int(leg), improved))
+    return AutoProtectDecision(True, level, group_sl, tuple(moves))
 
 
 @dataclass(frozen=True)

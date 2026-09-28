@@ -60,8 +60,14 @@ GROUPS = [g.strip() for g in _GROUPS_RAW.split(",") if g.strip()]
 # Filtro leve: só reencaminha mensagens que pareçam sinais, para não inundar o
 # bot com conversa do grupo. Põe SIGNALBOT_TG_FILTER=0 para reencaminhar tudo.
 FILTER = os.getenv("SIGNALBOT_TG_FILTER", "1") != "0"
+# Message ids already forwarded live. Edits must bypass the lightweight
+# keyword filter: Telegram often sends only the numeric TP/SL details.
+_forwarded_live_ids: set[tuple[str, str]] = set()
+_forwarded_live_order: list[tuple[str, str]] = []
+_FORWARD_CACHE_LIMIT = 10000
+
 _KEYWORD = re.compile(
-    r"\b(buy|sell|compr|vend|long|short|entr(?:ada)?|entry|stop\s*loss|stop|sl|"
+    r"\b(buy(?:ing)?|sell(?:ing)?|compr\w*|vend\w*|long|short|entr(?:ada)?|entry|stop\s*loss|stop|sl|"
     r"tp\s*[1-5]|tp[1-5]|alvo|target)\b",
     re.IGNORECASE,
 )
@@ -69,6 +75,25 @@ _KEYWORD = re.compile(
 
 def looks_like_signal(text: str) -> bool:
     return bool(_KEYWORD.search(text))
+
+
+def _is_known_live_edit(group: str, message_id: str) -> bool:
+    return (str(group), str(message_id)) in _forwarded_live_ids
+
+
+def _should_forward(text: str, group: str, message_id: str,
+                    historical: bool = False, is_edit: bool = False) -> bool:
+    """Apply the listener's cheap filter without losing Telegram edits.
+
+    Live edits always reach the API, including after a listener restart; the
+    backend then decides whether the complete replacement is a signal,
+    management message, or conversation.
+    """
+    if not FILTER:
+        return True
+    if not historical and (is_edit or _is_known_live_edit(group, message_id)):
+        return True
+    return looks_like_signal(text)
 
 
 def reply_id_of(message) -> Optional[int]:
@@ -182,16 +207,31 @@ async def mt5_watch(client: TelegramClient) -> None:
 
 async def forward(text: str, message_id: int, group: str, source: str,
                   historical: bool = False, received_at: str = "",
-                  reply_to_msg_id: Optional[int] = None) -> Optional[dict]:
+                  reply_to_msg_id: Optional[int] = None,
+                  is_edit: bool = False) -> Optional[dict]:
     """Reencaminha uma mensagem para a API e devolve a resposta (com o
     `action` decidido pelo backend — histórico/gestão/ignorada/...).
     None quando não há mensagem para enviar ou a API falhou."""
-    if FILTER and not looks_like_signal(text):
+    # A Telegram edit is the complete replacement text, but it may contain
+    # only the newly added TP/SL details from the listener's point of view.
+    # Never let the lightweight filter discard it; the backend owns the final
+    # signal/conversation decision. The cache remains useful across normal
+    # retries, while `is_edit` also works after a listener restart.
+    if not _should_forward(text, group, message_id, historical, is_edit):
         preview = (text or "").replace("\n", " ")[:90]
         print(f"[skip] {source} msg {message_id} não parece um sinal | {preview}")
         return None
     payload = build_payload(text, message_id, group, source, historical,
                             received_at, reply_to_msg_id)
+    if not historical:
+        key = (str(group), str(message_id))
+        if key not in _forwarded_live_ids:
+            _forwarded_live_ids.add(key)
+            _forwarded_live_order.append(key)
+        # Bound memory for long-running listeners while retaining recent ids.
+        while len(_forwarded_live_order) > _FORWARD_CACHE_LIMIT:
+            old = _forwarded_live_order.pop(0)
+            _forwarded_live_ids.discard(old)
     try:
         async with httpx.AsyncClient(timeout=15) as http:
             r = await http.post(f"{API_URL}/api/signals", json=payload,
@@ -420,7 +460,8 @@ def register_chat(client: TelegramClient, chat) -> None:
         text = (event.message.text or "").strip()
         if text:
             await forward(text, event.message.id, group, source,
-                          reply_to_msg_id=reply_id_of(event.message))
+                          reply_to_msg_id=reply_id_of(event.message),
+                          is_edit=True)
 
     @client.on(events.MessageDeleted(chats=chat.id))
     async def on_delete(event):

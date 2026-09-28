@@ -28,11 +28,13 @@ from app.execution.protection import (
     decide_protect,
     group_protect_sl,
     hybrid_protect_eligible,
+    reduce_auto_protect,
+    protect_trigger_level,
     sl_outcome,
     time_stop_due,
 )
 from app.models import Signal
-from app.risk.engine import compute_lots
+from app.risk.engine import compute_lots, effective_strategy_risk_pct
 
 CONTRACT = 100_000
 
@@ -128,10 +130,17 @@ def simulate_signal(signal: Signal, candles: List[dict], risk_pct: float,
                     confirm_filter: bool = False,
                     atr_k: Optional[float] = None,
                     atr_period: int = 14,
+                    protect_trigger: Optional[float] = None,
+                    protect_buffer: Optional[float] = None,
+                    leg_weights: Optional[dict] = None,
                     def_window: Optional[int] = None,
                     def_trail: Optional[float] = None,
                     def_time_stop: Optional[int] = None,
+                    def_risk_pct: Optional[float] = None,
                     def_state: Optional[dict] = None,
+                    struggle_ae_pips: Optional[float] = None,
+                    struggle_fraction: float = 0.5,
+                    be_buffer_pips: Optional[float] = None,
                     trace: bool = False,
                     mgmt_events: Optional[List[tuple]] = None,
                     strategy_id: str = "") -> dict:
@@ -176,6 +185,21 @@ def simulate_signal(signal: Signal, candles: List[dict], risk_pct: float,
     atr_k × ATR), com o ATR das velas ANTERIORES à atual (sem look-ahead);
     sem atr_k ou sem velas suficientes degrada para o trail fixo.
 
+    `protect_trigger` (0..1) é a política de proteção precoce (candidatas
+    futuras; a `auto_protect_5` foi removida do registo em 01/09 — ver
+    CHANGELOG): quando o preço alcança essa fração de entrada→TP1, a perna 1
+    fecha e as restantes recebem a proteção do grupo acima da entrada, sem
+    depender de uma mensagem Telegram. `protect_buffer` é a fração do risco
+    original usada como buffer; ambos ficam desligados quando None.
+
+    `struggle_ae_pips`/`struggle_fraction` (regra "struggle", R4 — alinhada
+    com o conselho do admin "close the trade in profit / take 50% / make
+    risk-free"): ANTES de o TP1 bater, se o preço andou contra a entrada por
+    pelo menos `struggle_ae_pips` e depois volta à entrada, a trade
+    "sofreu" — fecha `struggle_fraction` das pernas a breakeven (default
+    0.5 = metade) e move o SL das restantes para a entrada (fica risk-free).
+    Desligado quando `struggle_ae_pips` é None.
+
     `lots_override` sizes every leg at a fixed volume instead of risk-based
     (parâmetro de simulação — nenhuma estratégia do registo o usa por agora).
     """
@@ -188,11 +212,16 @@ def simulate_signal(signal: Signal, candles: List[dict], risk_pct: float,
     # decisão usa apenas trades anteriores a este sinal.
     trail_factor_eff = trail_factor
     time_stop_eff = time_stop_minutes
+    risk_pct_eff = risk_pct
     if def_window and def_state is not None and def_state.get("resolved"):
         hist = [p for _, p in def_state["resolved"][-int(def_window):]]
         if len(hist) >= int(def_window):
             pf = _roll_pf(hist)
             if pf is not None and pf < 1.0:
+                risk_pct_eff = effective_strategy_risk_pct(
+                    risk_pct, def_window=def_window, def_risk_pct=def_risk_pct,
+                    prior_pnls=hist,
+                )
                 if def_trail is not None:
                     trail_factor_eff = def_trail
                 if def_time_stop is not None:
@@ -225,15 +254,26 @@ def simulate_signal(signal: Signal, candles: List[dict], risk_pct: float,
     entry_fill = (entry + spread / 2 + slippage) if direction == "buy" \
         else (entry - spread / 2 - slippage)
 
-    # risk split evenly across the legs, exactly like the live engines — with
-    # the symbol's real pip/contract so gold sizes correctly (pip 0.01,
-    # contract 100) instead of falling back to forex defaults
+    # O risco total mantém-se igual ao risco pedido. Por defeito divide-se
+    # igualmente; `leg_weights` existe apenas para estudos read-only e
+    # redistribui esse mesmo risco entre as pernas (nunca o aumenta).
     if lots_override and lots_override > 0:
         lots = {i: float(lots_override) for i in legs}
     else:
+        raw_weights = {
+            i: float((leg_weights or {}).get(i, 1.0) or 0.0)
+            for i in legs
+        }
+        total_weight = sum(max(0.0, value) for value in raw_weights.values())
+        if total_weight <= 0:
+            raw_weights = {i: 1.0 for i in legs}
+            total_weight = float(len(legs))
         lots = {
-            i: compute_lots(balance, risk_pct / len(legs), entry, sl,
-                            pip_size=pip, contract_size=contract)
+            i: compute_lots(
+                balance,
+                risk_pct_eff * max(0.0, raw_weights[i]) / total_weight,
+                entry, sl, pip_size=pip, contract_size=contract,
+            )
             for i in legs
         }
     commission = commission_per_lot * sum(lots.values()) * 2  # cada perna abre+fecha
@@ -259,7 +299,8 @@ def simulate_signal(signal: Signal, candles: List[dict], risk_pct: float,
     policy = AutoProtectionPolicy(
         direction=direction, entry=entry, tp1=tps.get(1), tp2=tps.get(2),
         trail_factor=trail_factor_eff, stair_levels=stair_levels,
-        stair_from=stair_from,
+        stair_from=stair_from, be_buffer_pips=be_buffer_pips,
+        pip_size=pip,
     )
     trail_dist: float = policy.trail_distance()
     # trace (para a página de teste mostrar o fluxo real de uma trade):
@@ -274,10 +315,29 @@ def simulate_signal(signal: Signal, candles: List[dict], risk_pct: float,
     ) if strategy_id == "auto_escada_3_hibrida" else []
     hybrid_event_idx = 0
     auto_protection_at: Optional[int] = None
+    auto_protected = False
+    auto_protect_level = protect_trigger_level(
+        direction=direction, entry=entry, tp1=tps.get(1, 0.0),
+        fraction=protect_trigger,
+    )
     protect_latency: list = []
     mgmt_applied: list = []
     interval = max(60, candles[1]["ts"] - candles[0]["ts"]) if len(candles) > 1 else 900
     prev_close = candles[start - 1]["close"] if start > 0 else candles[start]["open"]
+    # R3: maximum favourable excursion (MFE) in pips — measured, never a
+    # decision input. The group counts a trade as a "win" when it travels
+    # 25–30 pips in the trade's favour regardless of the final outcome; this
+    # lets the divergence check compare like-for-like instead of producing
+    # spurious alerts for trades that ran +40 pips and came back to SL.
+    mfe_high = entry_fill
+    mfe_low = entry_fill
+    mfe_pips = 0.0
+    # R4 "struggle": antes do TP1, a trade que andou contra `struggle_ae_pips`
+    # e volta à entrada fecha uma fração a BE e protege as restantes na
+    # entrada ("take 50% / make risk-free" — conselho do admin). Estado:
+    # extremo adverso (min low para buy, max high para sell) e flag one-shot.
+    adverse_extreme = entry_fill
+    struggle_applied = False
 
     def _iso_epoch(ts: Optional[int]) -> Optional[str]:
         if ts is None:
@@ -295,6 +355,60 @@ def simulate_signal(signal: Signal, candles: List[dict], risk_pct: float,
                             _exit_fill(direction, price, spread),
                             lots[leg], contract)
         leg_open[leg] = False
+
+    def _apply_struggle() -> None:
+        """R4: trade sofreu (andou contra e voltou à entrada, sem TP1).
+        Fecha `struggle_fraction` das pernas a breakeven e move o SL das
+        restantes para a entrada (risk-free) — uma vez por trade.
+        """
+        nonlocal struggle_applied
+        if not legs:
+            return
+        close_n = max(1, min(len(legs), int(round(len(legs) * struggle_fraction))))
+        close_legs = legs[:close_n]
+        for i in close_legs:
+            if leg_open.get(i):
+                leg_pnl[i] = _pnl(direction, entry_fill,
+                                  _exit_fill(direction, entry, spread),
+                                  lots[i], contract)
+                leg_open[i] = False
+        for i in legs:
+            if leg_open.get(i):
+                leg_sl[i] = entry
+        struggle_applied = True
+        _ev("struggle", entry,
+            f"trade sofreu ({struggle_ae_pips} pips contra) — fecha "
+            f"{len(close_legs)}/{len(legs)} pernas a BE, restantes risk-free")
+
+    def _apply_auto_protect() -> None:
+        """Apply the autonomous early protect once on the current candle.
+
+        The trigger is a price level, not a future candle close.  The original
+        SL was checked first; after activation all remaining legs receive the
+        same monotonic group-protect formula used by the live engines.
+        """
+        nonlocal auto_protected, auto_protection_at
+        decision = reduce_auto_protect(
+            direction=direction,
+            price=(high if direction == "buy" else low),
+            entry=entry, stop_loss=sl, tp1=tps.get(1, entry),
+            leg1_open=bool(leg_open.get(1)),
+            remaining_sls={leg: leg_sl[leg] for leg in legs
+                           if leg != 1 and leg_open.get(leg)},
+            trigger_fraction=protect_trigger,
+            buffer_fraction=protect_buffer,
+            already_triggered=auto_protected,
+        )
+        if not decision.triggered:
+            return
+        _close_hybrid_leg(1, decision.trigger_level)
+        for leg, level in decision.move_sls:
+            if leg_open.get(leg):
+                leg_sl[leg] = level
+        auto_protected = True
+        auto_protection_at = c["ts"]
+        _ev("auto_protect", decision.trigger_level,
+            "perna 1 fecha e as restantes ficam protegidas sem Telegram")
 
     def _apply_hybrid_protect(known_price: float) -> None:
         """Apply protect events using only the close before the event candle."""
@@ -375,6 +489,12 @@ def simulate_signal(signal: Signal, candles: List[dict], risk_pct: float,
 
     for i, c in enumerate(candles[start:], start):
         high, low = c["high"], c["low"]
+        # R3: update MFE from the full candle extremes (measurement only — no
+        # fill or decision uses it, so using this candle's high/low is safe).
+        if direction == "buy":
+            mfe_high = max(mfe_high, high)
+        else:
+            mfe_low = min(mfe_low, low)
         if trace:
             path.append({"ts": c["ts"], "high": high, "low": low, "close": c["close"]})
         # trailing adaptativo por ATR: o recuo nunca fica mais apertado que
@@ -396,6 +516,20 @@ def simulate_signal(signal: Signal, candles: List[dict], risk_pct: float,
             # não foi cruzado.  `prev_close` é a última informação conhecida;
             # o close/high/low desta vela ainda não pode influenciar a decisão.
             _apply_hybrid_protect(prev_close)
+            _apply_auto_protect()
+            # R4 "struggle": antes do TP1, se o preço andou contra a entrada
+            # por `struggle_ae_pips` e volta à entrada, fecha uma fração a BE
+            # e protege as restantes (conselho do admin). Medição pelo low
+            # desta vela — o disparo só acontece quando o preço JÁ voltou à
+            # entrada (high >= entry), sem look-ahead na decisão.
+            if (struggle_ae_pips is not None and not struggle_applied
+                    and tp1_ts is None
+                    and adverse_extreme <= entry - struggle_ae_pips * pip
+                    and high >= entry):
+                _apply_struggle()
+                if not any(leg_open.values()):
+                    outcome = "be"
+                    break
             # 2) TP1: leg 1 closes; remaining legs move to breakeven (ou ao
             #    nível do TP1 com stair_from=1 — escada: lucro do TP1 garantido)
             if leg_open.get(1) and high >= tps[1]:
@@ -408,16 +542,16 @@ def simulate_signal(signal: Signal, candles: List[dict], risk_pct: float,
                 # the current candle's high is recorded only after all fills
                 # below, so trailing cannot use its own future high.
                 peak = tps[1]
-                floor = policy.initial_floor()
+                floor = policy.initial_floor(anchor=entry_fill)
                 for i in legs:
                     if i != 1:
                         leg_sl[i] = floor
                 if legs and len(legs) > 1:
                     auto_protection_at = c["ts"]
-                if floor != entry:
+                if policy.stair_levels:
                     _ev("stair", floor, f"escada: SL das pernas 2–5 sobe para o nível do TP1 ({floor})")
                 else:
-                    _ev("be", entry, "SL das pernas 2–5 sobe para a entrada (breakeven)")
+                    _ev("be", floor, "SL das pernas 2–5 sobe para o chão protegido (BE/BE+, ancorado ao fill)")
             # gestão adaptativa: depois do TP1, o SL segue o pico do preço
             # (trailing) — fecha com lucro se o mercado inverter trail_dist.
             # SEM look-ahead: o SL é levantado com o pico das velas ANTERIORES
@@ -489,9 +623,10 @@ def simulate_signal(signal: Signal, candles: List[dict], risk_pct: float,
                                 leg_sl[j] = target
                                 auto_protection_at = c["ts"]
                                 _ev("stair", tps[i], f"escada: perna {j} — SL sobe para o nível do TP{i}")
-            # depois dos fills: atualizar o pico para as velas seguintes
+            # depois dos fills: atualizar o pico e o extremo adverso
             if trail_factor_eff and tp1_ts is not None:
                 peak = max(peak, high)
+            adverse_extreme = min(adverse_extreme, low)
             if not any(leg_open.values()):
                 break
             prev_close = c["close"]
@@ -505,6 +640,18 @@ def simulate_signal(signal: Signal, candles: List[dict], risk_pct: float,
                 _ev("sl", sl, "SL atinge — todas as pernas fecham")
                 break
             _apply_hybrid_protect(prev_close)
+            _apply_auto_protect()
+            # R4 "struggle" (sell): o preço subiu contra a entrada por
+            # `struggle_ae_pips` e depois volta à entrada → fecha uma fração
+            # a BE e protege as restantes na entrada.
+            if (struggle_ae_pips is not None and not struggle_applied
+                    and tp1_ts is None
+                    and adverse_extreme >= entry + struggle_ae_pips * pip
+                    and low <= entry):
+                _apply_struggle()
+                if not any(leg_open.values()):
+                    outcome = "be"
+                    break
             if leg_open.get(1) and low <= tps[1]:
                 leg_pnl[1] = _pnl("sell", entry_fill, _exit_fill("sell", tps[1], spread), lots[1], contract)
                 leg_open[1] = False
@@ -513,16 +660,16 @@ def simulate_signal(signal: Signal, candles: List[dict], risk_pct: float,
                 # Mirror the buy path: the current candle's low must not
                 # create a trailing stop that the same candle can hit.
                 trough = tps[1]
-                floor = policy.initial_floor()
+                floor = policy.initial_floor(anchor=entry_fill)
                 for i in legs:
                     if i != 1:
                         leg_sl[i] = floor
                 if legs and len(legs) > 1:
                     auto_protection_at = c["ts"]
-                if floor != entry:
+                if policy.stair_levels:
                     _ev("stair", floor, f"escada: SL das pernas 2–5 sobe para o nível do TP1 ({floor})")
                 else:
-                    _ev("be", entry, "SL das pernas 2–5 sobe para a entrada (breakeven)")
+                    _ev("be", floor, "SL das pernas 2–5 sobe para o chão protegido (BE/BE+, ancorado ao fill)")
             # gestão adaptativa (sell): o SL segue o VALE do preço (trailing)
             # — sem look-ahead (o nível já existia antes desta vela)
             if trail_factor_eff and tp1_ts is not None and trough is not None:
@@ -584,9 +731,10 @@ def simulate_signal(signal: Signal, candles: List[dict], risk_pct: float,
                                 leg_sl[j] = target
                                 auto_protection_at = c["ts"]
                                 _ev("stair", tps[i], f"escada: perna {j} — SL sobe para o nível do TP{i}")
-            # depois dos fills: atualizar o vale para as velas seguintes
+            # depois dos fills: atualizar o vale e o extremo adverso
             if trail_factor_eff and tp1_ts is not None:
                 trough = min(trough, low)
+            adverse_extreme = max(adverse_extreme, high)
             if not any(leg_open.values()):
                 break
             prev_close = c["close"]
@@ -597,14 +745,25 @@ def simulate_signal(signal: Signal, candles: List[dict], risk_pct: float,
     # sinal usa-a (nunca a própria trade, sem look-ahead)
     if def_state is not None and outcome not in ("open", "no_data", "skip"):
         def_state.setdefault("resolved", []).append((signal.id, total))
+    mfe_pips = round(
+        (mfe_high - entry_fill) / pip if direction == "buy" else (entry_fill - mfe_low) / pip,
+        1,
+    )
     payload = {
         "outcome": outcome,
         "pnl": total,
+        "mfe_pips": mfe_pips,
         "leg1_pnl": round(leg_pnl.get(1, 0.0), 2),
         "leg2_pnl": round(leg_pnl.get(2, 0.0), 2),
         "legs_pnl": {i: round(leg_pnl[i], 2) for i in legs},
         "commission": round(commission, 2),
         "delay_seconds": delay_seconds,
+        "protect_trigger": protect_trigger,
+        "protect_buffer": protect_buffer,
+        "auto_protected": auto_protected,
+        "auto_protect_level": auto_protect_level,
+        "struggle_applied": struggle_applied,
+        "struggle_ae_pips": struggle_ae_pips,
     }
     if trace:
         payload["events"] = events
@@ -630,10 +789,19 @@ def simulate_signal_managed(signal: Signal, candles: List[dict], mgmt_events: Li
                             confirm_filter: bool = False,
                             atr_k: Optional[float] = None,
                             atr_period: int = 14,
+                            protect_trigger: Optional[float] = None,
+                            protect_buffer: Optional[float] = None,
                             def_window: Optional[int] = None,
                             def_trail: Optional[float] = None,
                             def_time_stop: Optional[int] = None,
+                            def_risk_pct: Optional[float] = None,
+                            leg_weights: Optional[dict] = None,
+                            management_fallback_seconds: Optional[int] = None,
+                            fallback_buffer_fraction: float = 0.10,
                             def_state: Optional[dict] = None,
+                            struggle_ae_pips: Optional[float] = None,
+                            struggle_fraction: float = 0.5,
+                            be_buffer_pips: Optional[float] = None,
                             strategy_id: str = "") -> dict:
     """Like `simulate_signal`, but also applies the group's real-time
     management instructions when their timestamps are reached.
@@ -658,7 +826,9 @@ def simulate_signal_managed(signal: Signal, candles: List[dict], mgmt_events: Li
 
     `manage_kinds` (estratégias do registo) filtra QUAIS kinds de gestão se
     aplicam — ex.: `{"protect"}` = "protect only" (close_all/close_tp1 são
-    ignorados). None = aplica todos.
+    ignorados). None = aplica todos. `move_sl` uses its explicit level and
+    `close_tp` closes only the requested leg; both are replayed in the same
+    chronological event stream.
 
     Returns the same dict shape as `simulate_signal` (outcome, pnl,
     legs_pnl, commission...), plus `mgmt_applied` (kinds actually used).
@@ -682,9 +852,15 @@ def simulate_signal_managed(signal: Signal, candles: List[dict], mgmt_events: Li
             exit_at_tp=exit_at_tp, trail_factor=trail_factor,
             time_stop_minutes=time_stop_minutes, stair_levels=stair_levels,
             stair_from=stair_from, confirm_filter=confirm_filter,
-            atr_k=atr_k, atr_period=atr_period, def_window=def_window,
-            def_trail=def_trail, def_time_stop=def_time_stop,
-            def_state=def_state, mgmt_events=mgmt_events,
+            atr_k=atr_k, atr_period=atr_period,
+            protect_trigger=protect_trigger, protect_buffer=protect_buffer,
+            def_window=def_window, def_trail=def_trail,
+            def_time_stop=def_time_stop, def_risk_pct=def_risk_pct,
+            leg_weights=leg_weights,
+            def_state=def_state,
+            struggle_ae_pips=struggle_ae_pips,
+            struggle_fraction=struggle_fraction,
+            mgmt_events=mgmt_events,
             strategy_id=strategy_id,
         )
 
@@ -693,9 +869,14 @@ def simulate_signal_managed(signal: Signal, candles: List[dict], mgmt_events: Li
                            slippage_pips=slippage_pips,
                            commission_per_lot=commission_per_lot,
                            lots_override=lots_override, max_legs=max_legs,
-                           exit_at_tp=exit_at_tp)
-    if base["outcome"] == "no_data" or not mgmt_events:
+                           exit_at_tp=exit_at_tp, leg_weights=leg_weights,
+                           struggle_ae_pips=struggle_ae_pips,
+                           struggle_fraction=struggle_fraction,
+                           be_buffer_pips=be_buffer_pips)
+    if (base["outcome"] == "no_data"
+            or (not mgmt_events and management_fallback_seconds is None)):
         base["mgmt_applied"] = []
+        base["management_fallback_applied"] = False
         return base
 
     start = _start_index(candles, _to_epoch(signal.received_at) + delay_seconds)
@@ -719,9 +900,27 @@ def simulate_signal_managed(signal: Signal, candles: List[dict], mgmt_events: Li
     if not legs:
         return {"outcome": "no_data", "pnl": 0.0, "leg1_pnl": 0.0, "leg2_pnl": 0.0}
 
+    prior_pnls = []
+    if def_state is not None:
+        prior_pnls = [p for _, p in def_state.get("resolved", [])]
+    risk_pct_eff = effective_strategy_risk_pct(
+        risk_pct, def_window=def_window, def_risk_pct=def_risk_pct,
+        prior_pnls=prior_pnls,
+    )
+    raw_weights = {
+        i: float((leg_weights or {}).get(i, 1.0) or 0.0)
+        for i in legs
+    }
+    total_weight = sum(max(0.0, value) for value in raw_weights.values())
+    if total_weight <= 0:
+        raw_weights = {i: 1.0 for i in legs}
+        total_weight = float(len(legs))
     lots = {
-        i: compute_lots(balance, risk_pct / len(legs), entry, sl,
-                        pip_size=pip, contract_size=contract)
+        i: compute_lots(
+            balance,
+            risk_pct_eff * max(0.0, raw_weights[i]) / total_weight,
+            entry, sl, pip_size=pip, contract_size=contract,
+        )
         for i in legs
     }
     commission = commission_per_lot * sum(lots.values()) * 2
@@ -732,6 +931,9 @@ def simulate_signal_managed(signal: Signal, candles: List[dict], mgmt_events: Li
     outcome = "open"
     applied = []
     ev_idx = 0
+    tp1_ts: Optional[int] = None
+    management_after_tp1 = False
+    fallback_applied = False
 
     def _close_leg(i, price):
         leg_pnl[i] = _pnl(direction, entry_fill, _exit_fill(direction, price, spread),
@@ -765,6 +967,10 @@ def simulate_signal_managed(signal: Signal, candles: List[dict], mgmt_events: Li
                 kind = mgmt_events[ev_idx][1]
                 be = bool(mgmt_events[ev_idx][2])
                 tp = mgmt_events[ev_idx][3] if len(mgmt_events[ev_idx]) > 3 else None
+                msg_id = mgmt_events[ev_idx][4] if len(mgmt_events[ev_idx]) > 4 else None
+                sl_level = mgmt_events[ev_idx][5] if len(mgmt_events[ev_idx]) > 5 else None
+                if tp1_ts is not None:
+                    management_after_tp1 = True
                 if kind == "close_all":
                     # "out at BE": the group already secured TP1 (leg 1 closed
                     # at TP1) and the REMAINING legs exit at the entry
@@ -796,6 +1002,16 @@ def simulate_signal_managed(signal: Signal, candles: List[dict], mgmt_events: Li
                     if leg_open.get(leg):
                         _close_leg(leg, prev_close)
                         applied.append("close_tp")
+                if kind == "move_sl":
+                    # An explicit group level is a real replay action; a
+                    # nudge without a level remains an audit-only event.
+                    if sl_level is not None:
+                        for leg in legs:
+                            if leg_open.get(leg):
+                                leg_sl[leg] = float(sl_level)
+                        applied.append("move_sl")
+                    else:
+                        applied.append("move_sl_nudge")
                 if kind == "protect":
                     # close leg 1 now (partial profit) + move SL above entry
                     if leg_open.get(1):
@@ -809,6 +1025,27 @@ def simulate_signal_managed(signal: Signal, candles: List[dict], mgmt_events: Li
                             leg_sl[i] = (entry + buffer) if direction == "buy" \
                                 else (entry - buffer)
                 ev_idx += 1
+        # Fallback conservador: só depois de TP1, só se nenhuma mensagem de
+        # gestão chegou dentro da janela. Não fecha pernas; apenas sobe o SL
+        # das restantes para a mesma proteção monotónica do grupo.
+        if (management_fallback_seconds is not None and tp1_ts is not None
+                and not management_after_tp1 and not fallback_applied
+                and c["ts"] - tp1_ts >= int(management_fallback_seconds)):
+            risk = abs(entry - sl)
+            buffer = min(
+                max(risk * float(fallback_buffer_fraction), risk * 0.01),
+                abs(tps[1] - entry),
+            ) if tps else risk * float(fallback_buffer_fraction)
+            fallback_sl = (entry + buffer) if direction == "buy" else (entry - buffer)
+            for i in legs:
+                if i != 1 and leg_open.get(i):
+                    if direction == "buy":
+                        leg_sl[i] = max(leg_sl[i], fallback_sl)
+                    else:
+                        leg_sl[i] = min(leg_sl[i], fallback_sl)
+            fallback_applied = True
+            applied.append("management_fallback")
+
         prev_close = close
         if applied and not any(leg_open.values()):
             break
@@ -823,6 +1060,8 @@ def simulate_signal_managed(signal: Signal, candles: List[dict], mgmt_events: Li
                 break
             if leg_open.get(1) and high >= tps[1]:
                 _close_leg(1, tps[1])
+                tp1_ts = c["ts"]
+                management_after_tp1 = False
                 for i in legs:
                     if i != 1:
                         leg_sl[i] = entry
@@ -858,6 +1097,8 @@ def simulate_signal_managed(signal: Signal, candles: List[dict], mgmt_events: Li
                 break
             if leg_open.get(1) and low <= tps[1]:
                 _close_leg(1, tps[1])
+                tp1_ts = c["ts"]
+                management_after_tp1 = False
                 for i in legs:
                     if i != 1:
                         leg_sl[i] = entry
@@ -892,6 +1133,7 @@ def simulate_signal_managed(signal: Signal, candles: List[dict], mgmt_events: Li
         "commission": round(commission, 2),
         "delay_seconds": delay_seconds,
         "mgmt_applied": applied,
+        "management_fallback_applied": fallback_applied,
     }
 
 
@@ -1020,37 +1262,70 @@ def attribute_protect_events(signal: Signal, candles: List[dict],
 
 
 def correlate_management(signals: List[Signal], management: List[tuple]) -> dict:
-    """Assign each management event to the signal it belongs to.
+    """Assign each management event to its signal without cross-trade leaks.
 
-    `signals` is the ordered list of real signals (per group). `management`
-    is a list of (source, epoch, kind, be, tp). A management event belongs
-    to the most recent signal of the SAME source that arrived before it (the
-    group talks about its current trade) — so "TP1 HIT" at 07:18 lands on
-    the 07:11 signal, not the one at 09:15.
+    Events use the extended tuple ``(source, epoch, kind, be, tp, sl,
+    message_id, reply_to_msg_id)``; old five-field tuples remain accepted.
+    A Telegram reply is the strongest key: match ``reply_to_msg_id`` against
+    the target signal's ``message_id`` in the same source, and only then use
+    the historical fallback (latest signal of that source before the event).
+    If a reply id is present but cannot be resolved, the event is deliberately
+    discarded instead of being sent to a different open XAUUSD trade.
 
-    Returns {signal_id: [(epoch, kind, be, tp), ...]}.
+    Output events are ``(epoch, kind, be, tp, management_message_id, sl)``.
+    ``simulate_signal_managed`` consumes the level for `move_sl` and retains
+    the message id for latency/exit audit.
     """
     by_source: dict = {}
+    by_reply: dict = {}
     for s in signals:
         by_source.setdefault(s.source, []).append(s)
+        if s.message_id is not None:
+            by_reply.setdefault((s.source, str(s.message_id)), []).append(s)
+    for pool in by_source.values():
+        pool.sort(key=lambda s: (s.received_at or "", s.id))
 
     out: dict = {s.id: [] for s in signals}
     for item in management:
-        source, epoch, kind, be = item[0], item[1], item[2], item[3]
-        tp = item[4] if len(item) > 4 else None
-        pool = by_source.get(source)
-        if not pool:
+        source = item[0] if not isinstance(item, dict) else item.get("source", "")
+        epoch = item[1] if not isinstance(item, dict) else item.get("epoch")
+        kind = item[2] if not isinstance(item, dict) else item.get("kind")
+        be = item[3] if not isinstance(item, dict) else item.get("be", False)
+        tp = item[4] if len(item) > 4 and not isinstance(item, dict) else (item.get("tp") if isinstance(item, dict) else None)
+        sl = item[5] if len(item) > 5 and not isinstance(item, dict) else (item.get("sl") if isinstance(item, dict) else None)
+        message_id = item[6] if len(item) > 6 and not isinstance(item, dict) else (item.get("message_id") if isinstance(item, dict) else None)
+        reply_to = item[7] if len(item) > 7 and not isinstance(item, dict) else (item.get("reply_to_msg_id") if isinstance(item, dict) else None)
+        try:
+            epoch = int(epoch)
+        except (TypeError, ValueError):
             continue
-        latest = None
-        for s in pool:
-            if _to_epoch(s.received_at) <= epoch:
-                latest = s
+        pool = by_source.get(source, [])
+        target = None
+        if reply_to is not None:
+            exact = by_reply.get((source, str(reply_to)), [])
+            # A source can be absent/renamed in old rows. A global match is
+            # safe only when the Telegram message id is unique in this replay.
+            if not exact:
+                exact = [s for s in signals if str(s.message_id) == str(reply_to)]
+            if exact:
+                target = exact[-1]
             else:
-                break
-        if latest is not None:
-            out[latest.id].append((epoch, kind, be, tp))
+                # Explicit but unresolved reply: do not misattribute it to
+                # the most recent signal merely because the symbol matches.
+                continue
+        else:
+            for s in pool:
+                try:
+                    if _to_epoch(s.received_at) <= epoch:
+                        target = s
+                    else:
+                        break
+                except (TypeError, ValueError):
+                    continue
+        if target is not None:
+            out[target.id].append((epoch, kind, bool(be), tp, message_id, sl))
     for sid, events in out.items():
-        events.sort()
+        events.sort(key=lambda event: (event[0], event[1], str(event[4] or "")))
     return out
 
 
@@ -1104,13 +1379,25 @@ def apply_daily_stop(results: List[dict], balance: float, stop_pct: float) -> di
     return {"skipped": skipped}
 
 
-def aggregate(results: List[dict]) -> dict:
-    """Resumo agregado dos resultados do backtest."""
+def aggregate(results: List[dict], mfe_threshold_pips: float = 25.0) -> dict:
+    """Resumo agregado dos resultados do backtest.
+
+    ``mfe_threshold_pips`` é a convenção de "win" do grupo (R3): uma trade
+    conta como vitória quando percorreu pelo menos esse valor em pips a
+    favor (excursão máxima favorável), independentemente do resultado final
+    — o grupo conta assim ("andou 25–30 pips a favor"). ``mfe_win_rate`` é
+    essa taxa, usada na divergência grupo↔bot para evitar falsos positivos.
+    """
     resolved = [r for r in results if r["outcome"] in ("win", "loss", "be")]
     wins = [r for r in resolved if r["pnl"] > 0]
     losses = [r for r in resolved if r["pnl"] < 0]
     gross_win = sum(r["pnl"] for r in wins)
     gross_loss = abs(sum(r["pnl"] for r in losses))
+    # R3: vitória na convenção do grupo = MFE ≥ threshold (25–30 pips a
+    # favor), mesmo que a trade tenha voltado e fechado em loss/BE.
+    mfe_wins = sum(1 for r in resolved
+                   if (r.get("mfe_pips") is not None
+                       and float(r.get("mfe_pips") or 0.0) >= float(mfe_threshold_pips)))
 
     return {
         "total": len(results),
@@ -1121,6 +1408,8 @@ def aggregate(results: List[dict]) -> dict:
         "losses": len(losses),
         "breakevens": sum(1 for r in resolved if r["pnl"] == 0),
         "win_rate": round(len(wins) / len(resolved) * 100, 1) if resolved else 0.0,
+        "mfe_win_rate": round(mfe_wins / len(resolved) * 100, 1) if resolved else 0.0,
+        "mfe_threshold_pips": float(mfe_threshold_pips),
         "pnl": round(sum(r["pnl"] for r in results), 2),
         "commission": round(sum(r.get("commission", 0.0) for r in results), 2),
         "avg_win": round(sum(r["pnl"] for r in wins) / len(wins), 2) if wins else 0.0,

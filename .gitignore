@@ -3,12 +3,14 @@ __pycache__/
 .venv/
 *.db
 *.session
+*.session-journal
 .pytest_cache/
 .env
 
 # Local runtime data, credentials and operational artefacts
 *.log*
 *.pid
+*.state
 *.bak-*
 signalbot.db*
 backups/
@@ -22,3 +24,10 @@ preview*.log
 /protect_causal.json
 /item2-sweep.txt
 /nexgen_group.png
+
+# Sidecar WhatsApp (Baileys)
+whatsapp/node_modules/
+whatsapp/session/
+
+# Artefactos gerados pelos estudos (reports/*.json)
+/reports/

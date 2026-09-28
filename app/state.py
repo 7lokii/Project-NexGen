@@ -2,7 +2,7 @@
 
 Owns the configuration, the simulated account, and the signal pipeline:
 
-    signal in -> parse -> risk checks -> (auto) execute / (manual) pending
+    signal in -> parse -> risk checks -> execute (único caminho auto — Item 12)
 
 Also drives the per-second market tick: advance prices, let the strategy
 manager close legs at TP1/TP2/SL/breakeven, apply realized P&L to the
@@ -15,9 +15,33 @@ between the API endpoints and the background tasks.
 
 import asyncio
 import json
+import math
 import os
 import re
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta, timezone
+
+
+class _SafeEncoder(json.JSONEncoder):
+    """JSON encoder that converts inf/nan to None so the WS never breaks."""
+    def iterencode(self, o, _one_shot=False):
+        return super().iterencode(self._clean(o), _one_shot=_one_shot)
+
+    @staticmethod
+    def _clean(o):
+        if isinstance(o, float):
+            if math.isinf(o) or math.isnan(o):
+                return None
+            return o
+        if isinstance(o, dict):
+            return {k: _SafeEncoder._clean(v) for k, v in o.items()}
+        if isinstance(o, (list, tuple)):
+            return [_SafeEncoder._clean(v) for v in o]
+        return o
+
+
+def safe_json(obj) -> str:
+    """json.dumps that never raises on inf/nan floats."""
+    return json.dumps(obj, cls=_SafeEncoder)
 from typing import Any, Dict, List, Optional
 
 from app.config import DEFAULT_CONFIG
@@ -33,13 +57,39 @@ from app.risk.engine import RiskEngine
 from app.signals.llm_fallback import try_llm_parse
 from app.signals.parser import parse_or_error
 
+# Fase 3 (janela de validação + veredicto) vive em app/fase3.py — reexportado
+# aqui com os mesmos nomes (testes/estudos importam de app.state).
+from app.fase3 import _compute_fase3_verdict, _fase3_window_trades  # noqa: F401,E402
 
-def cur(v) -> str:
-    """Formata um valor monetário para as notificações (ex.: '1,234.56 €')."""
-    try:
-        return f"{float(v):,.2f} €"
-    except (TypeError, ValueError):
-        return str(v)
+
+
+# Helpers de formatación viven en app/formatting.py — reexportados aquí.
+from app.formatting import (
+    _iso_age_seconds,
+    _lots_text,
+    _now_iso_plus,
+    _strategy_params_text,
+    _tps_text,
+    cur,
+)  # noqa: F401,E402
+# Recounts (handle/audit/candle-check/batches) vivem em app/recounts.py —
+# misturados no BotState para o método continuar em `self`.
+from app.recounts import RecountsMixin  # noqa: E402
+# Notificações WhatsApp (fecho de trades reais) vivem em app/whatsapp_mixin.py —
+# misturadas no BotState.
+from app.whatsapp_mixin import WhatsAppMixin  # noqa: E402
+# Guardas de entrada e gates de risco (entry guard, lote mínimo, cap de
+# pernas) vivem em app/gates.py — misturadas no BotState.
+from app.gates import GatesMixin  # noqa: E402
+# Conta/lanes (saldo, equity, risco dinâmico, posições MT5) vivem em
+# app/lanes.py — misturadas no BotState.
+from app.lanes import LanesMixin  # noqa: E402
+# Pipeline de ingestão de sinais (janela, revive, execução) vive em
+# app/ingest_mixin.py — misturada no BotState.
+from app.ingest_mixin import IngestMixin  # noqa: E402
+# Gestão do grupo (TP/SL hits, close/protect, pending management, resumos)
+# vive em app/management_mixin.py — misturada no BotState.
+from app.management_mixin import ManagementMixin  # noqa: E402
 
 # Conversa do grupo ("Okay team, waiting for New York...") nunca entra na
 # pipeline — é auditada e ignorada. Mesmo regex do filtro do listener
@@ -60,62 +110,14 @@ _SIGNAL_HINT = re.compile(
     re.IGNORECASE,
 )
 
-
-def _tps_text(obj) -> str:
-    """TP1 1.0890 | TP2 1.0920 | ... — every TP present on a Signal/Trade."""
-    parts = []
-    for i in range(1, 6):
-        tp = float(getattr(obj, f"take_profit_{i}", 0.0) or 0.0)
-        if tp > 0:
-            parts.append(f"TP{i} {tp}")
-    return " | ".join(parts)
-
-
-def _strategy_params_text(p: dict) -> str:
-    """Descrição dos parâmetros de execução de uma estratégia (max_legs,
-    exit_at_tp, lots_override, gestão) — usada na notificação de promoção
-    e no badge da dashboard."""
-    parts = []
-    legs = p.get("max_legs")
-    parts.append(f"{legs} pernas (TP1..TP{legs})" if legs else "todas as pernas (TP1..TP5)")
-    if p.get("exit_at_tp"):
-        parts.append(f"fecha tudo no TP{p['exit_at_tp']}")
-    if p.get("lots_override"):
-        parts.append(f"lote fixo {p['lots_override']}")
-    parts.append("gestão do grupo ON" if p.get("manage") else "sem gestão do grupo")
-    return " · ".join(parts)
-
-
-def _lots_text(trade) -> str:
-    """1.5+1.5+1.5 — lots of every sized leg of a Trade."""
-    parts = []
-    for i in range(1, 6):
-        lots = float(getattr(trade, f"lots_{i}", 0.0) or 0.0)
-        if lots > 0:
-            parts.append(str(lots))
-    return "+".join(parts) if parts else "0"
-
-
-def _now_iso_plus(seconds: float) -> str:
-    """ISO timestamp `seconds` in the future (for edit deadlines)."""
-    from datetime import datetime, timedelta, timezone
-    # UTC explícito — ver `_now_iso` (engine): a dashboard mostra a contagem
-    # da janela de edição correta em qualquer fuso do browser.
-    return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat(timespec="seconds")
-
-
-def _iso_age_seconds(iso: Optional[str]) -> Optional[float]:
-    """Idade (em segundos) de um timestamp ISO face a agora; None se inválido."""
-    if not iso:
-        return None
-    from datetime import datetime
-    try:
-        dt = datetime.fromisoformat(iso)
-    except (ValueError, TypeError):
-        return None
-    if dt.tzinfo is None:
-        dt = dt.astimezone()
-    return (datetime.now().astimezone() - dt).total_seconds()
+# Passive group narrative. These patterns deliberately do not classify a
+# message as an executable management instruction: progress/levels are
+# evidence for audit only.
+_PROGRESS_PIPS = re.compile(r"\+\s*(\d+(?:[.,]\d+)?)\s*pips?\b", re.IGNORECASE)
+_LEVEL_MENTION = re.compile(
+    r"\b(?:say\s+hi\s+to|hello\s+to|target(?:ing)?|heading\s+to|at)\s+"
+    r"(\d+(?:[.,]\d+)?)\b", re.IGNORECASE,
+)
 
 
 class WSManager:
@@ -138,7 +140,7 @@ class WSManager:
         return [{"user": m["user"], "since": m["since"]} for m in self.meta.values()]
 
     async def broadcast(self, payload: dict) -> None:
-        data = json.dumps(payload)
+        data = safe_json(payload)
         for ws in list(self.connections):
             try:
                 await ws.send_text(data)
@@ -146,208 +148,64 @@ class WSManager:
                 self.connections.discard(ws)
 
 
-def _fase3_window_trades(db: DB, sid: str, promoted_at: str,
-                         limit: int = 10) -> List[Trade]:
-    """Return the first validation-window trades opened by ``sid``.
-
-    The validation contract is the *first* ten trades after promotion, not
-    every trade that happened to close after that timestamp.  Filtering by
-    opening time prevents a position from the previous strategy from being
-    counted after it closes; explicit strategy ids are honoured while legacy
-    rows without one remain usable for historical/test data.
-    """
-    if not promoted_at:
-        return []
-    closed = [
-        t for t in db.list_trades(500)
-        if t.status == "closed" and t.closed_at and t.opened_at
-        and t.opened_at >= promoted_at and t.closed_at >= promoted_at
-        and t.strategy_id in (None, sid)
-    ]
-    closed.sort(key=lambda t: (t.closed_at or "", t.id))
-    return closed[:max(1, int(limit))]
-
-
-async def _compute_fase3_verdict(db: DB, sid: Optional[str]) -> Optional[dict]:
-    """Veredicto da janela de validação da Fase 3 (ESTRATEGIAS.md Parte X)
-    — standalone (só precisa da BD) para ser testável sem o BotState inteiro.
-
-    Avalia as 10 primeiras trades reais da auto (fechadas após `promoted_at`
-    do snapshot) e devolve o veredicto com as métricas do doc: PF real da
-    janela, mesma decisão de saída que o papel (≥ 9/10), posições sem SL,
-    ordens duplicadas (perna com o mesmo `leg`), modifies recusados pelo
-    broker (retcodes ≠ 10009/0 na auditoria `autosl:`), atraso
-    sinal→abertura ≤ ~2 min e P&L coerente com o backtest do mesmo sinal.
-
-    `None` quando ainda não há janela para avaliar (estratégia não é auto,
-    sem snapshot, veredicto já emitido ou < 10 trades fechadas)."""
-    import json as _json
-    from app.strategies import STRATEGIES as _S
-    if not sid or not sid.startswith("auto_"):
-        return None
-    _strat = _S.get(sid, {})
-    if not (_strat.get("stair_levels") or _strat.get("trail_factor")
-            or _strat.get("confirm_filter") or _strat.get("time_stop_minutes")):
-        return None
-    try:
-        snap = json.loads(db.all_config().get("fase3_snapshot") or "null")
-    except (ValueError, TypeError):
-        snap = None
-    if not snap:
-        return None
-    if db.all_config().get("fase3_verdict"):
-        return None
-    promoted_at = snap.get("promoted_at") or ""
-    closed = _fase3_window_trades(db, sid, promoted_at)
-    if len(closed) < 10:
-        return None
-    # PF real da janela
-    pnls = [t.pnl or 0.0 for t in closed]
-    wins = sum(p for p in pnls if p > 0)
-    loss_sum = abs(sum(p for p in pnls if p < 0))
-    pf = round(wins / loss_sum, 2) if loss_sum else None
-    # divergências estruturais no mesmo sinal (saída diferente / papel ainda
-    # aberto enquanto o real já fechou)
-    from app.analysis import paper_vs_real_auto
-    try:
-        pvr = await paper_vs_real_auto(db, strategy_id=sid)
-        window_signal_ids = {t.signal_id for t in closed}
-        pairs = [p for p in pvr.get("pairs", [])
-                 if (p.get("real_closed_at") or "") >= promoted_at
-                 and p.get("signal_id") in window_signal_ids]
-        structural = [p for p in pairs if not p.get("same_exit") or p.get("paper_open")]
-        same_exit_n = sum(1 for p in pairs if p.get("same_exit"))
-    except Exception as exc:
-        print(f"[fase3] divergences ao validar janela: {exc}")
-        structural = []
-        same_exit_n = 0
-    # posições abertas sem SL (zero tolerado na janela)
-    no_sl = [p for p in db.open_positions() if not p.stop_loss]
-
-    # "zero ordens duplicadas e retcodes 10009" (doc Parte X.1):
-    # - ordens duplicadas = mais de uma posição com o MESMO leg na mesma
-    #   trade (o `leg` é o comentário único `trade.id:legN` no broker);
-    # - retcodes recusados = modifies da auto-gestão recusados (10016/stops
-    #   inválidos) na auditoria `autosl:<trade_id>` — aceite é 10009/0.
-    dup_orders, refused_retcodes = [], []
-    slow_opens, pnl_incoherent = [], []
-    by_signal = {s.id: s for s in db.signals_since("")}
-    from app.analysis import real_vs_backtest
-    try:
-        rvb = await real_vs_backtest(db, strategy_id=sid)
-        rvb_by_trade = {r["trade_id"]: r for r in rvb.get("trades", [])}
-    except Exception:
-        rvb_by_trade = {}
-    for t in closed:
-        legs_seen = {}
-        for p in db.positions_for_trade(t.id):
-            if p.leg in legs_seen:
-                dup_orders.append((t.id, p.leg))
-            legs_seen[p.leg] = True
-        try:
-            for e in _json.loads(db.all_config().get(f"autosl:{t.id}") or "[]"):
-                rc = e.get("retcode")
-                if rc is not None and int(rc or 0) not in (10009, 0):
-                    refused_retcodes.append((t.id, e.get("leg"), rc))
-        except (ValueError, TypeError):
-            pass
-        # atraso sinal→abertura ≤ ~2 min (o sim assume 60s; acima de 120s o
-        # sinal já pode estar desatualizado)
-        sig = by_signal.get(t.signal_id)
-        if sig and sig.received_at and t.opened_at:
-            try:
-                from datetime import datetime as _dt
-                t0 = _dt.fromisoformat(str(sig.received_at).replace("Z", "+00:00"))
-                t1 = _dt.fromisoformat(str(t.opened_at).replace("Z", "+00:00"))
-                delay = (t1 - t0).total_seconds()
-                if delay > 120:
-                    slow_opens.append((t.id, int(delay)))
-            except (ValueError, TypeError):
-                pass
-        # P&L coerente com o backtest do mesmo sinal: sinal oposto =
-        # incoerente; magnitudes muito desviadas também (real a perder > 150%
-        # do previsto, ou a ganhar < 25% do previsto, não é ruído de custos)
-        rv = rvb_by_trade.get(t.id) or {}
-        bt_pnl = rv.get("bt_pnl")
-        real_pnl = t.pnl or 0.0
-        if bt_pnl is not None and abs(bt_pnl) >= 0.5:
-            if (real_pnl > 0) != (bt_pnl > 0) and abs(real_pnl) >= 1.0:
-                pnl_incoherent.append((t.id, real_pnl, bt_pnl))
-            elif real_pnl < 0 and real_pnl < 1.5 * bt_pnl:
-                pnl_incoherent.append((t.id, real_pnl, bt_pnl))
-            elif real_pnl > 0 and real_pnl < 0.25 * bt_pnl:
-                pnl_incoherent.append((t.id, real_pnl, bt_pnl))
-
-    reasons = []
-    if pf is not None and pf < 1.0:
-        reasons.append(f"PF {pf:.2f} < 1.0 nas {len(closed)} trades")
-    if same_exit_n < 9:
-        reasons.append(f"mesma decisão do papel em {same_exit_n}/{len(closed)} "
-                       "trades (< 9/10)")
-    if len(structural) >= 2:
-        reasons.append(f"{len(structural)} divergências estruturais "
-                       "(saída diferente do papel no mesmo sinal)")
-    if no_sl:
-        reasons.append(f"{len(no_sl)} posições abertas sem SL")
-    if dup_orders:
-        reasons.append(f"{len(dup_orders)} ordens duplicadas "
-                       "(perna re-enviada no mesmo leg)")
-    if refused_retcodes:
-        codes = sorted({r[2] for r in refused_retcodes})
-        reasons.append(f"{len(refused_retcodes)} modifies recusados pelo "
-                       f"broker (retcodes {codes})")
-    if slow_opens:
-        reasons.append(f"{len(slow_opens)} aberturas com atraso sinal→"
-                       f"abertura > 2 min (máx {max(d for _, d in slow_opens)}s)")
-    if pnl_incoherent:
-        reasons.append(f"{len(pnl_incoherent)} trades com P&L incoerente "
-                       "com o backtest do mesmo sinal")
-    decision = "rollback" if reasons else "maintain"
-    same_pct = (round(same_exit_n / len(closed) * 100) if closed else None)
-    return {
-        "evaluated_at": _now_iso(),
-        "strategy_id": sid,
-        "window_trades": len(closed),
-        "pf": pf,
-        "pnl": round(sum(pnls), 2),
-        "same_exit_n": same_exit_n,
-        "same_exit_pct": same_pct,
-        "structural_divergences": len(structural),
-        "positions_without_sl": len(no_sl),
-        "duplicate_orders": len(dup_orders),
-        "refused_retcodes": len(refused_retcodes),
-        "slow_opens": len(slow_opens),
-        "pnl_incoherent": len(pnl_incoherent),
-        # Generation token: a background validation can finish after a new
-        # promotion starts. `_check_fase3_validation` rechecks this timestamp
-        # before persisting, so an old verdict cannot overwrite the fresh
-        # window's cleared state.
-        "snapshot_promoted_at": promoted_at,
-        "decision": decision,
-        "reason": ("; ".join(reasons) if reasons else f"janela limpa — mesma decisão "
-                   f"do papel em {same_exit_n}/{len(closed)} trades "
-                   f"({same_pct}%), zero posições sem SL, zero ordens "
-                   f"duplicadas, retcodes 10009, atraso sinal→abertura ≤ 2 "
-                   f"min, P&L coerente com o backtest, PF ≥ 1.0"),
-        "snapshot_before": {
-            k: snap.get(k) for k in ("promoted_at", "n", "pf", "pnl",
-                                     "dd_auto", "dd_ref",
-                                     "paper_vs_real_pairs",
-                                     "real_trades_closed", "sl_audit_entries")
-        },
-    }
-
-
-class BotState:
+class BotState(RecountsMixin, WhatsAppMixin, GatesMixin, LanesMixin,
+              IngestMixin, ManagementMixin):
     def __init__(self, db: DB, market: MarketSimulator, risk: RiskEngine,
-                 sim: SimEngine, notifier: Notifier, ws: WSManager):
+                 sim: SimEngine, notifier: Notifier, ws: WSManager,
+                 whatsapp: Any = None, second_sim: Any = None,
+                 second_strategy: Optional[str] = None,
+                 second_label: Optional[str] = None):
         self.db = db
         self.market = market
         self.risk = risk
         self.sim = sim
         self.notifier = notifier
         self.ws = ws
+        # Último snapshot construído pelo tick (~1×/s): os endpoints read-only
+        # servem-no em vez de reconstruírem o estado (que lê o broker MT5) por
+        # request no event loop único — ver `last_snapshot()`.
+        self._last_snapshot: Optional[dict] = None
+        # Vigia do event loop (stalls/fases lentas) — criado lazy; ver
+        # `stall_recorder` (app/stallwatch.py).
+        self._stall_recorder_obj: Optional[Any] = None
+        # Segunda lane de execução (estratégia principal paralela noutra conta
+        # demo MT5). Lane "main" = conta principal atual (`self.sim`, sempre
+        # resolvido dinamicamente para os testes poderem re-wire o motor);
+        # lane "tp2" = conta paralela (tp2_protect), fixa (`self.sim2`).
+        self.sim2 = second_sim
+        self.lane_strategies: Dict[str, Optional[str]] = {
+            "main": None, "tp2": second_strategy,
+        }
+        self.lane_labels: Dict[str, Optional[str]] = {
+            "main": None, "tp2": second_label or "tp2_protect",
+        }
+        # WhatsAppNotifier opcional (resultados de trades reais num grupo
+        # WhatsApp via bridge Baileys) — None/desligado = comportamento atual.
+        self.whatsapp = whatsapp
         self.config: Dict[str, Any] = self._load_config()
+        # Corrige high-watermarks herdados de outra conta antes do primeiro
+        # cálculo de risco. O teste é conservador: só rebasa valores claramente
+        # incompatíveis com o saldo/equity atualmente configurado.
+        self._normalize_lane_peaks()
+        # A configuração persistida é a fonte de verdade após restart; os
+        # argumentos do construtor só servem como fallback para instalações
+        # antigas que ainda não têm os campos da segunda lane.
+        self.lane_strategies["tp2"] = (
+            self.config.get("lane2_strategy")
+            or self.lane_strategies.get("tp2")
+            or "tp2_protect"
+        )
+        self.lane_labels["tp2"] = (
+            self.config.get("lane2_label")
+            or self.lane_labels.get("tp2")
+            or "Sair no TP2 + protect"
+        )
+        # Cada engine só pode atualizar as trades da sua lane. Sem este
+        # marcador, duas engines partilhando a BD processariam a mesma trade.
+        if self.sim is not None:
+            self.sim.lane_id = "main"
+        if self.sim2 is not None:
+            self.sim2.lane_id = "tp2"
         # paper trading forward: cada estratégia de teste tem a sua conta
         # virtual (1000 €) e recebe os sinais reais ao vivo (ver execution/paper.py)
         from app.execution.paper import PaperRace
@@ -374,6 +232,7 @@ class BotState:
         # snapshots de saldo da corrida paralela (paper + real da principal)
         # — gravados no tick a cada ~60s para a curva "quem está a ganhar".
         self._last_balance_snap: float = 0.0
+        self._last_journal_monotonic: Optional[float] = None
         # alerta "um teste passou a ganhar à principal" — com cooldown para
         # não spammar (só volta a disparar quando o líder muda).
         self._race_leader: Optional[str] = None
@@ -390,13 +249,76 @@ class BotState:
         self._last_regime_check: float = 0.0
         self._regime_alert_at: float = 0.0
         self._regime_status: dict = {"pf": None, "resolved": 0, "checked_at": ""}
+        # métrica contínua do Item 12: edições pós-execução a sinais que
+        # executaram sem janela — alerta quando a taxa passa de 5% com
+        # amostra mínima (cooldown 24h; o número vive em /api/edits).
+        self._last_edit_metric_check: float = 0.0
+        self._edit_metric_alert_at: float = 0.0
+        self._edit_metric_status: dict = {
+            "post_execution_edited": 0, "post_execution_total": 0,
+            "post_execution_edit_rate": 0.0, "checked_at": "",
+        }
+        # calibração do offset GC=F↔spot: avisa quando passa a estar ativa
+        # (≥3 fills XAUUSD) e quando muda materialmente (≥10 pontos) —
+        # verificado no tick a cada ~30 min, nunca no primeiro segundo.
+        # candles do candle-check por símbolo (MT5 spot + GC=F Yahoo) com
+        # cache de 5 min — o re-check em lote reutiliza sem re-buscar
+        self._recount_candles_cache: dict = {}
+        # offset GC=F↔spot por (dia, símbolo) medido nos fills reais com
+        # ambos os preços — o candle-check do GC=F usa-o em vez do offset
+        # fixo (cache 5 min, como os candles)
+        self._recount_day_offset_cache: dict = {}
         # alerta do ETA da Fase 3 (janela a estimar > 6 semanas ou ritmo
         # com mudança grande vs mês anterior) — cooldown de 24h.
         self._fase3_eta_alert_at: float = 0.0
+        # promotion panel cache: the forward gate is read-only but scans paper
+        # rows, so do not recompute it on every one-second snapshot.
+        self._promotion_cache: Optional[dict] = None
+        self._promotion_cache_at: float = 0.0
+        self._promotion_cache_db_id: Optional[int] = None
         # check operacional diário do volume livre: read-only, sem alterar a
         # BD nem a conta; o alerta só se repete no dia seguinte.
         self._disk_last_check_day: str = ""
         self._disk_status: dict = {}
+        # estatísticas do journal de execução (linha de qualidade diária no
+        # snapshot/feed): agregar os últimos 7 dias de `execution_events`
+        # custa ~1s+ numa tabela com milhões de linhas (journal ligado a
+        # gravar quotes por tick). Com cache de ~60s o snapshot deixa de
+        # pagar essa agregação em CADA tick — a causa dos stalls de 4-6s
+        # do loop atribuídos a `snapshot.build` (ver app/stallwatch.py).
+        self._journal_stats_cache: Optional[dict] = None
+        self._journal_stats_at: float = 0.0
+        # Cache TTL genérico para blocos do snapshot que são caros de
+        # computar (agregações DB sobre tabelas grandes: paper/shadow/fase3/
+        # window/risk_preview) mas mudam lentamente. Sem ele, o tick somava
+        # ~20 queries por snapshot e `snapshot.build` ficava perto do limiar
+        # de stall (2s) mesmo com o broker cacheado. Nunca serve dados de
+        # execução: apenas painéis informativos (ver `_ttl_get`).
+        self._ttl_cache: dict = {}
+
+    def _ttl_get(self, key: str, ttl: float, fn) -> Any:
+        """Valor computado por `fn` com cache TTL de `ttl` segundos.
+
+        Read-only para a execução: serve apenas blocos informativos do
+        snapshot (estado das corridas paper/shadow, ETA da Fase 3, janela,
+        risk_preview). O TTL é conservador (5–60s) e os handlers que MUTAM o
+        estado invalidam a cache inteira (`_invalidate_snapshot_cache`); um
+        erro em `fn` devolve o valor e o próximo tick volta a tentar.
+        """
+        import time as _time
+        now = _time.monotonic()
+        hit = self._ttl_cache.get(key)
+        if hit is not None and now - hit[0] < ttl:
+            return hit[1]
+        try:
+            v = fn()
+        except Exception as exc:
+            print(f"[ttl:{key}] falhou: {exc}")
+            if hit is not None:
+                return hit[1]
+            raise
+        self._ttl_cache[key] = (now, v)
+        return v
 
     # ------------------------------------------------------- listener health
 
@@ -484,10 +406,73 @@ class BotState:
         cfg["max_positions"] = int(cfg["max_positions"])
         cfg["sim_speed"] = float(cfg["sim_speed"])
         cfg["edit_window_seconds"] = float(cfg["edit_window_seconds"])
+        cfg["rejected_revive_minutes"] = float(
+            cfg.get("rejected_revive_minutes") or 10
+        )
         cfg["balance"] = float(cfg["balance"])
+        cfg["peak_balance"] = float(cfg.get("peak_balance", 0.0) or 0.0)
+        # Per-lane keys are not part of DEFAULT_CONFIG; restore any that were
+        # persisted so a restart preserves each account's high-watermark,
+        # risk base and fixed lots instead of silently falling back to the
+        # legacy `risk_pct` / risk-based sizing.
+        for key in ("peak_balance:main", "peak_balance:tp2",
+                    "risk_pct:main", "risk_pct:tp2",
+                    "lots_override:main", "lots_override:tp2"):
+            if key in stored:
+                cfg[key] = float(stored[key] or 0.0)
+        cfg["lane2_balance"] = float(cfg.get("lane2_balance", 0.0) or 0.0)
+        cfg["lane2_strategy"] = str(
+            cfg.get("lane2_strategy") or "tp2_protect"
+        ).strip()
+        cfg["lane2_label"] = str(
+            cfg.get("lane2_label") or "Sair no TP2 + protect"
+        ).strip()
         cfg["kill_switch"] = self._to_bool(cfg["kill_switch"])
         cfg["auto_kill"] = self._to_bool(cfg["auto_kill"])
+        cfg["killswitch_rearm_at"] = str(cfg.get("killswitch_rearm_at") or "").strip()
+        # Kill switch rearm is only set by explicit user action (dashboard/API);
+        # we never impose an automatic deadline on boot.
+        cfg["shadow_paper_enabled"] = self._to_bool(
+            cfg.get("shadow_paper_enabled", False)
+        )
+        cfg["execution_journal_enabled"] = self._to_bool(
+            cfg.get("execution_journal_enabled", False)
+        )
+        raw_shadow = cfg.get("shadow_paper_strategies", [])
+        if isinstance(raw_shadow, str):
+            try:
+                parsed_shadow = json.loads(raw_shadow)
+            except (TypeError, ValueError):
+                parsed_shadow = [part.strip() for part in raw_shadow.split(",")]
+        else:
+            parsed_shadow = raw_shadow
+        if not isinstance(parsed_shadow, list):
+            parsed_shadow = []
+        cfg["shadow_paper_strategies"] = list(dict.fromkeys(
+            str(s).strip() for s in parsed_shadow if str(s).strip()
+        ))
         return cfg
+
+    def _normalize_lane_peaks(self) -> None:
+        """Rebase high-watermarks that clearly belong to another account.
+
+        Older paper runs persisted a 100,000 EUR peak while the active demo
+        account has 1,000 EUR. Keeping that value would reduce the effective
+        risk to the floor and make every minimum-lot signal look unsafe. A
+        plausible drawdown is preserved; only a peak more than 10x the current
+        lane balance (and at least 10,000 units above it) is rebased.
+        """
+        for lane_id in self._lanes():
+            key = "peak_balance" if lane_id == "main" else f"peak_balance:{lane_id}"
+            try:
+                reference = self._balance_for_lane(lane_id)
+                peak = float(self.config.get(key) or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if reference <= 0 or peak <= max(reference * 10.0, reference + 10000.0):
+                continue
+            self.config[key] = float(reference)
+            self.db.set_config(key, float(reference))
 
     @staticmethod
     def _to_bool(value) -> bool:
@@ -497,150 +482,95 @@ class BotState:
 
     def _persist_config(self, keys: List[str]) -> None:
         for key in keys:
-            self.db.set_config(key, self.config[key])
+            value = self.config.get(key)
+            if value is None:
+                continue  # chave ainda não definida (ex.: risco por lane novo)
+            if key == "shadow_paper_strategies":
+                value = json.dumps(value, ensure_ascii=False)
+            self.db.set_config(key, value)
+
+    def shadow_paper_status(self) -> dict:
+        """Runtime view of the isolated shadow-paper feed.
+
+        Shadow trades reuse the paper tables/account machinery, but this
+        status makes the safety boundary explicit: it is never the MT5
+        engine and does not depend on the principal's mode or kill switch.
+        """
+        strategies = list(self.config.get("shadow_paper_strategies") or [])
+        skipped = getattr(self.paper, "_skipped_daily_stop", {}) or {}
+        accounts = []
+        open_trades = 0
+        for sid in strategies:
+            open_count = len(self.db.paper_open_trades(sid, origin="shadow"))
+            open_trades += open_count
+            balance = self.db.paper_balance(sid, origin="shadow")
+            stats = self.db.paper_trade_stats(sid, origin="shadow")
+            accounts.append({
+                "strategy_id": sid,
+                "balance": balance,
+                "open_trades": open_count,
+                "daily_stop_skipped": skipped.get(f"shadow:{sid}", 0),
+                **stats,
+            })
+        return {
+            "enabled": bool(self.config.get("shadow_paper_enabled")),
+            "strategies": strategies,
+            "accounts": accounts,
+            "open_trades": open_trades,
+            "origin": "shadow",
+            "execution_isolated": True,
+        }
 
     # -------------------------------------------------------------- account
-
-    def _mt5_account(self) -> Optional[dict]:
-        """Account info from the MT5 terminal when execution runs through it.
-
-        When EXECUTION_MODE=mt5, the broker account is the source of truth
-        for balance/equity — the config balance only applies to the paper
-        (sim) engine.
-        """
-        provider = getattr(self.sim, "provider", None)
-        if provider is not None and provider.connected:
-            return provider.account()
-        return None
-
-    def _currency(self) -> str:
-        acct = self._mt5_account()
-        return (acct or {}).get("currency", "USD")
-
-    def _mt5_positions(self) -> list:
-        """Live MT5 positions for the dashboard (empty in sim mode).
-
-        Enriches each broker position with the app-level context: the leg
-        number and trade id (parsed from the order comment `t-xxx:legN`) and
-        the linked signal (source/group) so the dashboard can show "perna 3
-        de sinal X" instead of a raw ticket list.
-        """
-        provider = getattr(self.sim, "provider", None)
-        if provider is None or not provider.connected:
-            return []
-        trades = {t.id: t for t in self.db.open_trades()}
-        out = []
-        for p in provider.positions():
-            item = dict(p)
-            comment = item.get("comment") or ""
-            if ":" in comment:
-                trade_id, leg_part = comment.split(":", 1)
-                item["trade_id"] = trade_id
-                m = re.search(r"leg(\d+)", leg_part)
-                item["leg"] = int(m.group(1)) if m else 0
-                t = trades.get(trade_id)
-                if t is not None:
-                    item["signal_symbol"] = t.symbol
-                    item["signal_direction"] = t.direction
-                    item["tp"] = float(getattr(t, f"take_profit_{item['leg']}", 0.0) or 0.0)
-                    sig = self.db.get_signal(t.signal_id)
-                    item["signal_source"] = (sig.source if sig else "") or ""
-            out.append(item)
-        return out
-
-    def _balance(self) -> float:
-        acct = self._mt5_account()
-        if acct:
-            return float(acct["balance"])
-        return float(self.config["balance"])
-
-    def _open_positions(self) -> List[Position]:
-        return self.db.open_positions()
-
-    def _open_trades(self) -> List[Trade]:
-        return self.db.open_trades()
-
-    def _open_pnl(self) -> float:
-        acct = self._mt5_account()
-        if acct:
-            return round(float(acct["equity"]) - float(acct["balance"]), 2)
-        total = 0.0
-        for p in self._open_positions():
-            price = self.market.price(p.symbol)
-            if price is not None:
-                sign = 1.0 if p.direction == "buy" else -1.0
-                total += sign * (price - p.entry) * p.lots * 100_000
-        return round(total, 2)
-
-    def _realized_today(self) -> float:
-        return self.db.realized_today(date.today().isoformat())
-
-    def equity(self) -> float:
-        acct = self._mt5_account()
-        if acct:
-            return round(float(acct["equity"]), 2)
-        return round(self._balance() + self._open_pnl(), 2)
-
-    def _update_peak_balance(self) -> None:
-        """Mantém o high-watermark da equity (`peak_balance`) — base do risco
-        dinâmico. Só escreve quando a equity sobe (barato no tick)."""
-        eq = self.equity()
-        peak = float(self.config.get("peak_balance") or 0.0)
-        if peak <= 0 or eq > peak:
-            self.config["peak_balance"] = eq
-            self.db.set_config("peak_balance", eq)
-
-    def _effective_risk_pct(self) -> float:
-        """Risco dinâmico: o `risk_pct` base escala para baixo após perdas.
-
-        Regra: cada -20% de drawdown desde o pico de equity corta o risco a
-        METADE (`0.5 ** (drawdown / 20)`), com piso de 0.1%. Se ainda não há
-        pico registado, devolve o base sem escala.
-        """
-        base = float(self.config.get("risk_pct", 1.0))
-        peak = float(self.config.get("peak_balance") or 0.0)
-        eq = self.equity()
-        if peak <= 0:
-            return base
-        dd = max(0.0, (peak - eq) / peak * 100.0)
-        scale = 0.5 ** (dd / 20.0)
-        return max(0.1, base * scale)
-
-    def risk_preview(self) -> dict:
-        """Lotes que o risco% atual representa numa trade típica do grupo
-        (XAUUSD): total e por perna (TP1..TP5). O lote depende da distância
-        do SL — usa a distância real do último sinal válido quando existir,
-        senão um SL típico de 30 pontos de ouro."""
-        from app.execution.mt5 import FALLBACK_SYMBOLS
-        meta = FALLBACK_SYMBOLS.get("XAUUSD", {})
-        contract = float(meta.get("contract", 100.0))
-        pip = float(meta.get("pip", 0.01))
-        step = float(meta.get("vol_step", 0.01))
-        vmin = float(meta.get("vol_min", 0.01))
-        vmax = float(meta.get("vol_max", 100.0))
-        balance = self._balance()
-        risk_pct = self._effective_risk_pct()  # risco dinâmico (drawdown)
-        # distância do SL: usa a do último sinal válido (entrada+SL) se houver
-        sl_dist = 30.0  # pontos de ouro (3.0 de preço) — SL típico do grupo
-        sig = self.db.last_signal_with_sl()
-        if sig:
-            sl_dist = abs(float(sig["entry"]) - float(sig["stop_loss"]))
-        risk_amount = balance * risk_pct / 100.0
-        risk_pips = sl_dist / pip
-        lots_total = risk_amount / (risk_pips * contract * pip)
-        lots_total = max(vmin, min(vmax, round(lots_total / step) * step))
-        n_legs = self._strategy_params().get("max_legs") or 5
-        return {
-            "symbol": "XAUUSD",
-            "sl_dist": round(sl_dist, 2),
-            "lots_total": round(lots_total, 2),
-            "lots_per_leg": round(max(vmin, lots_total / n_legs), 2),
-            "n_legs": n_legs,
-        }
 
     # ------------------------------------------------------------- snapshot
 
     def snapshot(self) -> dict:
+        """Snapshot fresco — mesmo comportamento de sempre (uso interno /
+        endpoints que mutam e devolvem o resultado)."""
+        return self._build_snapshot()
+
+    def last_snapshot(self) -> dict:
+        """Snapshot mais recente computado pelo market_loop (~1×/s).
+
+        Os endpoints read-only (`/api/status`, WS no arranque) servem ESTE
+        snapshot em vez de reconstruírem o estado por request: a construção
+        lê o broker MT5/worker (I/O síncrono que, no event loop único,
+        congelaria a dashboard e o healthcheck por request). Entre ticks a
+        idade é ≤ o intervalo do loop (~1s). Sem tick ainda corrido
+        (testes, arranque), computa uma vez on-demand (semântica antiga).
+        """
+        if self._last_snapshot is None:
+            return self._build_snapshot()
+        return self._last_snapshot
+
+    def _journal_stats(self) -> dict:
+        """`execution_event_stats(7)` com cache de ~60s.
+
+        A agregação GROUP BY sobre a janela de 7 dias de `execution_events`
+        (milhões de linhas com o journal ligado) demora ~1s+ e corria dentro
+        de TODOS os snapshots do tick — era a causa dos stalls de 4-6s do
+        event loop ("sem resposta HTTP" do healthcheck / logins pendurados),
+        atribuídos a `snapshot.build` pelo stallwatch. A linha é informativa
+        (qualidade diária do journal); frescura de 60s é suficiente. Nunca
+        rebenta o snapshot: em falha devolve contagens vazias e o próximo
+        tick volta a tentar.
+        """
+        import time as _time
+        if (self._journal_stats_cache is not None
+                and _time.monotonic() - self._journal_stats_at < 60.0):
+            return self._journal_stats_cache
+        try:
+            stats = self.db.execution_event_stats(7)
+        except Exception as exc:
+            print(f"[journal] execution_event_stats falhou: {exc}")
+            stats = {"days": 7, "total": 0, "by_kind": []}
+        self._journal_stats_cache = stats
+        self._journal_stats_at = _time.monotonic()
+        return stats
+
+    def _build_snapshot(self) -> dict:
+        lanes = self._lanes_snapshot()
         return {
             "auth": {"enabled": bool(os.getenv("SIGNALBOT_DASHBOARD_PASSWORD"))},
             "online_users": self.ws.online_users(),
@@ -652,30 +582,70 @@ class BotState:
                 "open_trades": len(self._open_trades()),
                 "currency": self._currency(),
             },
+            "lanes": lanes,
             "config": {
-                "mode": self.config["mode"],
+                # Único caminho desde o Item 12 — o modo manual foi removido.
+                "mode": "auto",
                 "risk_pct": round(float(self.config["risk_pct"]), 2),
+                "risk_pct_by_lane": {
+                    lane: round(self._base_risk_for_lane(lane), 2)
+                    for lane in self._lanes()
+                },
+                "lots_override_by_lane": {
+                    lane: self._fixed_lots_for_lane(lane)
+                    for lane in self._lanes()
+                },
                 "effective_risk_pct": round(self._effective_risk_pct(), 2),
                 "peak_balance": round(float(self.config.get("peak_balance") or 0.0), 2),
                 "daily_loss_limit_pct": round(float(self.config["daily_loss_limit_pct"]), 2),
                 "max_positions": int(self.config["max_positions"]),
                 "kill_switch": bool(self.config["kill_switch"]),
                 "auto_kill": bool(self.config["auto_kill"]),
+                "killswitch_rearm_at": self.config.get("killswitch_rearm_at", ""),
                 "sim_speed": round(float(self.config["sim_speed"]), 1),
                 "edit_window_seconds": round(float(self.config["edit_window_seconds"]), 1),
+                "rejected_revive_minutes": round(float(
+                    self.config.get("rejected_revive_minutes") or 10), 1),
+                "entry_guard_enabled": bool(self.config.get("entry_guard_enabled", True)),
+                "entry_guard_tolerance": float(self.config.get("entry_guard_tolerance", 0.5) or 0.0),
+                "entry_guard_max_zone_widths": float(self.config.get("entry_guard_max_zone_widths", 5.0)),
+                "entry_guard_auto_cap": float(self.config.get("entry_guard_auto_cap") or 0.0),
+                "autonomous_mode": bool(self.config.get("autonomous_mode", True)),
+                "pending_expire_minutes": float(self.config.get("pending_expire_minutes") or 30),
+                "entry_style": self._entry_style(),
+                "entry_order_ttl_hours": float(self.config.get("entry_order_ttl_hours") or 0.0),
                 "summary_time": self.config["summary_time"],
                 "strategy": self.config.get("strategy", "nova_gestao"),
                 "strategy_params": self._strategy_params(),
+                "lane2_strategy": self._lane_strategy_id("tp2"),
+                "lane2_label": self.lane_labels.get("tp2") or self.config.get("lane2_label", ""),
+                "lane2_balance": round(self._balance_for_lane("tp2"), 2) if "tp2" in self._lanes() else None,
+                "lane2_enabled": "tp2" in self._lanes(),
+                "effective_risk_by_lane": {
+                    lane: round(self._effective_risk_pct_for_lane(lane), 2)
+                    for lane in self._lanes()
+                },
+                "shadow_paper_enabled": bool(self.config.get("shadow_paper_enabled")),
+                "shadow_paper_strategies": list(self.config.get("shadow_paper_strategies") or []),
+                "execution_journal_enabled": bool(self.config.get("execution_journal_enabled")),
                 "risk_preview": self.risk_preview(),
+                "risk_preview_by_lane": {
+                    lane: self.risk_preview(lane) for lane in self._lanes()
+                },
                 "teste_days": int(self.config.get("teste_days", 30)),
                 "paper_race_hours": int(self.config.get("paper_race_hours", 24)),
                 "fase3_target": int(self.config.get("fase3_target", 20)),
             },
-            "fase3_snapshot": self._fase3_snapshot(),
-            "fase3_eta": self._fase3_eta(),
-            "fase3_verdict": self._fase3_verdict(),
-            "fase3_verdicts": self._fase3_verdicts(),
-            "fase3_target_log": self._fase3_target_log(),
+            # Blocos informativos caros (agregações DB sobre tabelas grandes
+            # ou leituras de conta) mas de mudança lenta — cache TTL para o
+            # snapshot do tick (~1×/s) não pagar ~20 queries por segundo
+            # (causa dos `snapshot.build` perto do limiar de stall).
+            "fase3_snapshot": self._ttl_get("fase3_snapshot", 60.0, self._fase3_snapshot),
+            "fase3_eta": self._ttl_get("fase3_eta", 60.0, self._fase3_eta),
+            "fase3_verdict": self._ttl_get("fase3_verdict", 60.0, self._fase3_verdict),
+            "fase3_verdicts": self._ttl_get("fase3_verdicts", 60.0, self._fase3_verdicts),
+            "fase3_target_log": self._ttl_get("fase3_target_log", 60.0, self._fase3_target_log),
+            "window": self._ttl_get("window_status", 10.0, self.window_status),
             "market": {
                 "real_data": self.market.real_data_active,
                 "prices": dict(self.market.prices),
@@ -688,22 +658,31 @@ class BotState:
                     for sym, meta in self.market.meta().items()
                 },
             },
-            "execution": self._execution_state(),
-            "operations": {"disk": dict(self._disk_status)},
+            "execution": self._execution_state(lanes=lanes),
+            "group_audits": self.db.list_group_audits(50),
+            "operations": {
+                "disk": dict(self._disk_status),
+                "execution_journal": self._journal_stats(),
+            },
+            "shadow_paper": self._ttl_get("shadow_paper_status", 10.0,
+                                           self.shadow_paper_status),
             "mt5_positions": self._mt5_positions(),
             "ignored_count": self.db.count_ignored(),
-            "paper": self.paper_status(),
+            "paper": self._ttl_get("paper_status", 10.0, self.paper_status),
             "regime": dict(self._regime_status),
+            "edit_metric": dict(self._edit_metric_status),
             "listener": self.listener_status(),
             "server": {"started_at": self.started_at},
             "signals": [s.to_dict() for s in self.db.list_signals(50)],
             "trades": [self._trade_view(t) for t in self.db.list_trades(50)],
             "positions": [p.to_dict() for p in self.db.open_positions()],
             "notifications": [
-                {"id": n.id, "kind": n.kind, "text": n.text, "created_at": n.created_at}
-                for n in self.db.list_notifications(50)
+                {"id": n.id, "kind": n.kind, "text": n.text,
+                 "created_at": n.created_at, "lane": n.lane or ""}
+                for n in self.db.list_notifications(30)
             ],
         }
+
 
     def _fase3_eta(self) -> Optional[dict]:
         """ETA da janela da Fase 3: ritmo de sinais/dia da `auto_escada_3`
@@ -719,7 +698,11 @@ class BotState:
         `pace_daily` = contagem por dia dos últimos 60 dias (mini-curva)."""
         from datetime import datetime, timedelta, timezone
         sid = "auto_escada_3"
-        auto = self.db.paper_trade_stats(sid)
+        # o gate forward avalia a auto_escada_3 na origem SHADOW (sinais
+        # live completos abrem shadow mesmo com o kill switch ligado); a
+        # corrida race só abre quando a principal executa e fica vazia com
+        # o kill ON — o ETA tem de medir a MESMA origem do gate
+        auto = self.db.paper_trade_stats(sid, origin="shadow")
         n = int(auto.get("closed") or 0)
         target = int(self.config.get("fase3_target") or 20)
         now = datetime.now(timezone.utc)
@@ -728,9 +711,11 @@ class BotState:
                     "pace": None, "pace_prev": None, "pace_change_pct": None,
                     "eta": None, "eta_days": None, "pace_daily": []}
         opened = self.db.paper_trades_opened_since(
-            sid, (now - timedelta(days=30)).isoformat(timespec="seconds"))
+            sid, (now - timedelta(days=30)).isoformat(timespec="seconds"),
+            origin="shadow")
         opened_prev = (self.db.paper_trades_opened_since(
-            sid, (now - timedelta(days=60)).isoformat(timespec="seconds")) - opened)
+            sid, (now - timedelta(days=60)).isoformat(timespec="seconds"),
+            origin="shadow") - opened)
         pace = opened / 30.0
         pace_prev = opened_prev / 30.0
         change = None
@@ -740,9 +725,11 @@ class BotState:
         # curva mostra a auto E a referência (nova_gestao) lado a lado para
         # comparar a cadência das duas contas
         by_day = self.db.paper_trades_opened_by_day(
-            sid, (now - timedelta(days=59)).strftime("%Y-%m-%d"))
+            sid, (now - timedelta(days=59)).strftime("%Y-%m-%d"),
+            origin="shadow")
         by_day_ref = self.db.paper_trades_opened_by_day(
-            "nova_gestao", (now - timedelta(days=59)).strftime("%Y-%m-%d"))
+            "nova_gestao", (now - timedelta(days=59)).strftime("%Y-%m-%d"),
+            origin="shadow")
         pace_daily = []
         for i in range(60):
             day = (now - timedelta(days=59 - i)).strftime("%Y-%m-%d")
@@ -816,6 +803,76 @@ class BotState:
         except (ValueError, TypeError):
             return None
 
+    @staticmethod
+    def _auto_params(strat: dict) -> Optional[dict]:
+        """Build the same auto-policy payload for every execution engine.
+
+        `be_buffer_pips` conta sozinho (15/09): o BE+ autónomo precisa dele
+        mesmo quando a estratégia não define NENHUM outro parâmetro auto —
+        sem isto, o tp2_protect nunca recebia o buffer e o BE só acontecia
+        quando o grupo dizia 'TP1 Hit' (2 min de exposição no sinal das
+        15:37)."""
+        keys = ("stair_levels", "stair_from", "confirm_filter", "trail_factor",
+                "time_stop_minutes", "atr_k", "atr_period", "atr_timeframe",
+                "def_window", "def_trail", "def_time_stop", "def_risk_pct",
+                "protect_trigger", "protect_buffer", "be_buffer_pips")
+        if not any(strat.get(key) for key in keys):
+            return None
+        return {key: strat.get(key) for key in keys}
+
+    # BE+ adaptativo: cache {symbol: (avg_pips | None, monotonic_ts)} — a
+    # média do spread move-se devagar e o tick corre ~1×/s por lane.
+    _BE_BUFFER_WINDOW_DAYS = 7
+    _BE_BUFFER_CACHE_SECONDS = 300.0
+    _BE_BUFFER_MIN_PIPS = 10.0
+    _BE_BUFFER_MAX_PIPS = 60.0
+    _BE_BUFFER_SPREAD_FACTOR = 1.1
+
+    def _adaptive_be_buffer(self, symbol: str, strat: dict) -> float:
+        """Buffer BE+ do símbolo: spread médio observado (7d) × 1.1, limitado
+        a [10, 60] pips. Fallback = valor estático da estratégia sem amostras
+        (`spread_observations` vazia — BD fresca/símbolo nunca observado).
+        Config `be_buffer_adaptive=0` desliga e fixa o valor estático."""
+        static = float(strat.get("be_buffer_pips") or 0.0)
+        if not symbol:
+            return static
+        import time as _time
+        cache = getattr(self, "_be_buffer_cache", None)
+        if cache is None:
+            cache = self._be_buffer_cache = {}
+        now = _time.monotonic()
+        cached = cache.get(symbol)
+        if cached is not None and now - cached[1] < self._BE_BUFFER_CACHE_SECONDS:
+            avg = cached[0]
+        else:
+            try:
+                avg = self.db.avg_spread_pips(
+                    symbol, days=self._BE_BUFFER_WINDOW_DAYS)
+            except Exception:
+                avg = None
+            cache[symbol] = (avg, now)
+        if not self.config.get("be_buffer_adaptive", True):
+            return static
+        if avg is None or avg <= 0:
+            return static
+        return round(min(self._BE_BUFFER_MAX_PIPS,
+                         max(self._BE_BUFFER_MIN_PIPS,
+                             avg * self._BE_BUFFER_SPREAD_FACTOR)), 1)
+
+    def _lane_open_symbols(self, lane_id: str) -> set:
+        """Símbolos das trades abertas da lane (para o buffer BE+ adaptativo)."""
+        try:
+            return {t.symbol for t in self.db.open_trades()
+                    if (getattr(t, "lane_id", None) or "main") == lane_id}
+        except Exception:
+            return set()
+
+    @classmethod
+    def _lane_auto_params(cls, strat: dict) -> Optional[dict]:
+        """Payload base por lane (mesma política de `_auto_params`; o buffer
+        BE+ adaptativo é resolvido à parte, em `_adaptive_be_buffer`)."""
+        return cls._auto_params(strat)
+
     def _strategy_params(self) -> dict:
         """Parâmetros da estratégia ativa da conta principal (max_legs,
         exit_at_tp, lots_override, manage) — a dashboard mostra-os no badge
@@ -824,20 +881,27 @@ class BotState:
         `orphan` = a config aponta para um id que já não existe no registo
         (ex.: estratégia removida) — a execução cai no fallback e o badge
         avisa em vez de mostrar silenciosamente a estratégia errada."""
-        from app.strategies import STRATEGIES, get_strategy
+        from app.strategies import (MAIN_STRATEGY_ID, STRATEGIES,
+                                    get_strategy)
         sid = self.config.get("strategy")
-        s = get_strategy(sid)
+        # id removido/morto na config: o badge avisa (orphan) e o snapshot
+        # usa os parâmetros da principal — a execução/tick nunca rebenta com
+        # uma config antiga; os ESTUDOS é que falham em voz alta (get_strategy
+        # levanta ValueError fora daqui).
+        try:
+            s = get_strategy(sid)
+        except ValueError:
+            s = STRATEGIES[MAIN_STRATEGY_ID]
         defensive = False
         if s.get("def_window") and not getattr(self, "sim", None) is None:
             try:
-                if self.config["mode"] == "auto":
-                    pnls = self.db.recent_closed_pnls(int(s["def_window"]))
-                    if len(pnls) >= int(s["def_window"]):
-                        wins = [p for p in pnls if p > 0]
-                        losses = [p for p in pnls if p < 0]
-                        if losses:
-                            gross_loss = -sum(losses)
-                            defensive = gross_loss > 0 and sum(wins) / gross_loss < 1.0
+                pnls = self.db.recent_closed_pnls(int(s["def_window"]))
+                if len(pnls) >= int(s["def_window"]):
+                    wins = [p for p in pnls if p > 0]
+                    losses = [p for p in pnls if p < 0]
+                    if losses:
+                        gross_loss = -sum(losses)
+                        defensive = gross_loss > 0 and sum(wins) / gross_loss < 1.0
             except Exception:
                 pass
         return {
@@ -849,6 +913,7 @@ class BotState:
             "def_window": s.get("def_window"),
             "def_trail": s.get("def_trail"),
             "def_time_stop": s.get("def_time_stop"),
+            "def_risk_pct": s.get("def_risk_pct"),
             "manage": s["manage"],
             "manage_kinds": sorted(s.get("manage_kinds") or ()),
             "orphan": sid not in STRATEGIES,
@@ -877,12 +942,16 @@ class BotState:
         comparar em igualdade de circunstâncias."""
         from app.execution.paper import START_BALANCE
         from app.strategies import (HIDDEN_STRATEGIES, MENU_HIDDEN_STRATEGIES,
-                                    STRATEGIES)
+                                    STRATEGIES, paper_strategy_ids)
         main = self.config.get("strategy")
         skipped = getattr(self.paper, "_skipped_daily_stop", {}) or {}
+        # corrida = só o que abre papel E é visível (a `nova` contrafactual
+        # abre papel silenciosamente mas não entra nos cards da corrida)
+        paper_ids = set(paper_strategy_ids())
         out = []
         for sid, strat in STRATEGIES.items():
-            if sid in HIDDEN_STRATEGIES or sid in MENU_HIDDEN_STRATEGIES:
+            if (sid in HIDDEN_STRATEGIES or sid in MENU_HIDDEN_STRATEGIES
+                    or sid not in paper_ids):
                 continue
             bal = self.db.ensure_paper_account(sid, START_BALANCE)
             stats = self.db.paper_trade_stats(sid)
@@ -892,7 +961,9 @@ class BotState:
                 "desc": strat["desc"],
                 "is_main": sid == main,
                 "balance": bal,
-                "daily_stop_skipped": skipped.get(sid, 0),
+                "daily_stop_skipped": skipped.get(
+                    f"race:{sid}", skipped.get(sid, 0)
+                ),
                 **stats,
             })
         return {"accounts": out}
@@ -903,9 +974,10 @@ class BotState:
         Relatório (ligação backtest↔vivo, SPEC v2 §3.4). Só devolve os pares
         que divergiram (a referência saiu e a auto continua, ou saídas/P&L
         diferentes no mesmo sinal)."""
-        from app.strategies import HIDDEN_STRATEGIES, STRATEGIES
+        from app.strategies import STRATEGIES, paper_strategy_ids
+        paper = set(paper_strategy_ids())
         autos = [sid for sid in STRATEGIES
-                 if sid.startswith("auto_") and sid not in HIDDEN_STRATEGIES]
+                 if sid.startswith("auto_") and sid in paper]
         out = []
         for sid in autos:
             for t in self.db.paper_trades(sid, 300):
@@ -934,19 +1006,108 @@ class BotState:
                     "motivo": motivo,
                     "auto_at": t.get("closed_at") or t.get("opened_at"),
                 })
-        out.sort(key=lambda r: r["auto_at"] or "", reverse=True)
+                out.sort(key=lambda r: r["auto_at"] or "", reverse=True)
+        return out
+
+    def lane_divergences(self) -> list:
+        """Per-signal divergence between execution lanes (main vs tp2).
+
+        For each signal that has trades in BOTH lanes, compare exit_reason
+        and pnl.  Only returns signals that diverge (different reason or
+        pnl delta > 0.01)."""
+        from collections import defaultdict
+        all_trades = self.db.list_trades(5000)
+        by_signal_lane: dict = defaultdict(dict)
+        for t in all_trades:
+            if t.status != "closed":
+                continue
+            lane = t.lane_id or "main"
+            by_signal_lane[t.signal_id][lane] = t
+        out = []
+        for sid, lanes in by_signal_lane.items():
+            main_t = lanes.get("main")
+            tp2_t = lanes.get("tp2")
+            if not main_t or not tp2_t:
+                continue
+            same_reason = main_t.exit_reason == tp2_t.exit_reason
+            same_pnl = abs((main_t.pnl or 0.0) - (tp2_t.pnl or 0.0)) < 0.01
+            if same_reason and same_pnl:
+                continue
+            out.append({
+                "signal_id": sid,
+                "symbol": main_t.symbol,
+                "direction": main_t.direction,
+                "entry": main_t.entry,
+                "main_strategy": main_t.strategy_id,
+                "tp2_strategy": tp2_t.strategy_id,
+                "main_pnl": round(float(main_t.pnl or 0.0), 2),
+                "tp2_pnl": round(float(tp2_t.pnl or 0.0), 2),
+                "pnl_delta": round(float((tp2_t.pnl or 0.0) - (main_t.pnl or 0.0)), 2),
+                "main_reason": main_t.exit_reason,
+                "tp2_reason": tp2_t.exit_reason,
+                "opened_at": main_t.opened_at,
+                "closed_at": main_t.closed_at,
+            })
+        out.sort(key=lambda r: r["closed_at"] or "", reverse=True)
+        return out
+
+    def lane_status(self) -> list:
+        """Per-lane summary: strategy, mode, connected, total pnl, trade count."""
+        out = []
+        for lane_id in self._lanes():
+            strat = self._lane_strategy(lane_id)
+            engine = self._lane_engine(lane_id)
+            acct = self._mt5_account(lane_id)
+            if acct is None and lane_id == "tp2":
+                acct = self._lane2_synthetic_account()
+            dry = bool(getattr(engine, "dry_run", False))
+            has_provider = getattr(engine, "provider", None) is not None
+            connected = bool(getattr(getattr(engine, "provider", None), "connected", False))
+            all_trades = self.db.list_trades(5000)
+            lane_trades = [t for t in all_trades
+                           if (t.lane_id or "main") == lane_id]
+            closed = [t for t in lane_trades if t.status == "closed"]
+            total_pnl = round(sum(float(t.pnl or 0.0) for t in closed), 2)
+            wins = len([t for t in closed if (t.pnl or 0.0) > 0])
+            losses = len([t for t in closed if (t.pnl or 0.0) < 0])
+            out.append({
+                "lane_id": lane_id,
+                "strategy_id": strat["id"],
+                "strategy_name": strat["nome"],
+                "mode": ("mt5-blocked" if getattr(getattr(engine, "provider", None), "execution_block_reason", "")
+                         else "mt5-dry" if dry else "mt5-real" if has_provider else "sim"),
+                "connected": connected,
+                "account": acct,
+                "effective_risk_pct": round(self._effective_risk_pct_for_lane(lane_id), 2),
+                "risk_base_pct": round(self._base_risk_for_lane(lane_id), 2),
+                "fixed_lots_per_leg": self._fixed_lots_for_lane(lane_id),
+                "risk_preview": self.risk_preview(lane_id),
+                "trades_total": len(lane_trades),
+                "trades_closed": len(closed),
+                "trades_open": len(lane_trades) - len(closed),
+                "total_pnl": total_pnl,
+                "wins": wins,
+                "losses": losses,
+            })
         return out
 
     # --------------------------------------------------------- execution
 
-    def _execution_state(self) -> dict:
+    def _execution_state(self, lanes: Optional[list] = None) -> dict:
         """How trades are executed: sim / mt5-dry / mt5-real, + MT5 account.
 
         Kept cheap: the provider caches account_info for a few seconds, so
         this runs on every snapshot without hammering the terminal.  A
         non-hedged real account is represented explicitly as blocked instead
         of looking like a generic connection failure.
+
+        `lanes` (opcional) é o snapshot de lanes JÁ construído pelo
+        `_build_snapshot` — reconstruí-lo aqui duplicava ~8 leituras
+        MT5/worker por lane por tick (o snapshot chama as lanes primeiro e
+        o estado de execução depois).
         """
+        if lanes is None:
+            lanes = self._lanes_snapshot()
         engine = self.sim
         provider = getattr(engine, "provider", None)
         if provider is not None:
@@ -967,913 +1128,140 @@ class BotState:
                 "margin_mode": getattr(provider, "account_margin_mode", None),
                 "hedged": getattr(provider, "account_hedged", None),
                 "blocked_reason": getattr(provider, "execution_block_reason", ""),
+                "broker_account": account,
+                "simulation": self._dry_run_summary(),
+                "lanes": lanes,
             }
         return {"mode": "sim", "connected": False, "trade_allowed": True,
                 "account": None, "margin_mode": None, "hedged": None,
-                "blocked_reason": ""}
+                "blocked_reason": "", "broker_account": None,
+                "simulation": {"enabled": True,
+                                "starting_balance": float(self.config.get("balance", 0.0) or 0.0),
+                                "realized_pnl": self.db.realized_today(date.today().isoformat()),
+                                "equity": self.equity(),
+                                "currency": self._currency()},
+                "lanes": lanes}
 
     # ------------------------------------------------------------ pipeline
 
-    async def ingest(self, body: SignalIn) -> dict:
-        """Receive a signal and route it through the pipeline.
+    async def _apply_pending_shadow_management(self, signal: Signal) -> int:
+        """Deliver queued group instructions to a shadow trade.
 
-        Telegram messages (which carry a `message_id`) are buffered in an
-        edit window: they only continue once the window closes without edits.
-        Everything else (demo button, structured input) continues immediately.
+        The pending row has separate real/paper markers: shadow paper can
+        receive a management message before the real account is approved,
+        without consuming the instruction that the real trade may still need.
         """
-        # Historical messages carry their original Telegram timestamp, so the
-        # backtest replays them at the right moment instead of at load time.
-        received_at = body.received_at or _now_iso()
-        window = float(self.config.get("edit_window_seconds", 60))
-
-        if body.message_id:
-            return await self._ingest_telegram(body, received_at, window)
-
-        return await self._ingest_immediate(body, received_at)
-
-    async def _ingest_telegram(self, body: SignalIn, received_at: str, window: float) -> dict:
-        """Buffer a Telegram message and wait for possible edits.
-
-        The signal id is `tg-<group>-<message_id>` so that the same Telegram
-        message id from different groups never collides, and edits from the
-        same group hit the same row.
-
-        Group MANAGEMENT messages ("TP1 HIT", "close first entries",
-        "we're out at BE") never wait for the edit window — they act on the
-        open trade immediately (see `_handle_management`).
-        """
-        group_key = (body.group or "").strip()
-        signal_id = f"tg-{group_key}-{body.message_id}" if group_key else f"tg-{body.message_id}"
-        existing = self.db.get_signal(signal_id)
-        if existing and existing.status == "awaiting_edit":
-            return await self._apply_edit(existing, body, window)
-
-        # Management messages ("TP1 HIT", "we're out", "Weekly summary") act
-        # immediately — classify BEFORE the final-state dedup so re-processing
-        # a historical message still routes to the management handler.
-        if body.raw_text:
-            action = classify(body.raw_text)
-            if action:
-                return await self._handle_management(body, action, signal_id, received_at)
-            # "TP1 4734 SL 4745" a responder ao sinal — o grupo confirma/corrige
-            # o TP1/SL da trade do sinal alvo (edição pós-execução).
-            edited = await self._handle_tp_sl_update(body, signal_id, received_at)
-            if edited:
-                return edited
-            # Conversa do grupo (sem keywords de sinal nem gestão): audita e
-            # ignora — nunca entra na pipeline nem na janela de edição.
-            if not _SIGNAL_HINT.search(body.raw_text):
-                self.db.record_ignored(
-                    body.message_id, body.source or "", body.group or "",
-                    body.raw_text,
-                    "conversa do grupo (sem keywords de sinal)",
-                    received_at,
-                )
-                if _LOG_IGNORED:
-                    preview = body.raw_text.replace("\n", " ").strip()
-                    if _LOG_IGNORED >= 2:
-                        print(f"[ignored] {body.source} msg {body.message_id} | {body.raw_text}")
-                    else:
-                        print(f"[ignored] {body.source} msg {body.message_id} | {preview[:80]}")
-                return {"action": "ignored", "reason": "conversa do grupo (audit)"}
-
-        if existing:
-            # O grupo editou a mensagem DEPOIS de a janela fechar e o sinal
-            # já ter executado — a entrada/trade pode estar desatualizada.
-            # Alerta de risco para detetar entradas erradas (janelas curtas).
-            if (not body.historical and existing.status in ("executed", "pending")
-                    and (body.raw_text or "").strip() != (existing.raw_text or "").strip()):
-                await self.notifier.send(
-                    "risk",
-                    f"⚠️ O grupo editou o sinal {existing.symbol or ''} depois de "
-                    f"{('executar' if existing.status == 'executed' else 'ficar pendente')} "
-                    f"(janela de {int(window)}s já passou) — a entrada pode estar "
-                    f"desatualizada: \"{(body.raw_text or '').strip()[:70]}\"",
-                )
-            # REVIVE: o sinal tinha falhado (ex.: entrada incompleta, sem TP/SL
-            # ainda) e o grupo agora completou a edição — reabre a janela com o
-            # conteúdo novo em vez de ignorar. Só dentro de 5 min da mensagem
-            # original; histórico nunca revive (não age em trades abertas).
-            age = _iso_age_seconds(existing.received_at)
-            if (not body.historical and existing.status == "failed"
-                    and (body.raw_text or "").strip() != (existing.raw_text or "").strip()
-                    and age is not None and age <= 300):
-                revived = await self._build_signal(body, existing.id, existing.received_at)
-                if not revived.error:
-                    revived.status = "awaiting_edit"
-                    revived.message_id = existing.message_id
-                    revived.edit_deadline = _now_iso_plus(window)
-                    revived.edited_at = _now_iso()
-                    self.db.insert_signal(revived)
-                    self.db.delete_ignored(str(body.message_id), body.source or "")
-                    await self.notifier.send(
-                        "revived",
-                        f"🔄 Sinal {revived.symbol or ''} recuperado — o grupo completou "
-                        f"a edição (janela de {int(window)}s reaberta)",
-                    )
-                    return {"action": "revived", "signal": revived.to_dict()}
-            return {"action": "ignored", "reason": f"sinal já finalizado ({existing.status})"}
-
-        signal = await self._build_signal(body, signal_id, received_at)
-        signal.reply_to_msg_id = str(body.reply_to_msg_id) if body.reply_to_msg_id else None
-        if body.historical:
-            # past messages from the group's history: register only, never
-            # wait for edits or execute
-            signal.status = "historical" if not signal.error else "failed"
-            signal.message_id = str(body.message_id)
-            self.db.insert_signal(signal)
-            return {"action": "historical", "signal": signal.to_dict()}
-
-        signal.message_id = str(body.message_id)
-        # se a primeira versão da mensagem tinha sido auditada como conversa
-        # (ex.: "I'm selling XAUUSD" sem TP/SL ainda) e agora é sinal, remove
-        # o registo de ignorada para a auditoria não contradizer os sinais.
-        self.db.delete_ignored(str(body.message_id), body.source or "")
-        # Parse completo → executa já (o TP1 do grupo pode bater em segundos).
-        # A janela de edição só é usada quando a primeira versão está
-        # incompleta (parse com erro) ou veio da IA (llm_parsed → aprovação).
-        if not signal.error and not signal.llm_parsed:
-            self.db.insert_signal(signal)
-            return await self._continue_complete(signal)
-
-        signal.status = "awaiting_edit"
-        signal.edit_deadline = _now_iso_plus(window)
-        self.db.insert_signal(signal)
-        return {"action": "buffered", "edit_window_seconds": window, "signal": signal.to_dict()}
-
-    async def _continue_complete(self, signal: Signal) -> dict:
-        """Roteia um sinal com parse completo para a pipeline — auto executa
-        já, manual fica pendente — sem esperar a janela de edição."""
-        if self.config["mode"] == "auto":
-            return await self._try_execute(signal)
-        signal.status = "pending"
-        self.db.set_signal_status(signal.id, "pending")
-        return {"action": "pending", "signal": signal.to_dict()}
-
-    async def _apply_edit(self, existing: Signal, body: SignalIn, window: float) -> dict:
-        """A Telegram edit for a buffered message: re-parse and reset the clock."""
-        signal = await self._build_signal(body, existing.id, existing.received_at)
-        signal.status = "awaiting_edit"
-        signal.message_id = existing.message_id
-        signal.edit_deadline = _now_iso_plus(window)
-        signal.edited_at = _now_iso()
-        self.db.insert_signal(signal)
-        if signal.error:
-            return {"action": "edited_invalid", "error": signal.error, "signal": signal.to_dict()}
-        return {"action": "edited", "signal": signal.to_dict()}
-
-    async def _ingest_immediate(self, body: SignalIn, received_at: str) -> dict:
-        """Messages without a message_id (demo button, structured input)."""
-        signal_id = "s-" + _new_id()
-        signal = await self._build_signal(body, signal_id, received_at)
-        if signal.error:
-            signal.status = "failed"
-            self.db.insert_signal(signal)
-            await self.notifier.send("risk", f"⚠️ Sinal não reconhecido: {signal.error}")
-            return {"action": "parse_error", "error": signal.error, "signal": signal.to_dict()}
-        self.db.insert_signal(signal)
-        if signal.llm_parsed:
-            # LLM-parsed signals always need a human: never auto-execute
-            self.db.set_signal_status(signal.id, "pending")
-            await self.notifier.send(
-                "system",
-                f"🤖 Sinal {signal.symbol} {signal.direction} parseado por IA "
-                f"— aguarda aprovação manual (nunca executa em auto)",
+        key = str(signal.message_id) if signal.message_id else signal.id
+        pending = self.db.pending_management_for(key, engine="shadow")
+        applied = 0
+        for rec in pending:
+            self.paper.apply_management(
+                signal.id, rec["kind"], tp=rec.get("tp"), sl=rec.get("sl"),
+                be=bool(rec.get("be")), msg_id=rec.get("id"),
+                origin="shadow",
             )
-            return {"action": "pending", "llm_parsed": True, "signal": signal.to_dict()}
-        if self.config["mode"] == "auto":
-            return await self._try_execute(signal)
-        return {"action": "pending", "signal": signal.to_dict()}
+            self.db.mark_pending_management_applied(rec["id"], engine="shadow")
+            applied += 1
+        return applied
 
-    async def _build_signal(self, body: SignalIn, signal_id: str, received_at: str) -> Signal:
-        """Build a Signal from an API body.
+    async def _open_shadow_for_signal(self, signal: Signal) -> List[Trade]:
+        """Open configured shadow strategies without touching the real engine.
 
-        Failed parses carry an `error` instead of raising, so the edit window
-        can wait for the group to fix the message. When the regex parser
-        fails and an LLM endpoint is configured, `try_llm_parse` offers a
-        second chance — flagged `llm_parsed`, which forces manual approval.
+        This hook deliberately runs before risk/kill-switch decisions for the
+        principal. It only accepts live, fully parsed signals; historical
+        replay and LLM proposals never create forward paper evidence.
         """
-        if body.raw_text:
-            signal = parse_or_error(body.raw_text, source=body.source,
-                                    signal_id=signal_id, received_at=received_at)
-            if signal.error:
-                from app.signals.llm_fallback import llm_configured
-                if llm_configured():
-                    llm = await try_llm_parse(body.raw_text, source=body.source,
-                                              signal_id=signal_id, received_at=received_at)
-                    if llm is not None and not llm.error:
-                        return llm
-            return signal
-        signal = Signal(
-            id=signal_id, source=body.source, raw_text="(estruturado)",
-            symbol=(body.symbol or "").upper().replace("/", ""),
-            direction=body.direction.value if body.direction else "",
-            entry=body.entry or 0.0,            stop_loss=body.stop_loss or 0.0,
-            take_profit_1=body.take_profit_1 or 0.0,
-            take_profit_2=body.take_profit_2 or 0.0,
-            take_profit_3=body.take_profit_3 or 0.0,
-            take_profit_4=body.take_profit_4 or 0.0,
-            take_profit_5=body.take_profit_5 or 0.0,
-            status="pending", received_at=received_at, lots=body.lots,
-        )
-        if not (signal.symbol and signal.direction and signal.entry
-                and signal.stop_loss and signal.take_profit_1 and signal.take_profit_2):
-            signal.status = "failed"
-            signal.error = "campos estruturados incompletos"
-        return signal
-
-    async def finalize_awaiting_signals(self, now: Optional[str] = None) -> None:
-        """Continue any signal whose edit window has closed.
-
-        Valid signals go to the normal pipeline (manual -> pending,
-        auto -> risk checks + execute). Invalid ones are marked failed.
-        """
-        now = now or _now_iso()
-        for sig in self.db.awaiting_edit_signals():
-            if not sig.edit_deadline or sig.edit_deadline > now:
-                continue
-            if sig.error:
-                self.db.set_signal_status(sig.id, "failed")
-                await self.notifier.send(
-                    "risk",
-                    f"⚠️ Sinal {sig.symbol or '(desconhecido)'} inválido após a "
-                    f"janela de edição: {sig.error}",
-                )
-                continue
-            if sig.llm_parsed:
-                # LLM-parsed signals always need a human: never auto-execute
-                self.db.set_signal_status(sig.id, "pending")
-                await self.notifier.send(
-                    "system",
-                    f"🤖 Sinal {sig.symbol} {sig.direction} parseado por IA "
-                    f"— aguarda aprovação manual (nunca executa em auto)",
-                )
-                continue
-            if self.config["mode"] == "auto":
-                await self._try_execute(sig)
-            else:
-                self.db.set_signal_status(sig.id, "pending")
-
-    async def _try_execute(self, signal: Signal) -> dict:
-        decision: RiskDecision = self.risk.check(
-            signal, self.config, self._open_trades(), self._realized_today(), self._balance()
-        )
-        if not decision.allowed:
-            signal.status = "rejected"
-            self.db.set_signal_status(signal.id, "rejected", error="; ".join(decision.reasons))
-            await self.notifier.send(
-                "risk",
-                f"⛔ Sinal {signal.symbol} bloqueado: {'; '.join(decision.reasons)}",
-            )
-            return {"action": "blocked", "reasons": decision.reasons, "signal": signal.to_dict()}
-
-        from app.strategies import get_strategy
-        strat = get_strategy(self.config.get("strategy"))
-        risk_pct = self._effective_risk_pct()  # risco dinâmico (drawdown)
+        if (signal.error or signal.llm_parsed or signal.status == "historical"
+                or not self.config.get("shadow_paper_enabled")):
+            return []
+        strategy_ids = list(self.config.get("shadow_paper_strategies") or [])
+        if not strategy_ids:
+            return []
         try:
-            trade = self.sim.open_trade(
-                signal, risk_pct, self._balance(),
-                lots_override=signal.lots, max_legs=strat["max_legs"],
-            )
-            # Persistir a estratégia que abriu a trade real permite encaminhar
-            # protect/pending management corretamente após um restart.
-            trade.strategy_id = strat["id"]
-            self.db.set_trade_strategy(trade.id, strat["id"])
-        except Exception as exc:
-            # nunca deixar o sinal em awaiting_edit após uma exceção: o tick
-            # reabriria a trade a cada segundo (duplicados). Regista a falha.
-            self.db.record_exception(
-                exc, context={"component": "execution", "phase": "open_trade"},
-                signal_id=signal.id,
-            )
-            signal.status = "failed"
-            error = f"exceção ao abrir trade: {exc}"
-            self.db.set_signal_status(signal.id, "failed", error=error)
-            await self.notifier.send(
-                "risk", f"⚠️ Sinal {signal.symbol} falhou ao abrir: {exc}"
-            )
-            return {"action": "execution_failed", "error": error, "signal": signal.to_dict()}
-        if trade.status != "open":
-            # broker refused the orders (e.g. AutoTrading off): no phantom trade
-            signal.status = "failed"
-            error = trade.error or "ordem recusada pelo broker"
-            self.db.set_signal_status(signal.id, "failed", error=error)
-            if getattr(trade, "auto_trading_off", None):
-                # retcode 10027 = trading desligado no terminal — alerta imediato
-                # para o utilizador ligar o AutoTrading antes do próximo sinal.
-                self.db.set_config("last_auto_trading_off_at", _now_iso())
-                await self.notifier.send(
-                    "risk",
-                    f"⛔ AutoTrading DESLIGADO no MT5: sinal {signal.symbol} "
-                    f"NÃO executado (retcode 10027). Liga o AutoTrading no "
-                    f"terminal antes do próximo sinal.",
-                )
-            else:
-                await self.notifier.send(
-                    "risk", f"⚠️ Sinal {signal.symbol} não executado: {error}"
-                )
-            return {"action": "execution_failed", "error": error, "signal": signal.to_dict()}
-
-        signal.status = "executed"
-        self.db.set_signal_status(signal.id, "executed")
-        # paper trading forward: as estratégias de teste abrem a MESMA trade
-        # em papel com os seus parâmetros, cada uma com o seu saldo virtual.
-        # O kill diário da produção (daily_loss_limit_pct) também se aplica à
-        # corrida paper — as contas virtuais refletem o que a produção real
-        # faria se a estratégia fosse a principal.
-        try:
+            # O shadow espelha a decisão da principal: só abre pendente na
+            # zona quando a guarda o justifica (desvio dentro do cap); em
+            # zona/tolerância automática/sem quote abre a mercado.
+            guard_mp = None
+            paper_style = "market"
+            if self._entry_style() == "pending":
+                try:
+                    guard = self._entry_guard(signal, "main")
+                    guard_mp = guard.get("market_price")
+                    if (guard.get("status") == "zone_deviation"
+                            or (guard.get("status") == "tolerated"
+                                and not guard.get("auto_execute"))):
+                        paper_style = "pending"
+                except Exception:
+                    pass
             opened = self.paper.open_for_signal(
-                signal, risk_pct,
+                signal, self._effective_risk_pct(), strategy_ids=strategy_ids,
                 daily_stop_pct=float(self.config.get("daily_loss_limit_pct") or 0),
+                origin="shadow",
+                entry_style=paper_style,
+                market_price=guard_mp,
             )
+            queued = await self._apply_pending_shadow_management(signal)
             if opened:
                 await self.notifier.send(
                     "system",
-                    f"🧪 {len(opened)} estratégias abriram a trade "
-                    f"{signal.symbol} em papel (corrida paralela)",
+                    f"👻 Shadow-paper: {len(opened)} estratégia(s) receberam "
+                    f"{signal.symbol} sem abrir ordens MT5 "
+                    f"({', '.join(strategy_ids)})",
                 )
+            if queued:
+                await self.notifier.send(
+                    "system",
+                    f"👻 Shadow-paper: aplicadas {queued} instruções pendentes "
+                    f"a {signal.symbol}",
+                )
+            return opened
         except Exception as exc:
             self.db.record_exception(
-                exc, context={"component": "paper", "phase": "open_for_signal"},
+                exc, context={"component": "paper", "phase": "shadow_open"},
                 signal_id=signal.id,
             )
-            print(f"[paper] falha ao abrir trade de teste: {exc}")
-        # auditoria: quanto dinheiro real está em risco nesta trade
-        eq = self.equity()
-        risk_amt = round(eq * risk_pct / 100.0, 2)
-        risk_currency = self._currency()
-        await self.notifier.send(
-            "trade_open",
-            f"🚀 Trade aberta ({self.config['mode']}) {signal.symbol} "
-            f"{signal.direction.upper()} @ {signal.entry} | "
-            f"SL {signal.stop_loss} | {_tps_text(signal)} | "
-            f"risco {risk_pct}% da equity = {risk_amt:,.2f} {risk_currency} | "
-            f"lotes {_lots_text(trade)}",
-        )
-        # management instructions the group posted while this signal was
-        # still in the edit window ("SL HIT" replied before the trade opened)
-        applied = await self._apply_pending_management(signal, trade)
-        if applied:
-            await self.notifier.send(
-                "system",
-                f"📨 Aplicadas {applied} instruções de gestão pendentes do grupo "
-                f"à trade {signal.symbol} acabada de abrir",
-            )
-        return {"action": "executed", "trade": trade.to_dict(), "signal": signal.to_dict()}
+            print(f"[shadow-paper] falha ao abrir trade: {exc}")
+            return []
 
-    async def approve(self, signal_id: str) -> dict:
-        signal = self.db.get_signal(signal_id)
-        if not signal:
-            return {"error": "sinal não encontrado"}
-        if signal.status != "pending":
-            return {"error": f"estado atual: {signal.status}"}
-        return await self._try_execute(signal)
+    def _invalidate_snapshot_cache(self) -> None:
+        """Marca o snapshot cacheado como obsoleto.
 
-    async def reject(self, signal_id: str) -> dict:
-        signal = self.db.get_signal(signal_id)
-        if not signal:
-            return {"error": "sinal não encontrado"}
-        if signal.status != "pending":
-            return {"error": f"estado atual: {signal.status}"}
-        self.db.set_signal_status(signal_id, "rejected")
-        await self.notifier.send("system", f"❌ Sinal {signal.symbol} rejeitado manualmente")
-        return {"action": "rejected"}
+        O market_loop reconstrói o snapshot ~1×/s; quando um handler MUTA o
+        estado (config, sinal, kill switch...), os clients que leem
+        `/api/status` logo a seguir têm de ver a mutação — nunca uma cópia
+        anterior ao write. A invalidação é barata: o próximo read reconstrói
+        uma vez e o tick volta a encher a cache."""
+        self._last_snapshot = None
+        # As caches TTL dos blocos informativos pertencem ao estado antigo
+        # (mesma BD/config) — invalida tudo: o próximo snapshot recomputa.
+        self._ttl_cache = {}
 
-    async def delete_signal(self, signal_id: str) -> dict:
-        """A Telegram message was deleted: mark the signal deleted and close
-        any open position that was opened from it (at market price)."""
-        signal = self.db.get_signal(signal_id)
-        if not signal:
-            return {"ok": True, "action": "not_found"}
-
-        closed = 0
-        if signal.status == "executed":
-            for trade in self.db.open_trades():
-                if trade.signal_id != signal.id:
-                    continue
-                events = self.sim.close_trade_at_market(trade.id)
-                if events:
-                    closed += 1
-                    # MT5: the broker already moved the money; the config
-                    # balance is only the paper (sim) source of truth.
-                    if self._mt5_account() is None:
-                        updated = self.db.get_trade(trade.id)
-                        pnl = updated.pnl if updated else 0.0
-                        self.config["balance"] = round(self._balance() + pnl, 2)
-                        self.db.set_config("balance", self.config["balance"])
-
-        self.db.set_signal_status(signal.id, "deleted", error="mensagem apagada no Telegram")
-        note = " — posição fechada ao mercado" if closed else ""
-        await self.notifier.send(
-            "risk", f"🗑️ Sinal {signal.symbol or signal.id} apagado no Telegram{note}"
-        )
-        return {"ok": True, "action": "deleted", "closed_trades": closed}
-
-    # ------------------------------------------------- group management
-
-    async def _handle_management(self, body: SignalIn, action: dict, signal_id: str,
-                                 received_at: str) -> dict:
-        """Act on a group management message (TP HIT, SL HIT, close first
-        entries, out at BE). Never waits for the edit window.
-
-        The message is recorded as a signal (status `management`) so the
-        dashboard history shows what the group said, then the action is
-        applied to the trade of the signal it REPLIES TO (`reply_to_msg_id`)
-        — falling back to the open trade of the same symbol, then the most
-        recent open trade. If the replied signal has no trade yet (still in
-        the edit window), the instruction is queued and applied when that
-        signal's trade opens.
-        """
-        kind = action["kind"]
-        if kind == "summary":
-            return await self._handle_summary(body, signal_id, received_at)
-
-        # record the management message itself (kind -> status tag)
-        mgmt_signal = Signal(
-            id=signal_id, source=body.source, raw_text=body.raw_text,
-            symbol=symbol_in(body.raw_text) or "", direction="", entry=0.0,
-            stop_loss=0.0, take_profit_1=0.0, take_profit_2=0.0,
-            status="historical" if body.historical else "management",
-            received_at=received_at,
-            message_id=str(body.message_id) if body.message_id else None,
-            reply_to_msg_id=str(body.reply_to_msg_id) if body.reply_to_msg_id else None,
-            error=f"gestão do grupo: {kind}",
-        )
-        self.db.insert_signal(mgmt_signal)
-
-        if body.historical:
-            # history reload: register the instruction but NEVER act on live
-            # trades with an old message
-            return {"action": "management", "kind": kind, "historical": True,
-                    "applied": False, "signal": mgmt_signal.to_dict()}
-
-        if kind == "go":
-            # "Do it now team" — o admin confirma a entrada imediatamente: se
-            # o sinal ainda estiver na janela de edição, finaliza já (auto →
-            # executa agora; manual → pendente de aprovação). Sem sinal em
-            # espera, regista apenas — nunca fecha nada nem dispara risco.
-            target = self._target_signal_for(body)
-            if not target or target.status != "awaiting_edit":
-                awaiting = self.db.awaiting_edit_signals()
-                if awaiting:
-                    target = max(awaiting, key=lambda s: s.received_at or "")
-                else:
-                    target = None
-            if target and target.status == "awaiting_edit" and not target.error:
-                if self.config["mode"] == "auto":
-                    res = await self._try_execute(target)
-                    note = ("executado já" if res.get("action") == "executed"
-                            else f"finalizado ({res.get('action', '?')})")
-                else:
-                    self.db.set_signal_status(target.id, "pending")
-                    note = "pendente de aprovação (modo manual)"
-                await self.notifier.send(
-                    "system",
-                    f"⚡ GO do grupo: \"{body.raw_text.strip()[:60]}\" → sinal "
-                    f"{target.symbol} {note} (janela de edição encurtada)",
-                )
-                return {"action": "management", "kind": kind, "applied": True,
-                        "target_signal": target.id, "signal": mgmt_signal.to_dict()}
-            return {"action": "management", "kind": kind, "applied": False,
-                    "signal": mgmt_signal.to_dict()}
-
-        trades = self._open_trades()
-        if not trades:
-            # no open trade at all: if the message replies to a signal that
-            # is still buffered (edit window) or pending, queue it so it
-            # applies when that signal executes — otherwise register + ignore
-            replied = self._target_signal_for(body)
-            if replied and replied.id != signal_id:
-                self._queue_management(body, action, signal_id, received_at, replied)
-                await self.notifier.send(
-                    "system",
-                    f"📨 {body.source}: \"{body.raw_text.strip()[:80]}\" "
-                    f"→ resposta ao sinal {replied.symbol} (ainda sem trade) "
-                    f"— aplicada quando a trade abrir",
-                )
-                return {"action": "management", "kind": kind, "applied": False,
-                        "queued": True, "target_signal": replied.id,
-                        "signal": mgmt_signal.to_dict()}
-            if replied is not None and replied.status in ("awaiting_edit", "pending", "executed"):
-                # the replied signal exists and is still alive: queue (the
-                # trade opens later) — handled above; this branch is only
-                # reached when the signal is no longer actionable
-                pass
-            elif replied is not None:
-                await self.notifier.send(
-                    "risk",
-                    f"⚠️ Gestão do grupo sem alvo: \"{body.raw_text.strip()[:60]}\" "
-                    f"responde ao sinal {replied.symbol} de "
-                    f"{(replied.received_at or '')[:16].replace('T', ' ')} "
-                    f"(estado: {replied.status}) que já não está aberto — "
-                    f"instrução ignorada. Verifica se o sinal foi rejeitado/SL "
-                    f"antes da gestão chegar.",
-                )
-            else:
-                await self.notifier.send(
-                    "risk",
-                    f"⚠️ Gestão do grupo sem alvo: \"{body.raw_text.strip()[:60]}\" "
-                    f"sem trade aberta e sem sinal a que responder — ignorada. "
-                    f"Confirma se o sinal correspondente chegou ao bot.",
-                )
-            await self.notifier.send(
-                "system",
-                f"📨 {body.source}: \"{body.raw_text.strip()[:80]}\" "
-                f"(sem trade aberta — ignorado)",
-            )
-            return {"action": "management", "kind": kind, "applied": False,
-                    "signal": mgmt_signal.to_dict()}
-
-        # pick the target: (1) the trade whose signal this message replies to,
-        # (2) same symbol, (3) most recent open trade
-        trade = self._target_trade(body, trades)
-
-        notes = []
-        from app.strategies import get_strategy as _get_strat
-        main_strat = _get_strat(self.config.get("strategy"))
-        main_kinds = main_strat.get("manage_kinds") or set()
-        applies_real = kind in main_kinds
-        msg_id = str(body.message_id) if body.message_id else None
-        if not applies_real:
-            notes.append(f"não aplica à estratégia atual ({main_strat['nome']})")
-        elif kind == "tp_hit":
-            tp = action.get("tp", 1)
-            if tp == 1:
-                moved = self._protect_remaining(trade)
-                if moved:
-                    notes.append("pernas restantes movidas a breakeven")
-            notes.append(f"TP{tp} confirmado pelo grupo")
-        elif kind == "sl_hit":
-            notes.append("SL confirmado pelo grupo — a reconciliar com o broker")
-        elif kind == "close_tp1":
-            # "Close TP1 here" — partial profit only: leg 1 closes at market,
-            # remaining legs keep their SL untouched.
-            closed = self.sim.close_leg_at_market(trade.id, 1,
-                                                  reason="close_tp1", msg_id=msg_id)
-            if closed:
-                notes.append(f"perna 1 fechada @ {closed['price']} (P&L {closed['pnl']:+.2f})")
-            else:
-                notes.append("perna 1 já fechada")
-        elif kind == "close_tp":
-            # "Close TP2 here" / "Close TP5 when happy" — partial profit numa
-            # perna específica: fecha só a perna N ao mercado, as restantes
-            # mantêm o SL.
-            leg = int(action.get("tp", 2))
-            closed = self.sim.close_leg_at_market(trade.id, leg,
-                                                  reason="close_tp", msg_id=msg_id)
-            if closed:
-                notes.append(f"perna {leg} fechada @ {closed['price']} (P&L {closed['pnl']:+.2f})")
-            else:
-                notes.append(f"perna {leg} já fechada")
-        elif kind == "protect":
-            # A híbrida já tem escada/trailing mecânicos. O protect do grupo
-            # passa por um merge monotónico: nunca recua o SL automático nem
-            # fecha a perna 1 a um preço pior que a proteção já conhecida.
-            if (main_strat.get("id") == "auto_escada_3_hibrida"
-                    and hasattr(self.sim, "apply_hybrid_protect")):
-                buffer = self._be_buffer(trade)
-                group_sl = (trade.entry + buffer
-                            if trade.direction == "buy" else trade.entry - buffer)
-                hybrid_events = self.sim.apply_hybrid_protect(
-                    trade, group_sl=group_sl, now=_now_iso(), msg_id=msg_id,
-                )
-                closed_events = [e for e in hybrid_events
-                                 if e.get("type") == "close"]
-                if closed_events:
-                    total = sum(e.get("pnl", 0.0) for e in closed_events)
-                    notes.append(
-                        f"protect híbrido: {len(closed_events)} perna(s) fechada(s) "
-                        f"(P&L {total:+.2f})"
-                    )
-                notes.append("SL fundido com a proteção mecânica (nunca recua)")
-            else:
-                # comportamento das estratégias com gestão normal
-                closed = self.sim.close_leg_at_market(trade.id, 1,
-                                                      reason="protect", msg_id=msg_id)
-                moved = self._protect_remaining(trade, above_entry=True)
-                if closed:
-                    notes.append(f"perna 1 fechada @ {closed['price']} (P&L {closed['pnl']:+.2f})")
-                if moved:
-                    notes.append("SL das restantes movido acima da melhor entrada")
-        elif kind == "move_sl":
-            # "Adjust SL to 4331" — move the stop loss of EVERY open leg to
-            # the level the group indicates (trailing / risk management).
-            new_sl = action.get("sl")
-            if new_sl:
-                moved = 0
-                for p in self.db.positions_for_trade(trade.id):
-                    if p.status != "open":
-                        continue
-                    if self.sim.move_leg_sl(trade.id, p.leg, new_sl) is not None:
-                        moved += 1
-                notes.append(f"SL de {moved} pernas movido para {new_sl}" if moved
-                             else "SL não movido (pernas já fechadas?)")
-            else:
-                notes.append("nudge sem nível — registado, sem ação")
-        elif kind == "close_all":
-            # "out at BE": remaining legs are already protected at breakeven
-            # (the update loop lets the SL close them); "we're out": close
-            # everything at market now.
-            if action.get("be"):
-                remaining = [p for p in self.db.positions_for_trade(trade.id)
-                             if p.status == "open" and p.leg != 1]
-                if remaining:
-                    self._protect_remaining(trade)
-                    notes.append(f"out a BE confirmado — {len(remaining)} pernas "
-                                 f"protegidas na entrada (SL já em breakeven)")
-                else:
-                    notes.append("out a BE — sem pernas restantes")
-            else:
-                events = self.sim.close_trade_at_market(trade.id,
-                                                        reason="close_all", msg_id=msg_id)
-                if events:
-                    pnl = sum(e.get("pnl", 0.0) for e in events if e.get("type") == "close")
-                    notes.append(f"trade fechada ao mercado (P&L {pnl:+.2f})")
-                else:
-                    notes.append("trade já sem pernas abertas")
-
-        # corrida paralela: cada estratégia de teste aplica a gestão à MESMA
-        # trade em papel SE a honrar (manage_kinds) — antes a corrida paper
-        # ignorava a gestão e as contas "+ gestão" comportavam-se como as
-        # sem gestão até o preço bater SL/TP.
-        try:
-            self.paper.apply_management(
-                trade.signal_id, kind,
-                tp=action.get("tp"), sl=action.get("sl"),
-                be=bool(action.get("be")), msg_id=msg_id,
-            )
-        except Exception as exc:
-            print(f"[paper] falha ao aplicar gestão: {exc}")
-
-        text = (f"📨 {body.source}: {body.raw_text.strip()[:80]}")
-        if notes:
-            text += f" → {'; '.join(notes)}"
-        await self.notifier.send("system", text)
-        return {"action": "management", "kind": kind, "applied": True,
-                "trade_id": trade.id, "notes": notes, "signal": mgmt_signal.to_dict()}
-
-    async def _handle_tp_sl_update(self, body: SignalIn, signal_id: str,
-                                   received_at: str) -> Optional[dict]:
-        """\"TP1 4734 SL 4745\" replying to a signal: the group confirms or
-        corrects TP1 and/or the stop loss of the replied signal's trade.
-
-        Recorded as a management-style signal (status `management`) and, if
-        the target trade is open, the SL of every open leg is moved to the
-        new level and the DB signal's TP1/SL are updated (ground truth).
-        Returns None when the message is not of this shape or has no target.
-        """
-        m = re.match(
-            r"^\s*TP\s*1\s+([\d.]+)\s*(?:SL|stop\s*loss)\s+([\d.]+)\s*$",
-            (body.raw_text or "").strip(), re.IGNORECASE,
-        )
-        if not m:
-            return None
-        tp1 = float(m.group(1)); new_sl = float(m.group(2))
-        target = self._target_signal_for(body)
-        if not target:
-            return None
-        # registar a mensagem (auditoria) — nunca como sinal de entrada
-        mgmt = Signal(
-            id=signal_id, source=body.source, raw_text=body.raw_text,
-            symbol=target.symbol or symbol_in(body.raw_text) or "",
-            direction="", entry=0.0, stop_loss=0.0,
-            take_profit_1=0.0, take_profit_2=0.0,
-            status="historical" if body.historical else "management",
-            received_at=received_at,
-            message_id=str(body.message_id) if body.message_id else None,
-            reply_to_msg_id=str(body.reply_to_msg_id) if body.reply_to_msg_id else None,
-            error=f"gestão do grupo: tp_sl_update (TP1 {tp1} · SL {new_sl})",
-        )
-        self.db.insert_signal(mgmt)
-        if body.historical:
-            return {"action": "management", "kind": "tp_sl_update",
-                    "historical": True, "applied": False,
-                    "signal": mgmt.to_dict()}
-        notes = []
-        # atualiza o TP1/SL do sinal alvo (ground truth do grupo)
-        if target.take_profit_1 != tp1 or target.stop_loss != new_sl:
-            self.db.update_signal_levels(target.id, tp1=tp1, sl=new_sl)
-            notes.append(f"sinal {target.symbol}: TP1→{tp1} · SL→{new_sl}")
-        trade = self._target_trade(body, self._open_trades())
-        if trade and trade.signal_id == target.id:
-            moved = 0
-            for p in self.db.positions_for_trade(trade.id):
-                if p.status != "open":
-                    continue
-                if self.sim.move_leg_sl(trade.id, p.leg, new_sl) is not None:
-                    moved += 1
-            if moved:
-                notes.append(f"SL de {moved} pernas movido para {new_sl}")
-        text = f"📨 {body.source}: {body.raw_text.strip()[:60]}"
-        if notes:
-            text += f" → {'; '.join(notes)}"
-        await self.notifier.send("system", text)
-        return {"action": "management", "kind": "tp_sl_update", "applied": True,
-                "target_signal": target.id, "notes": notes,
-                "signal": mgmt.to_dict()}
-
-    # ------------------------------------------- reply-based correlation
-
-    def _target_signal_for(self, body: SignalIn) -> Optional[Signal]:
-        """The signal this management message replies to (Telegram
-        reply_to_msg_id), if it exists in the DB — regardless of whether its
-        trade is open yet."""
-        if not body.reply_to_msg_id:
-            return None
-        group_key = (body.group or "").strip()
-        target_id = (f"tg-{group_key}-{body.reply_to_msg_id}"
-                     if group_key else f"tg-{body.reply_to_msg_id}")
-        return self.db.get_signal(target_id)
-
-    def _target_trade(self, body: SignalIn, trades: List[Trade]) -> Optional[Trade]:
-        """Pick the trade a management message refers to:
-        1. the open trade of the signal it replies to (exact correlation),
-        2. an open trade of the named symbol,
-        3. the most recent open trade."""
-        replied = self._target_signal_for(body)
-        if replied:
-            for t in trades:
-                if t.signal_id == replied.id:
-                    return t
-        sym = symbol_in(body.raw_text or "")
-        candidates = [t for t in trades if not sym or t.symbol == sym]
-        if not candidates:
-            candidates = trades
-        return max(candidates, key=lambda t: t.opened_at or "") if candidates else None
-
-    def _queue_management(self, body: SignalIn, action: dict, signal_id: str,
-                          received_at: str, target: Signal) -> None:
-        """Queue a management instruction whose target signal has no open
-        trade yet; `_apply_pending_management` runs it when the trade opens."""
-        self.db.insert_pending_management({
-            "id": signal_id,
-            "signal_id": signal_id,
-            "reply_to_msg_id": str(target.message_id) if target.message_id else target.id,
-            "kind": action["kind"],
-            "tp": action.get("tp"),
-            "sl": action.get("sl"),
-            "raw_text": body.raw_text or "",
-            "source": body.source or "",
-            "received_at": received_at or "",
-            "created_at": _now_iso(),
-        })
-
-    async def _apply_pending_management(self, signal: Signal, trade: Trade) -> int:
-        """Apply management instructions the group posted while `signal` was
-        still buffered (queued in `pending_management`). Returns how many
-        were applied."""
-        key = str(signal.message_id) if signal.message_id else signal.id
-        pending = self.db.pending_management_for(key)
-        applied = 0
-        for rec in pending:
-            kind = rec["kind"]
-            if kind == "close_tp1":
-                closed = self.sim.close_leg_at_market(trade.id, 1, reason="close_tp1")
-                if closed:
-                    applied += 1
-            elif kind == "close_tp":
-                leg = int(rec.get("tp") or 2)
-                if self.sim.close_leg_at_market(trade.id, leg, reason="close_tp"):
-                    applied += 1
-            elif kind == "protect":
-                if self.config.get("strategy") == "auto_escada_3_hibrida":
-                    buffer = self._be_buffer(trade)
-                    group_sl = (trade.entry + buffer
-                                if trade.direction == "buy" else trade.entry - buffer)
-                    self.sim.apply_hybrid_protect(
-                        trade, group_sl=group_sl, now=_now_iso(),
-                        msg_id=rec.get("id"),
-                    )
-                else:
-                    self.sim.close_leg_at_market(trade.id, 1, reason="protect")
-                    self._protect_remaining(trade, above_entry=True)
-                applied += 1
-            elif kind == "close_all":
-                self.sim.close_trade_at_market(trade.id, reason="close_all")
-                applied += 1
-            elif kind == "tp_hit":
-                if int(rec.get("tp") or 1) == 1:
-                    if self._protect_remaining(trade):
-                        applied += 1
-            elif kind == "move_sl":
-                new_sl = rec.get("sl")
-                if new_sl:
-                    for p in self.db.positions_for_trade(trade.id):
-                        if p.status == "open":
-                            self.sim.move_leg_sl(trade.id, p.leg, new_sl)
-                    applied += 1
-            elif kind == "sl_hit":
-                # the broker SL already protects; nothing to do on open
-                applied += 1
-            # corrida paralela: aplica também às trades de papel do sinal
-            try:
-                self.paper.apply_management(
-                    trade.signal_id, kind,
-                    tp=rec.get("tp"), sl=rec.get("sl"),
-                    be=False, msg_id=rec.get("id"),
-                )
-            except Exception as exc:
-                print(f"[paper] falha ao aplicar gestão pendente: {exc}")
-            self.db.mark_pending_management_applied(rec["id"])
-        return applied
-
-    def _protect_remaining(self, trade, above_entry: bool = False) -> int:
-        """Move the SL of every remaining open leg to breakeven (default) or
-        just above the entry ("risk free", locks a small profit). Returns
-        the number of legs moved."""
-        moved = 0
-        for p in self.db.positions_for_trade(trade.id):
-            if p.leg == 1 or p.status != "open":
-                continue
-            new_sl = trade.entry
-            if above_entry:
-                # a small buffer above entry (buy) / below (sell): lock profit
-                buffer = self._be_buffer(trade)
-                new_sl = trade.entry + buffer if trade.direction == "buy" \
-                    else trade.entry - buffer
-            if self.sim.move_leg_sl(trade.id, p.leg, new_sl) is not None:
-                moved += 1
-        return moved
-
-    @staticmethod
-    def _be_buffer(trade) -> float:
-        """Small profit-lock buffer above/below entry for the group's
-        \"risk free\" step: ~10% of the entry-to-SL distance, at least one
-        pip, capped so it never crosses TP1."""
-        risk = abs(trade.entry - trade.stop_loss)
-        if risk <= 0:
-            return 0.0
-        buffer = min(max(risk * 0.1, risk * 0.01), abs(trade.take_profit_1 - trade.entry))
-        return round(buffer, 4)
-
-    async def _handle_summary(self, body: SignalIn, signal_id: str,
-                              received_at: str) -> dict:
-        """Parse and store the group's periodic summary (ground truth)."""
-        fields = parse_summary(body.raw_text or "") or {}
-        if fields:
-            fields["raw_text"] = body.raw_text
-            self.db.insert_group_summary(body.source, fields, received_at or _now_iso(),
-                                         message_id=str(body.message_id or ""))
-        # also record the raw message so the history stays complete
-        summary_signal = Signal(
-            id=signal_id, source=body.source, raw_text=body.raw_text,
-            symbol="", direction="", entry=0.0, stop_loss=0.0,
-            take_profit_1=0.0, take_profit_2=0.0,
-            status="historical" if body.historical else "management",
-            received_at=received_at, error="resumo do grupo (ground truth)",
-        )
-        self.db.insert_signal(summary_signal)
-        # Só resumos AO VIVO notificam o feed + divergência — os do replay
-        # histórico (restart do listener) ficam guardados como ground truth
-        # sem inundar a dashboard com notificações repetidas.
-        if fields and fields.get("trades_sent") and not body.historical:
-            await self.notifier.send(
-                "summary",
-                f"📊 {body.source}: {fields['trades_sent']} trades, "
-                f"WR {fields['win_rate']:.0f}% (grupo) | "
-                f"{fields['winning']} win / {fields['stop_loss']} SL / "
-                f"{fields['breakevens']} BE | +{fields['pips']} pips",
-            )
-            await self._check_group_divergence(body, fields)
-        return {"action": "management", "kind": "summary",
-                "parsed": bool(fields), "signal": summary_signal.to_dict()}
-
-    async def _check_group_divergence(self, body: SignalIn, fields: dict,
-                                      threshold_pp: float = 10.0) -> None:
-        """Compare the group's reported win rate with the bot's own backtest
-        on the SAME real signals. When they drift apart by more than
-        `threshold_pp`, warn in the dashboard feed — the strategy may be
-        diverging from what the group claims."""
-        if not fields.get("win_rate"):
-            return
-        try:
-            edge = await self.edge_analysis(group=body.source or "", days=30)
-        except Exception as exc:
-            print(f"[divergência] edge indisponível: {exc}")
-            return
-        bot_wr = (edge.get("aggregate") or {}).get("win_rate") or 0.0
-        group_wr = float(fields["win_rate"])
-        diff = group_wr - bot_wr
-        if abs(diff) < threshold_pp:
-            return
-        direction = "acima" if diff > 0 else "abaixo"
-        await self.notifier.send(
-            "risk",
-            f"⚠️ Divergência grupo vs bot: o grupo reporta {group_wr:.0f}% WR "
-            f"({fields['trades_sent']} trades) mas o backtest do bot dá "
-            f"{bot_wr:.0f}% — o grupo está {direction} do bot por "
-            f"{abs(diff):.0f}pp. Revisita a gestão/execução antes de confiar "
-            f"nos números do grupo.",
-        )
+    @property
+    def stall_recorder(self):
+        """Gravador de stalls/fases lentas do event loop (lazy — só cria
+        quando uma fase é medida; ver app/stallwatch.py)."""
+        if self._stall_recorder_obj is None:
+            from app.stallwatch import LoopStallRecorder
+            self._stall_recorder_obj = LoopStallRecorder(self.db)
+        return self._stall_recorder_obj
 
     # ------------------------------------------------------------ analytics
 
-    def report(self, days: int = 7) -> dict:
-        """Relatório de qualidade: win rate, risco/recompensa, por grupo."""
+    def report(self, days: int = 7, lane: str = "") -> dict:
+        """Relatório de qualidade: win rate, risco/recompensa, por grupo.
+
+        `lane` (main|tp2) filtra as trades fechadas da conta — os sinais do
+        grupo são partilhados pelas duas lanes e ficam globais; o P&L,
+        win rate e drawdown referem-se à lane (o drawdown usa o saldo da
+        lane, não o da principal)."""
         from datetime import timedelta
         since = (date.today() - timedelta(days=days)).isoformat()
         signals = self.db.signals_since(since)
-        trades = self.db.trades_closed_since(since)
+        all_trades = self.db.trades_closed_since(since)
+        trades = all_trades
+        if lane:
+            trades = [t for t in all_trades
+                      if (getattr(t, "lane_id", None) or "main") == lane]
 
         groups = {}
         for s in signals:
@@ -1904,7 +1292,8 @@ class BotState:
                         rr[i].append(abs(tp - s.entry) / risk)
 
         return {
-            "period": {"days": days, "since": since, "today": date.today().isoformat()},
+            "period": {"days": days, "since": since, "today": date.today().isoformat(),
+                       "lane": lane or "all"},
             "signals": {
                 "total": len(signals),
                 "by_group": {g: v["signals"] for g, v in groups.items()},
@@ -1916,13 +1305,19 @@ class BotState:
                 "avg_win": round(sum(t.pnl for t in wins) / len(wins), 2) if wins else 0.0,
                 "avg_loss": round(sum(t.pnl for t in losses) / len(losses), 2) if losses else 0.0,
                 "profit_factor": round(gross_win / gross_loss, 2) if gross_loss > 0 else None,
+                "by_lane": {
+                    ln: round(sum(float(t.pnl or 0.0) for t in all_trades
+                                  if (getattr(t, "lane_id", None) or "main") == ln), 2)
+                    for ln in ("main", "tp2")
+                } if not lane else None,
             },
             "risk_reward": {
                 f"avg_tp{i}": round(sum(v) / len(v), 2) if v else 0.0
                 for i, v in rr.items()
             },
             "equity_curve": self._equity_curve(trades),
-            "drawdown": self._max_drawdown(trades, self._balance()),
+            "drawdown": self._max_drawdown(
+                trades, self._balance_for_lane(lane) if lane else self._balance()),
             "by_day": self._by_day(trades),
             "groups": [
                 {
@@ -2092,6 +1487,23 @@ class BotState:
         """Distribuição do atraso das edições do grupo (para validar a janela)."""
         return self.db.edit_delay_stats(source_like=group, limit=limit)
 
+    async def resolution_analysis(self, group: str = "", days: int = 7,
+                                  strategy_id: Optional[str] = None,
+                                  resolution: str = "1m",
+                                  risk_pct: Optional[float] = None,
+                                  sim_balance: Optional[float] = None,
+                                  delay: int = 60,
+                                  include_delays: bool = True) -> dict:
+        """Compare native/fallback candle resolution and simulated latency."""
+        from app.analysis import run_resolution_analysis
+        return await run_resolution_analysis(
+            self.db, group=group, days=days,
+            strategy_id=strategy_id or self.config.get("strategy", "nova_gestao"),
+            resolution=resolution, risk_pct=risk_pct,
+            balance=sim_balance or self._balance(), delay=delay,
+            include_delays=include_delays,
+        )
+
     async def protect_latency_report(self, strategy_id: str = "auto_escada_3_hibrida",
                                      engine: str = "", limit: int = 500,
                                      days: int = 0, since: str = "") -> dict:
@@ -2141,7 +1553,7 @@ class BotState:
             "strategies": strategies_list(),
         }
 
-    async def trace_signal(self, strategy_id: str = "tp2", group: str = "",
+    async def trace_signal(self, strategy_id: str = "nova", group: str = "",
                            days: int = 0, since: str = "") -> dict:
         """Exemplo do fluxo real de uma trade (página de teste): o sinal
         resolvido mais recente da estratégia, re-simulado com trace — eventos
@@ -2292,12 +1704,26 @@ class BotState:
     # -------------------------------------------------------------- config
 
     async def update_config(self, body: ConfigUpdate) -> dict:
-        if body.mode is not None:
-            if body.mode.value == "auto" and self.config.get("auto_kill"):
-                return {"error": "bloqueio automático ativo — reativa o trading primeiro"}
-            self.config["mode"] = body.mode.value
+        # Item 12: o modo manual foi removido — só existe o caminho auto.
+        # Um POST com outro modo é recusado em vez de ignorado, para nenhum
+        # operador acreditar que pausou o bot quando não pausou.
+        if body.mode is not None and body.mode != "auto":
+            return {"error": f"modo desconhecido: {body.mode} — só existe o "
+                             f"caminho auto (modo manual removido no Item 12)"}
         if body.risk_pct is not None:
-            self.config["risk_pct"] = body.risk_pct
+            # legado/principal: sincroniza `risk_pct` com `risk_pct:main` para
+            # a base da lane main nunca divergir do valor histórico
+            self.config["risk_pct"] = float(body.risk_pct)
+            self.config["risk_pct:main"] = float(body.risk_pct)
+        if body.risk_pct_main is not None:
+            self.config["risk_pct:main"] = float(body.risk_pct_main)
+            self.config["risk_pct"] = float(body.risk_pct_main)
+        if body.risk_pct_tp2 is not None:
+            self.config["risk_pct:tp2"] = float(body.risk_pct_tp2)
+        if body.lots_override_tp2 is not None:
+            # lote fixo por perna da 2ª conta (0 = volta ao dimensionamento
+            # por risco; >0 = cada perna abre SEMPRE nesse lote)
+            self.config["lots_override:tp2"] = float(body.lots_override_tp2)
         if body.daily_loss_limit_pct is not None:
             self.config["daily_loss_limit_pct"] = body.daily_loss_limit_pct
         if body.max_positions is not None:
@@ -2306,13 +1732,126 @@ class BotState:
             self.config["sim_speed"] = body.sim_speed
         if body.edit_window_seconds is not None:
             self.config["edit_window_seconds"] = body.edit_window_seconds
+        if body.entry_guard_enabled is not None:
+            self.config["entry_guard_enabled"] = bool(body.entry_guard_enabled)
+        if body.entry_guard_tolerance is not None:
+            self.config["entry_guard_tolerance"] = float(body.entry_guard_tolerance)
+        if body.entry_guard_max_zone_widths is not None:
+            self.config["entry_guard_max_zone_widths"] = float(body.entry_guard_max_zone_widths)
+        if body.entry_guard_auto_cap is not None:
+            new_cap = float(body.entry_guard_auto_cap)
+            # marca o momento EXATO em que o cap mudou — o study_cap_effect
+            # usa-o como --since para partir os fills antes/depois do cap
+            if abs(new_cap - float(self.config.get("entry_guard_auto_cap") or 0.0)) > 1e-9:
+                self.config["cap_applied_at"] = _now_iso()
+            self.config["entry_guard_auto_cap"] = new_cap
+        if body.autonomous_mode is not None:
+            self.config["autonomous_mode"] = bool(body.autonomous_mode)
+        if body.pending_expire_minutes is not None:
+            self.config["pending_expire_minutes"] = float(body.pending_expire_minutes)
+        if body.entry_style is not None:
+            style = str(body.entry_style).strip().lower()
+            if style not in ("market", "pending"):
+                return {"error": f"entry_style desconhecido: {body.entry_style} "
+                                 f"(market | pending)"}
+            self.config["entry_style"] = style
+        if body.entry_order_ttl_hours is not None:
+            self.config["entry_order_ttl_hours"] = float(body.entry_order_ttl_hours)
+        if body.group_feed_divergence_threshold is not None:
+            self.config["group_feed_divergence_threshold"] = float(body.group_feed_divergence_threshold)
+        if body.lane2_balance is not None:
+            self.config["lane2_balance"] = float(body.lane2_balance)
+        if body.lane2_strategy is not None:
+            from app.strategies import STRATEGIES
+            if body.lane2_strategy not in STRATEGIES:
+                return {"error": f"estratégia desconhecida para lane2: {body.lane2_strategy}"}
+            if body.lane2_strategy in {"auto_escada_3", "auto_escada_5"}:
+                return {"error": "auto-escadas não podem ser usadas na lane MT5 sem promoção/gate"}
+            self.config["lane2_strategy"] = body.lane2_strategy
+            self.lane_strategies["tp2"] = body.lane2_strategy
+        if body.lane2_label is not None:
+            self.config["lane2_label"] = str(body.lane2_label).strip()[:120]
+            self.lane_labels["tp2"] = self.config["lane2_label"]
         strategy_changed = False
         if body.strategy is not None:
             from app.strategies import STRATEGIES
             if body.strategy not in STRATEGIES:
                 return {"error": f"estratégia desconhecida: {body.strategy}"}
             strategy_changed = body.strategy != self.config.get("strategy")
+            # Auto-escadas só podem ser promovidas depois de todos os gates
+            # objetivos da janela forward shadow. O bloqueio é também no
+            # backend (não apenas visual), para que um POST manual não contorne
+            # a confirmação da dashboard. A conta principal, kill switch e
+            # MT5 não são tocados quando o gate falha.
+            if (strategy_changed and body.strategy in {"auto_escada_3", "auto_escada_5"}
+                    and self.db.all_config().get("forward_evidence_started_at")):
+                from app.execution.evidence import forward_gate_report
+                gate_report = forward_gate_report(self.db, days=30)
+                candidate = next(
+                    (row for row in gate_report.get("strategies", [])
+                     if row.get("strategy_id") == body.strategy),
+                    None,
+                )
+                if not candidate or not candidate.get("eligible"):
+                    failed = [key for key, value in (candidate or {}).get("gates", {}).items()
+                              if not value]
+                    return {
+                        "ok": False,
+                        "error": (
+                            f"promoção bloqueada: {body.strategy} ainda não passou "
+                            "todos os gates da janela forward"
+                        ),
+                        "promotion_blocked": True,
+                        "strategy": body.strategy,
+                        "failed_gates": failed,
+                        "forward_gate": gate_report,
+                    }
             self.config["strategy"] = body.strategy
+        # Validate the two shadow fields before mutating either one. Without
+        # this staging, `{enabled: false, strategies: [invalid]}` could leave
+        # the in-memory runtime disabled even though the API returned an
+        # error and nothing was persisted.
+        shadow_enabled = bool(self.config.get("shadow_paper_enabled"))
+        if body.shadow_paper_enabled is not None:
+            shadow_enabled = bool(body.shadow_paper_enabled)
+        shadow_strategies = None
+        if body.shadow_paper_strategies is not None:
+            from app.strategies import HIDDEN_STRATEGIES, STRATEGIES
+            requested = list(dict.fromkeys(
+                str(s).strip() for s in body.shadow_paper_strategies
+                if str(s).strip()
+            ))
+            if not requested:
+                # An empty selection is valid while the feature is disabled;
+                # this lets an API caller clear the list atomically with
+                # `{shadow_paper_enabled: false}`. An enabled stream must
+                # always have at least one validated strategy.
+                if shadow_enabled:
+                    return {"error": "indica pelo menos uma estratégia shadow-paper "
+                                    "ou desativa shadow_paper_enabled"}
+                shadow_strategies = []
+            else:
+                invalid = [sid for sid in requested
+                           if sid not in STRATEGIES or sid in HIDDEN_STRATEGIES]
+                if invalid:
+                    return {"error": "estratégias shadow-paper inválidas: "
+                                    + ", ".join(invalid)}
+                shadow_strategies = requested
+        if body.shadow_paper_enabled is not None:
+            self.config["shadow_paper_enabled"] = shadow_enabled
+        if shadow_strategies is not None:
+            self.config["shadow_paper_strategies"] = shadow_strategies
+        if body.execution_journal_enabled is not None:
+            self.config["execution_journal_enabled"] = bool(body.execution_journal_enabled)
+        if body.killswitch_rearm_at is not None:
+            raw_rearm = str(body.killswitch_rearm_at or "").strip()
+            if raw_rearm:
+                parsed_rearm = self._parse_utc(raw_rearm)
+                if parsed_rearm is None:
+                    return {"error": "killswitch_rearm_at deve ser um timestamp ISO UTC válido"}
+                self.config["killswitch_rearm_at"] = parsed_rearm.isoformat(timespec="seconds")
+            else:
+                self.config["killswitch_rearm_at"] = ""
         if body.teste_days is not None:
             self.config["teste_days"] = int(body.teste_days)
         if body.paper_race_hours is not None:
@@ -2338,10 +1877,19 @@ class BotState:
                 self.db.set_config("fase3_target_log",
                                    _j.dumps(log[-20:], ensure_ascii=False))
             self.config["fase3_target"] = novo
-        self._persist_config(["mode", "risk_pct", "daily_loss_limit_pct",
+        self._persist_config(["risk_pct", "risk_pct:main", "risk_pct:tp2",
+                              "lots_override:main", "lots_override:tp2",
+                              "daily_loss_limit_pct",
                               "max_positions", "sim_speed", "edit_window_seconds",
-                              "strategy", "teste_days", "paper_race_hours",
-                              "fase3_target"])
+                              "entry_guard_enabled", "entry_guard_tolerance", "entry_guard_max_zone_widths",
+                              "entry_guard_auto_cap", "cap_applied_at",
+                              "cap_reminder_days", "cap_reminder_lookback_days", "cap_reminder_last_sent",
+                              "autonomous_mode", "pending_expire_minutes",
+                              "entry_style", "entry_order_ttl_hours",
+                              "group_feed_divergence_threshold", "lane2_balance", "lane2_strategy", "lane2_label", "strategy", "shadow_paper_enabled",
+                              "shadow_paper_strategies", "execution_journal_enabled",
+                              "killswitch_rearm_at", "teste_days",
+                              "paper_race_hours", "fase3_target"])
         if strategy_changed:
             # promoção de estratégia: notificação no feed com os parâmetros
             # que passam a ser usados na execução real (max_legs/exit_at_tp/lote)
@@ -2370,12 +1918,25 @@ class BotState:
                     or _strat.get("confirm_filter") or _strat.get("time_stop_minutes")):
                 self.db.set_config("fase3_verdict", "")
         else:
+            shadow = "ON" if self.config.get("shadow_paper_enabled") else "OFF"
             await self.notifier.send(
                 "system",
-                f"⚙️ Config atualizada: modo={self.config['mode']}, "
-                f"risco={self.config['risk_pct']}%",
+                f"⚙️ Config atualizada: modo=auto, "
+                f"risco={self.config['risk_pct']}% · shadow-paper={shadow}",
             )
-        return {"ok": True, "config": self.snapshot()["config"]}
+        # Consistência risco ↔ limite diário: com risco alto por trade e
+        # limite diário baixo, uma única perda trava o dia — aviso informativo.
+        warning = None
+        if body.risk_pct is not None:
+            rp = float(self.config["risk_pct"])
+            dl = float(self.config.get("daily_loss_limit_pct") or 0.0)
+            if dl > 0 and dl < 1.5 * rp:
+                warning = (f"limite diário ({dl:.1f}%) < 1.5× o risco por trade "
+                           f"({rp:.1f}%) — uma perda pode travar o dia")
+        result = {"ok": True, "config": self.snapshot()["config"]}
+        if warning:
+            result["warning"] = warning
+        return result
 
     async def history_done(self, body: dict) -> dict:
         """Fim do replay do histórico do listener: notificação no feed com os
@@ -2410,9 +1971,12 @@ class BotState:
 
     async def set_kill_switch(self, enabled: bool) -> dict:
         self.config["kill_switch"] = enabled
-        if not enabled:
+        if enabled:
+            pass  # rearm only on explicit user request
+        else:
             self.config["auto_kill"] = False
-        self._persist_config(["kill_switch", "auto_kill"])
+            self.config["killswitch_rearm_at"] = ""
+        self._persist_config(["kill_switch", "auto_kill", "killswitch_rearm_at"])
         verb = "PAUSADO" if enabled else "REATIVADO"
         await self.notifier.send("system", f"🛑 Trading {verb} (kill switch)")
         return {"ok": True, "config": self.snapshot()["config"]}
@@ -2448,11 +2012,41 @@ class BotState:
             self.db.insert_paper_balance_history("__real__", ts, self._balance())
         except Exception as exc:
             print(f"[balance-snap] __real__: {exc}")
+        # Keep the isolated forward curve available for an audit without
+        # putting it in the normal race chart. Do not create accounts before a
+        # configured shadow strategy has received its first live signal.
+        if self.config.get("shadow_paper_enabled"):
+            for sid in self.config.get("shadow_paper_strategies") or []:
+                bal = self.db.paper_balance(sid, origin="shadow")
+                if bal is None:
+                    continue
+                try:
+                    self.db.insert_paper_balance_history(
+                        sid, ts, bal, origin="shadow"
+                    )
+                except Exception as exc:
+                    print(f"[balance-snap] shadow:{sid}: {exc}")
 
     async def tick(self) -> None:
         await self.finalize_awaiting_signals()
         speed = float(self.config["sim_speed"])
         await self.market.refresh(speed)
+        if self.config.get("execution_journal_enabled"):
+            import time as _time
+            monotonic_now = _time.monotonic()
+            poll_interval = (
+                None if self._last_journal_monotonic is None
+                else round(max(0.0, monotonic_now - self._last_journal_monotonic), 4)
+            )
+            self._last_journal_monotonic = monotonic_now
+            for symbol, price in self.market.prices.items():
+                self.db.record_execution_event(
+                    _now_iso(), "quote", engine="runtime", symbol=symbol,
+                    payload={"price": price,
+                             "poll_interval_seconds": poll_interval},
+                )
+        else:
+            self._last_journal_monotonic = None
         # O motor MT5 observa bid/ask reais a uma cadência limitada (não um
         # INSERT por segundo). Em simulação este hook não faz nada.
         try:
@@ -2467,30 +2061,63 @@ class BotState:
         self._update_peak_balance()
         self._record_balance_snapshots()
         await self._check_paper_race_leader()
+        await self._check_post_execution_edits()
+        await self._check_null_retcode_phantoms()
 
-        from app.strategies import get_strategy
-        strat = get_strategy(self.config.get("strategy"))
-        # Fase 3 (MT5 demo): passa os parâmetros da auto-gestão da estratégia
-        # ao motor — a `nova_gestao` não os tem (auto_mgmt desligada: sem
-        # stair_levels/trail_factor/confirm/time_stop), por isso nada muda
-        # até uma estratégia auto_* ser promovida a principal.
-        auto = None
-        if strat.get("stair_levels") or strat.get("trail_factor") or \
-                strat.get("confirm_filter") or strat.get("time_stop_minutes") \
-                or strat.get("def_window"):
-            auto = {k: strat[k] for k in ("stair_levels", "stair_from",
-                                          "confirm_filter", "trail_factor",
-                                          "time_stop_minutes", "atr_k",
-                                          "atr_period", "atr_timeframe",
-                                          "def_window", "def_trail",
-                                          "def_time_stop")}
-        events = self.sim.update(exit_at_tp=strat["exit_at_tp"], auto=auto)
+        # Cada lane de execução atualiza as suas trades com a estratégia e o
+        # motor próprios — a lógica SL/TP/BE/trailing corre por lane.
+        # (Fase 3: a auto-gestão só é passada quando a estratégia da lane a
+        # define; `nova_gestao`/`tp2_protect` não têm — nada muda até uma
+        # auto_* ser promovida.)
+        all_events: List[dict] = []
+        for lane_id in self._lanes():
+            engine = self._lane_engine(lane_id)
+            strat = self._lane_strategy(lane_id)
+            auto = self._lane_auto_params(strat)
+            if auto is not None and auto.get("be_buffer_pips"):
+                auto = dict(auto)
+                # BE+ adaptativo: o buffer segue o spread médio observado do
+                # símbolo (janela 7d, cache 5 min) em vez do valor estático.
+                buffer = 0.0
+                for symbol in sorted(self._lane_open_symbols(lane_id)) or [""]:
+                    buffer = max(buffer, self._adaptive_be_buffer(symbol, strat))
+                auto["be_buffer_pips"] = buffer or strat.get("be_buffer_pips")
+            import time as _tm
+            _t0 = _tm.monotonic()
+            try:
+                events = engine.update(
+                    exit_at_tp=strat["exit_at_tp"], auto=auto,
+                    entry_order_ttl=self._entry_order_ttl_seconds(),
+                )
+            except Exception as exc:
+                self.db.record_exception(
+                    exc, context={"component": "execution", "phase": "update",
+                                  "lane": lane_id},
+                )
+                print(f"[lane:{lane_id}] update falhou: {exc}")
+                events = []
+            # Fase on-loop que mais vezes congela o loop (I/O MT5/worker) —
+            # gravada quando ≥ limiar para o Diagnóstico atribuir stalls.
+            self.stall_recorder.record_phase(
+                f"tick.update:{lane_id}", _tm.monotonic() - _t0)
+            for ev in events:
+                ev["_lane"] = lane_id
+                all_events.append(ev)
         # paper trading forward: atualiza as posições de papel das estratégias
         # de teste contra os preços atuais (mesma lógica SL/TP/BE)
         try:
-            paper_events = self.paper.tick(float(self.config["risk_pct"]))
+            paper_events = self.paper.tick(
+                float(self.config["risk_pct"]),
+                entry_order_ttl=self._entry_order_ttl_seconds(),
+            )
             for ev in paper_events:
                 if ev["type"] == "trade_closed":
+                    # feed focado na corrida VISÍVEL: a `nova` (contrafactual
+                    # silencioso) NÃO notifica — só as estratégias com página
+                    from app.strategies import strategy_lifecycle
+                    if not strategy_lifecycle(
+                            ev.get("strategy_id") or "")["menu"]:
+                        continue
                     await self.notifier.send(
                         "system",
                         f"🧪 [teste] {ev['strategy_id']}: trade {ev['symbol']} fechada "
@@ -2512,27 +2139,111 @@ class BotState:
                     await self.notifier.send("divergence", text)
         except Exception as exc:
             print(f"[paper] falha ao atualizar trades de teste: {exc}")
-        for ev in events:
+        # perseguições executadas neste tick: ordens pendentes na zona que
+        # preencheram — agrega por trade (várias pernas preenchem no mesmo
+        # tick) e notifica uma vez por trade no fim do loop. As trades
+        # fechadas de TODAS as lanes agregam por sinal para o WhatsApp
+        # enviar UMA mensagem dual (ambas as contas) por sinal por tick.
+        pending_fills: Dict[str, dict] = {}
+        closed_signals: Dict[str, dict] = {}  # signal_id -> último ev fechado
+        for ev in all_events:
+            lane_id = ev.pop("_lane", "main")
+            lane_tag = f"[{lane_id}] " if lane_id != "main" else ""
             if ev["type"] == "close":
                 # MT5: the broker already applied the P&L to the account — the
                 # config balance is only the paper (sim) source of truth.
-                if self._mt5_account() is None:
+                if lane_id == "main" and self._mt5_account("main") is None:
                     self.config["balance"] = round(self._balance() + ev["pnl"], 2)
                     self.db.set_config("balance", self.config["balance"])
                 await self.notifier.send(
                     "trade_close",
-                    f"{'✅' if ev['pnl'] >= 0 else '❌'} Fechada perna {ev['leg']} "
+                    f"{lane_tag}{'✅' if ev['pnl'] >= 0 else '❌'} Fechada perna {ev['leg']} "
                     f"{ev['symbol']} @ {ev['price']} | P&L {ev['pnl']:+.2f}",
+                    lane=lane_id,
                 )
             elif ev["type"] == "be":
                 await self.notifier.send(
                     "system",
-                    f"🛡️ {ev['symbol']}: TP1 atingido — pernas restantes protegidas a breakeven",
+                    f"{lane_tag}🛡️ {ev['symbol']}: TP1 atingido — pernas restantes protegidas a breakeven",
+                    lane=lane_id,
                 )
             elif ev["type"] == "trade_closed":
                 await self.notifier.send(
                     "trade_close",
-                    f"📦 Trade {ev['symbol']} fechada | P&L total {ev['pnl']:+.2f}",
+                    f"{lane_tag}📦 Trade {ev['symbol']} fechada | P&L total {ev['pnl']:+.2f}",
+                    lane=lane_id,
+                )
+                # dedup por sinal: se as duas lanes fecharem no MESMO tick, o
+                # WhatsApp recebe uma mensagem única com as duas contas
+                closed_signals[ev.get("signal_id") or ev.get("trade_id")] = (
+                    ev, lane_id,)
+            elif ev["type"] == "pending_expired":
+                # Fase 1/4 — ordem pendente da zona que não chegou a preencher:
+                # expirou por TTL, foi cancelada/expirada pelo broker ou é
+                # ÓRFÃ (ticket que já não existe no broker / nunca foi
+                # enviado). O tick já a fechou; notifica para o operador ver
+                # que a zona não entrou e porquê — sem silêncio.
+                reason = ev.get("reason") or "ttl"
+                if reason == "orphan":
+                    text = (f"⚠️ Ordem pendente órfã: perna {ev['leg']} "
+                            f"{ev['symbol']} ({ev.get('trade_id', '')[-6:]}) — "
+                            f"o ticket não existe no broker (expirada/cancelada "
+                            f"externamente ou perdida num restart). Fechada na BD.")
+                elif reason == "cancelled":
+                    text = (f"🗑️ Ordem pendente cancelada pelo broker: perna "
+                            f"{ev['leg']} {ev['symbol']} — não chegou a preencher.")
+                else:
+                    text = (f"⏳ Ordem pendente expirou por TTL: perna {ev['leg']} "
+                            f"{ev['symbol']} — o preço não voltou ao nível da "
+                            f"entrada a tempo. Fechada na BD.")
+                await self.notifier.send("system", text, lane=lane_id)
+            elif ev["type"] == "pending_delete_stuck":
+                # watchdog Fase 1: o order_delete da ordem pendente falhou N
+                # ticks seguidos (worker/terminal offline?) — a perna fica
+                # `pending_fill` na BD (nunca órfã no MT5) e o tick repete,
+                # mas deixa de ser silencioso
+                await self.notifier.send(
+                    "risk",
+                    f"⛔ Ordem pendente não cancelada no MT5: perna "
+                    f"{ev['leg']} {ev['symbol']} "
+                    f"({ev.get('trade_id', '')[-6:]}, ticket "
+                    f"{ev.get('ticket', '?')}) — {ev.get('attempts', '?')}ª "
+                    f"tentativa falhada (worker/terminal offline?). A perna "
+                    f"continua pendente na BD e o tick repete o cancelamento "
+                    f"— verifica o worker da lane.",
+                    lane=lane_id,
+                )
+            elif ev["type"] == "pending_fill":
+                # ordem pendente na zona preencheu (Fase 1). Se o preço estava
+                # longe da zona quando a ordem foi colocada, é uma PERSECUÇÃO
+                # executada — a distância real vem do guard (spot MT5,
+                # trade.entry_distance), não dos candles (GC=F diverge).
+                pf = pending_fills.setdefault(ev["trade_id"], {
+                    "trade_id": ev["trade_id"], "symbol": ev["symbol"],
+                    "legs": 0, "max_distance": None, "entry": ev.get("price"),
+                    "lanes": [],
+                })
+                pf["lanes"] = list(set(pf["lanes"] + [lane_id]))
+                pf["legs"] += 1
+                try:
+                    t = self.db.get_trade(ev["trade_id"])
+                    if t is not None:
+                        if t.entry_distance is not None:
+                            pf["max_distance"] = max(
+                                pf["max_distance"] or 0.0, float(t.entry_distance))
+                        pf["entry"] = pf.get("entry") or t.entry
+                except Exception:
+                    pass
+            elif ev["type"] == "sl_move_applied":
+                # retry de gestão de grupo: um SL que o broker tinha recusado
+                # (10016) ficou válido num tick posterior e o modify passou —
+                # o operador vê que a proteção pedida pelo grupo chegou, afinal
+                await self.notifier.send(
+                    "system",
+                    f"🛡️ {lane_tag}SL do grupo aplicado em retry: perna "
+                    f"{ev['leg']} {ev['symbol']} @ {ev['applied']} "
+                    f"(alvo {ev['target']} tinha sido recusado — 10016).",
+                    lane=lane_id,
                 )
             elif ev["type"] == "auto_sl_warn":
                 # Fase 3 — janela de validação: um modify de SL da auto-gestão
@@ -2548,29 +2259,74 @@ class BotState:
                             f"{ev['symbol']} ({ev['kind']}) — target {ev['target']} → "
                             f"retcode {ev['retcode']} (10016 = stops inválidos). O SL fica "
                             f"no nível anterior (auditoria autosl: no painel Fase 3).")
-                await self.notifier.send("risk", text)
+                await self.notifier.send("risk", text, lane=lane_id)
 
+        # WhatsApp: UMA mensagem por sinal fechado neste tick (com as duas
+        # lanes lado a lado) — nunca uma por evento, para dois fechos no
+        # mesmo tick não duplicarem no grupo.
+        for ev, lane_id in closed_signals.values():
+            await self._notify_whatsapp_trade_close(ev, lane_id=lane_id)
+
+        # perseguições executadas: notifica as ordens pendentes que preencheram
+        # com o preço fora da zona ALÉM da tolerância automática (o limite onde
+        # a execução a mercado deixa de ser automática) — o operador vê as
+        # entradas arriscadas em tempo real, com a distância real em pips.
+        tolerance = float(self.config.get("entry_guard_tolerance", 0.5) or 0.0)
+        for pf in pending_fills.values():
+            dist = pf.get("max_distance")
+            if dist is None or dist <= tolerance:
+                continue
+            lanes_txt = (f"[{','.join(pf['lanes'])}] ") if pf.get("lanes") else ""
+            await self.notifier.send(
+                "system",
+                f"{lanes_txt}🏃 Perseguição executada: {pf['symbol']} {pf['legs']} perna(s) "
+                f"@ {pf.get('entry')} — ordem pendente na zona preencheu com o "
+                f"preço {dist:.2f} pips fora da zona (além da tolerância "
+                f"automática {tolerance:.2f}). Entrada arriscada — acompanha.",
+                lane=",".join(pf["lanes"]) if pf.get("lanes") else "",
+            )
+
+        await self._expire_stale_pending()
+        await self._check_killswitch_rearm()
         await self._check_mt5_connection()
         await self._check_disk_space()
         await self._check_regime()
         await self._check_fase3_validation()
         await self._check_fase3_eta_alert()
 
-        # auto kill switch: pause trading if today's loss limit is hit
-        if not self.config.get("auto_kill") and self.risk.daily_loss_exceeded(
-            self._balance(), self._realized_today(), self.config
-        ):
+        # auto kill switch: pause trading if today's loss limit is hit.
+        # Cada lane MT5 é avaliada contra o SALDO DA PRÓPRIA CONTA: somar o
+        # P&L realizado de todas as lanes contra o saldo da principal (pequena)
+        # disparava o kill com a tp2 (10k) a perder 0.5% e a principal apenas
+        # 0.1% (incidente 07/09: -53.47 € somados contra 1.033 € = -5.17%).
+        # Uma lane sem saldo próprio (sim/dry-run) herda o comportamento
+        # antigo: P&L total do dia contra o saldo configurado.
+        if not self.config.get("auto_kill") and self._daily_loss_killed():
             self.config["kill_switch"] = True
             self.config["auto_kill"] = True
-            self._persist_config(["kill_switch", "auto_kill"])
+            self._persist_config(["kill_switch", "auto_kill", "killswitch_rearm_at"])
             await self.notifier.send(
                 "risk",
                 "🚨 Limite de perda diária atingido — trading pausado "
                 "automaticamente. Reativa manualmente na dashboard.",
             )
 
+        await self._check_recount_batch()
+        await self._check_refusals_backfill()
+        await self._check_cap_reminder()
+        await self._check_be_buffer_drift()
+        await self._check_orphan_report()
         await self._check_daily_summary()
-        await self.ws.broadcast({"type": "snapshot", "data": self.snapshot()})
+        # Um único snapshot por tick: serve o WS e fica cacheado para os
+        # endpoints read-only (`last_snapshot`) — a construção lê o broker
+        # MT5/worker e não pode correr por request no event loop.
+        import time as _tm
+        _t0 = _tm.monotonic()
+        snapshot = self._build_snapshot()
+        self._last_snapshot = snapshot
+        self.stall_recorder.record_phase(
+            "snapshot.build", _tm.monotonic() - _t0)
+        await self.ws.broadcast({"type": "snapshot", "data": snapshot})
 
     async def _check_regime(self) -> None:
         """Alerta de regime: corre o sim rolante (30 dias, estratégia ativa,
@@ -2620,6 +2376,84 @@ class BotState:
                 )
         except Exception as exc:
             print(f"[regime] falha ao verificar: {exc}")
+
+    async def _check_null_retcode_phantoms(self) -> None:
+        """Red-deundo do alerta de retcode null ("?") na lane 2.
+
+        O alerta principal dispara no `_try_execute` quando uma trade abre e
+        é recusada pelo broker SEM retcode — mas um fecho phantom também pode
+        acontecer fora desse caminho (ex.: pernas pendentes recusadas no
+        `engine.update()` do tick). Este scan percorre as trades fechadas da
+        lane 2 dos últimos 30 min com assinatura phantom + retcode null e
+        alerta com o estado do worker — uma vez por trade, nunca em loop.
+        """
+        import time as _time
+        now = _time.time()
+        if now - getattr(self, "_last_null_rc_check", 0.0) < 30.0:  # a cada ~30s
+            return
+        self._last_null_rc_check = now
+        alerted = getattr(self, "_null_rc_alerted", set())
+        try:
+            rows = self.db.recent_phantom_null_retcodes(
+                minutes=30, lane="tp2", limit=10,
+            )
+        except Exception:
+            return
+        for trade_id, rcs in rows:
+            if trade_id in alerted:
+                continue
+            alerted.add(trade_id)
+            try:
+                await self.notifier.send(
+                    "risk",
+                    f"👻 Lane 2: trade {trade_id[-6:]} fechou phantom SEM "
+                    f"retcode do broker (retcodes [{', '.join(rcs)}]) — "
+                    f"worker/terminal sem resposta válida. "
+                    f"{self._lane_worker_status_text('tp2')}",
+                    lane="tp2",
+                )
+            except Exception:
+                pass
+        self._null_rc_alerted = alerted
+
+    async def _check_post_execution_edits(self) -> None:
+        """Métrica contínua do Item 12: edições a sinais que executaram sem
+        janela (primeiro parse completo).
+
+        Se a taxa de edições pós-execução subir acima de 5% com amostra
+        mínima (20 sinais), notifica risk no feed/Telegram — a regra
+        "completo → executa já" foi decidida com a taxa real de 0.0% e deve
+        ser revista se o comportamento do grupo mudar. Cooldown de 24h;
+        verifica a cada ~30 min no tick. O número cru fica em /api/edits.
+        """
+        import time as _time
+        now = _time.time()
+        if now - self._last_edit_metric_check < 1800:  # a cada ~30 min
+            return
+        self._last_edit_metric_check = now
+        try:
+            m = self.db.post_execution_edit_metric()
+            self._edit_metric_status = dict(m)
+            self._edit_metric_status["checked_at"] = _now_iso()
+            total = int(m.get("post_execution_total") or 0)
+            rate = float(m.get("post_execution_edit_rate") or 0.0)
+            edited = int(m.get("post_execution_edited") or 0)
+            if (total >= 20 and rate > 0.05
+                    and now - self._edit_metric_alert_at > 86400):  # cooldown 24h
+                self._edit_metric_alert_at = now
+                await self.notifier.send(
+                    "risk",
+                    f"⚠️ Edições pós-execução em alta: {edited} de {total} sinais "
+                    f"que executaram sem janela foram editados depois "
+                    f"({rate * 100:.1f}% > 5%) — a regra \"completo → executa "
+                    f"já\" (Item 12) pode precisar de ser revista; ver /api/edits.",
+                    tg_text=f"⚠️ *Edições pós-execução em alta*: {edited} de "
+                    f"{total} sinais executados sem janela foram editados depois "
+                    f"({rate * 100:.1f}% > 5%). A regra 'completo → executa já' "
+                    f"pode precisar de ser revista.",
+                )
+        except Exception as exc:
+            print(f"[edit-metric] falha ao verificar: {exc}")
 
     async def _check_fase3_eta_alert(self) -> None:
         """Alerta do ETA da Fase 3 (cooldown 24h): avisa no feed/Telegram
@@ -2891,10 +2725,441 @@ class BotState:
                     action=f"promote:{leader_id}",
                 )
 
+    # ------------------------------------------------------- window / promotion
+
+    @staticmethod
+    def _parse_utc(value: str) -> Optional[datetime]:
+        """Parse an ISO timestamp and return an aware UTC datetime."""
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    def _promotion_window_bounds(self) -> tuple[datetime, datetime]:
+        start = self._parse_utc(self.config.get("promotion_window_start_at", ""))
+        end = self._parse_utc(self.config.get("promotion_window_end_at", ""))
+        start = start or datetime(2026, 8, 20, tzinfo=timezone.utc)
+        end = end or datetime(2026, 8, 29, tzinfo=timezone.utc)
+        if end <= start:
+            end = start + timedelta(days=9)
+        return start, end
+
+    def _window_open_pnl(self, trade_ids: set[str]) -> float:
+        total = 0.0
+        for position in self.db.open_positions():
+            if position.trade_id not in trade_ids:
+                continue
+            price = self.market.price(position.symbol)
+            if price is None:
+                continue
+            sign = 1.0 if position.direction == "buy" else -1.0
+            total += sign * (float(price) - float(position.entry)) * float(position.lots) * 100_000
+        return round(total, 2)
+
+    def _promotion_status(self) -> dict:
+        """Join the objective forward gate and the live cadence for one card."""
+        import time as _time
+        now = _time.time()
+        if (self._promotion_cache is not None
+                and self._promotion_cache_db_id == id(self.db)
+                and now - self._promotion_cache_at < 60):
+            return self._promotion_cache
+        from app.execution.evidence import forward_gate_report
+        gate_report = forward_gate_report(self.db, days=30)
+        candidate = next(
+            (row for row in gate_report.get("strategies", [])
+             if row.get("strategy_id") == "auto_escada_3"),
+            None,
+        ) or {}
+        gates = candidate.get("gates") or {}
+        labels = {
+            "enough_trades": "N",
+            "profit_factor": "PF",
+            "positive_mean_ci95": "IC95",
+            "drawdown": "DD",
+            "reference_comparable": "referência",
+            "not_more_than_10pct_behind_reference": "P&L vs referência",
+        }
+        missing = [labels.get(key, key) for key, passed in gates.items() if not passed]
+        result = {
+            "strategy_id": "auto_escada_3",
+            "forward_gate": candidate,
+            "forward_period": gate_report.get("period"),
+            "eta": self._fase3_eta(),
+            "missing": missing,
+            "eligible": bool(candidate.get("eligible")),
+            "promotion": "manual_only",
+        }
+        self._promotion_cache = result
+        self._promotion_cache_at = now
+        self._promotion_cache_db_id = id(self.db)
+        return result
+
+    def window_status(self, now: Optional[datetime] = None) -> dict:
+        """Operational real-trade window ending at the end of 28 August UTC."""
+        now = now or datetime.now(timezone.utc)
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
+        now = now.astimezone(timezone.utc)
+        start, end = self._promotion_window_bounds()
+        real_trades = self.db.list_trades(200000)
+        closed = [t for t in real_trades if t.status == "closed" and t.closed_at
+                  and start.isoformat() <= t.closed_at < end.isoformat()]
+        opened = [t for t in real_trades if t.status == "open" and t.opened_at
+                  and start.isoformat() <= t.opened_at < end.isoformat()]
+        closed_pnl = round(sum(float(t.pnl or 0.0) for t in closed), 2)
+        open_ids = {t.id for t in opened}
+        open_pnl = self._window_open_pnl(open_ids)
+        total_seconds = max(1.0, (end - start).total_seconds())
+        elapsed_seconds = min(total_seconds, max(0.0, (now - start).total_seconds()))
+        elapsed_days = max(1.0 / 24.0, elapsed_seconds / 86400.0)
+        remaining_seconds = max(0.0, (end - now).total_seconds())
+        remaining_days = remaining_seconds / 86400.0
+        closed_n = len(closed)
+        pace = round(closed_n / elapsed_days, 2) if elapsed_seconds > 0 else 0.0
+        required_10 = round(max(0, 10 - closed_n) / remaining_days, 2) if remaining_days else 0.0
+        required_20 = round(max(0, 20 - closed_n) / remaining_days, 2) if remaining_days else 0.0
+        projected = round(closed_n + pace * remaining_days, 1)
+        if now >= end:
+            status = "target_reached" if closed_n >= 20 else (
+                "minimum_reached" if closed_n >= 10 else "expired")
+        elif closed_n >= 20:
+            status = "target_reached"
+        elif closed_n >= 10:
+            status = "minimum_reached"
+        elif projected >= 10:
+            status = "on_track"
+        else:
+            status = "below_minimum"
+        return {
+            "ok": True,
+            "timezone": "UTC",
+            "start_at": start.isoformat(timespec="seconds"),
+            "end_at": end.isoformat(timespec="seconds"),
+            "label": "até 28/08/2026",
+            "now": now.isoformat(timespec="seconds"),
+            "days_total": round(total_seconds / 86400.0, 1),
+            "days_elapsed": round(elapsed_seconds / 86400.0, 2),
+            "days_remaining": round(remaining_days, 2),
+            "days_remaining_ceil": max(0, int((remaining_seconds + 86399) // 86400)),
+            "trades_closed": closed_n,
+            "trades_open": len(opened),
+            "closed_pnl": closed_pnl,
+            "open_pnl": open_pnl,
+            "pnl": round(closed_pnl + open_pnl, 2),
+            "pace_closed_per_day": pace,
+            "required_pace_to_10": required_10,
+            "required_pace_to_20": required_20,
+            "projected_closed_at_end": projected,
+            "target_min": 10,
+            "target_max": 20,
+            "status": status,
+            "promotion": self._promotion_status(),
+        }
+
+    def _window_summary_line(self) -> str:
+        window = self.window_status()
+        days = window["days_remaining_ceil"]
+        return (
+            f"📅 Janela até 28/08 · reais: {window['trades_closed']} fechadas + "
+            f"{window['trades_open']} abertas · P&L {window['pnl']:+.2f} "
+            f"(realizado {window['closed_pnl']:+.2f} · aberto {window['open_pnl']:+.2f}) · "
+            f"faltam {days} dias · ritmo {window['pace_closed_per_day']:.2f}/dia "
+            f"(meta 10–20; necessário {window['required_pace_to_10']:.2f}–"
+            f"{window['required_pace_to_20']:.2f}/dia)"
+        )
+
+    async def _check_killswitch_rearm(self) -> None:
+        """Rearm a pausa global uma vez no prazo UTC persistido."""
+        scheduled = self._parse_utc(self.config.get("killswitch_rearm_at", ""))
+        if not scheduled or datetime.now(timezone.utc) < scheduled:
+            return
+        was_active = bool(self.config.get("kill_switch") or self.config.get("auto_kill"))
+        self.config["kill_switch"] = False
+        self.config["auto_kill"] = False
+        self.config["killswitch_rearm_at"] = ""
+        self._persist_config(["kill_switch", "auto_kill", "killswitch_rearm_at"])
+        if was_active:
+            await self.notifier.send(
+                "system",
+                "🔓 Rearme automático do kill switch concluído — trading reativado "
+                "no fim da janela de 28/08.",
+                tg_text="🔓 *Rearme automático do kill switch concluído*: trading reativado no fim da janela de 28/08.",
+            )
+
     # ------------------------------------------------------- daily summary
 
+    async def _check_orphan_report(self) -> None:
+        """Notificação AGREGADA por categoria quando o relatório 'porquê sem
+        trade' deteta pendentes órfãs/expiradas/canceladas — sem depender de
+        abrir o relatório. Corre a cada ~1h; cada perna fechada é notificada
+        uma única vez (guard `orphan_report_last_check` com o timestamp da
+        última corrida — pernas fechadas depois disso). Read-only para a
+        execução: nunca fecha nem altera ordens, só avisa.
+        """
+        now = datetime.now(timezone.utc)
+        last = self.config.get("orphan_report_last_check")
+        if last:
+            try:
+                if (now - datetime.fromisoformat(last)).total_seconds() < 3600:
+                    return
+            except (ValueError, TypeError):
+                pass
+        since = last or (now - timedelta(hours=24)).isoformat(timespec="seconds")
+        try:
+            rows = self.db.closed_pending_positions(since)
+        except Exception as exc:
+            print(f"[rejeições] check de pendentes órfãs falhou: {exc}")
+            return
+        # guard avança SÓ depois da consulta correr bem — se falhar (BD/IO),
+        # a próxima corrida volta a apanhar as mesmas pernas (nunca se perde
+        # a notificação; no pior caso duplica-se, que é o erro seguro).
+        self.config["orphan_report_last_check"] = now.isoformat(timespec="seconds")
+        self._persist_config(["orphan_report_last_check"])
+        if not rows:
+            return
+        counts: dict = {}
+        for r in rows:
+            key = r.get("exit_reason") or "pending_expired"
+            counts[key] = counts.get(key, 0) + 1
+        labels = {
+            "pending_orphan": "órfã(s) — ticket perdido no broker/restart",
+            "pending_cancelled": "cancelada(s) pelo broker",
+            "pending_expired": "expirada(s) por TTL (preço não voltou à entrada)",
+        }
+        parts = [f"{counts.get(k, 0)} {labels[k]}" for k in
+                 ("pending_orphan", "pending_cancelled", "pending_expired")
+                 if counts.get(k)]
+        await self.notifier.send(
+            "system",
+            "🧨 'Porquê sem trade': " + ", ".join(parts) +
+            " — pendente(s) da zona que nunca preencheram. Abre o relatório "
+            "para ver porquê o preço não voltou ao nível da entrada.",
+        )
+
+    async def _check_recount_batch(self) -> None:
+        """Re-check em lote dos recounts (diário sobre a janela recente + uma
+        vez por semana sobre o histórico COMPLETO, days=0).
+
+        O dia corre o candle-check de todos os recounts com candles frescos
+        e o offset mais recente (fontes combinadas MT5 spot + GC=F, cache por
+        símbolo) e notifica quando algum veredicto persistido muda de regime
+        ou quando há erros — o operador reavalia no /auditoria. A corrida
+        semanal re-corre TUDO (days=0) para os veredictos antigos ficarem
+        todos corrigidos com o offset medido (o offset diário só existe para
+        dias com fills medidos; o semanal abrange os recortes antigos com o
+        fallback da média). Cada corrida fica persistida com os flips
+        resolvidos. Read-only para a execução; os guard de estado ficam em
+        `recount_batch_last_run` / `recount_batch_week_last_run` (config)."""
+        today = datetime.now(timezone.utc).date().isoformat()
+        # guard diário (janela recente)
+        if self.config.get("recount_batch_last_run") == today:
+            return
+        self.config["recount_batch_last_run"] = today
+        self._persist_config(["recount_batch_last_run"])
+        # guard SEMANAL: uma vez por semana (sempre no mesmo dia) corre o
+        # histórico COMPLETO para os veredictos antigos corrigidos com o
+        # offset medido
+        week_key = self.config.get("recount_batch_week_last_run", "")
+        iso_year, iso_week, _ = datetime.now(timezone.utc).isocalendar()
+        current_week = f"{iso_year}-W{iso_week:02d}"
+        weekly = week_key != current_week
+        if weekly:
+            self.config["recount_batch_week_last_run"] = current_week
+            self._persist_config(["recount_batch_week_last_run"])
+        try:
+            res = await self.recheck_all_recounts(days=0 if weekly else 365,
+                                                  window="weekly" if weekly else "daily")
+            if not res.get("ok"):
+                return
+            flips = res.get("flips") or []
+            flip_str = ""
+            if flips:
+                flip_list = ", ".join(
+                    f"{f.get('signal_number', '?')} ({f.get('day', '')}: "
+                    f"{f.get('from')} → {f.get('to')}"
+                    + (f", offset {f.get('shift')}" if f.get('shift') is not None else "")
+                    + ")" for f in flips[:5])
+                flip_str = (f" · flips: {flip_list}"
+                            + (" …" if len(flips) > 5 else ""))
+            # notifica quando há veredictos ALTERADOS, RESOLVIDOS
+            # (implausível/feed → plausível: eram feed, não relato falso) ou
+            # erros — um flip implausível→plausível não muda `changed` (o
+            # `plausible` já era True na divergência de feed), por isso o
+            # `resolved` conta-o à parte
+            if ((res.get("changed") or 0) > 0
+                    or (res.get("resolved") or 0) > 0
+                    or (res.get("errors") or 0) > 0):
+                label = "semanal" if weekly else "diário"
+                await self.notifier.send(
+                    "system",
+                    f"🗂 Re-check {label}: {res.get('rechecked', 0)}/"
+                    f"{res.get('total', 0)} recounts re-corridos · "
+                    f"{res.get('changed', 0)} com veredicto alterado · "
+                    f"{res.get('resolved', 0)} resolvido(s) (eram "
+                    f"implausíveis/feed e agora plausíveis — o offset diário "
+                    f"do GC=F mostrou que eram feed) · {res.get('errors', 0)} "
+                    f"erros{flip_str}. Historial no /auditoria.",
+                )
+        except Exception as exc:
+            print(f"[recount] re-check em lote falhou: {exc}")
+
+    async def _check_refusals_backfill(self) -> None:
+        """Guard SEMANAL (ISO-week): re-corre o backfill de recusas do broker.
+
+        Uma vez por semana (`refusals_backfill_week_last_run` na config)
+        volta a varrer as trades fechadas com assinatura phantom (sem `error`
+        gravado) e persiste o trace durável (error/retcodes/auto_trading_off)
+        a partir da evidência do journal — para nenhum fecho phantom ficar
+        sem rasto mesmo que o alerta original (retcode 10027, worker caído,
+        etc.) tenha sido perdido. Audit-only: nunca abre/fecha trades nem
+        toca no MT5; notifica só quando o backfill encontrou algo para
+        gravar (sinal de que um alerta se perdeu)."""
+        week_key = self.config.get("refusals_backfill_week_last_run", "")
+        iso_year, iso_week, _ = datetime.now(timezone.utc).isocalendar()
+        current_week = f"{iso_year}-W{iso_week:02d}"
+        if week_key == current_week:
+            return
+        self.config["refusals_backfill_week_last_run"] = current_week
+        self._persist_config(["refusals_backfill_week_last_run"])
+        try:
+            from app.backfill_trade_refusals import run_refusals_backfill
+            res = run_refusals_backfill(self.db, apply=True)
+            applied = res.get("applied") or 0
+            if applied:
+                await self.notifier.send(
+                    "system",
+                    f"🗂 Backfill semanal de recusas: {applied} trade(s) "
+                    f"phantom sem trace durável — error/retcodes gravados "
+                    f"a partir do journal (o alerta original não chegou a "
+                    f"ficar registado?). {res.get('candidates') or 0} "
+                    f"candidata(s) revista(s). Historial na auditoria.",
+                )
+        except Exception as exc:
+            print(f"[refusals] backfill semanal falhou: {exc}")
+
+    async def _check_be_buffer_drift(self) -> None:
+        """Vigia do drift do spread: tracka o buffer BE+ adaptativo por símbolo
+        (uma linha por dia em `be_buffer_history`) e alerta `risk` quando o
+        spread médio (7d) sai da banda saudável [20, 50] pips — spread muito
+        baixo esmaga o buffer (saídas BE+ sem cobrir custos), muito alto
+        infla-o (stops antecipados). Uma vez por dia por símbolo+direção
+        (guard diário), read-only para a execução."""
+        if not self.config.get("be_buffer_adaptive", True):
+            return
+        today = datetime.now(timezone.utc).date().isoformat()
+        lo, hi = 20.0, 50.0
+        try:
+            symbols = self.db.spread_symbols(days=self._BE_BUFFER_WINDOW_DAYS)
+        except Exception:
+            return
+        for symbol in symbols:
+            try:
+                avg = self.db.avg_spread_pips(
+                    symbol, days=self._BE_BUFFER_WINDOW_DAYS)
+            except Exception:
+                continue
+            if avg is None or avg <= 0:
+                continue
+            # track diário (uma linha por símbolo+dia; idempotente)
+            with self.db.tx() as cur:
+                cur.execute(
+                    "INSERT INTO be_buffer_history "
+                    "(day, symbol, avg_spread_pips, buffer_pips) VALUES (?,?,?,?) "
+                    "ON CONFLICT(day, symbol) DO UPDATE SET "
+                    "avg_spread_pips=excluded.avg_spread_pips, "
+                    "buffer_pips=excluded.buffer_pips",
+                    (today, symbol, round(avg, 4),
+                     round(min(self._BE_BUFFER_MAX_PIPS,
+                               max(self._BE_BUFFER_MIN_PIPS,
+                                   avg * self._BE_BUFFER_SPREAD_FACTOR)), 1)),
+                )
+            if lo <= avg <= hi:
+                continue
+            guard = f"be_drift_last_{symbol}"
+            if self.config.get(guard) == today:
+                continue
+            self.config[guard] = today
+            self._persist_config([guard])
+            avg_r = round(avg, 1)
+            await self.notifier.send(
+                "risk",
+                f"📏 Spread médio (7d) de {symbol}: {avg_r} pips — fora da banda "
+                f"saudável [{lo:.0f}, {hi:.0f}] pips. Buffer BE+ adaptativo em "
+                f"{round(min(self._BE_BUFFER_MAX_PIPS, max(self._BE_BUFFER_MIN_PIPS, avg * self._BE_BUFFER_SPREAD_FACTOR)), 1)} pips "
+                f"({'esmagado — saídas BE+ podem não cobrir o custo real' if avg < lo else 'inflado — stops BE+ antecipados possíveis'}).",
+            )
+
+    async def _check_cap_reminder(self) -> None:
+        """Lembrete no feed quando o cap autónomo está à espera de dados
+        reais pós-cap há mais de `cap_reminder_days` (config, default 7)
+        para o operador correr o `study_cap_effect --days 30` e decidir se o
+        cap fica, aperta ou volta ao default.
+
+        A decisão honesta precisa de fills reais DEPOIS do momento em que o
+        cap entrou (`cap_applied_at`); enquanto `cap_applied_at` existir e
+        não houver ainda decisão (nenhum fill pós-cap a validar), o lembrete
+        avisa uma vez por guard (dia) até o estudo correr. Read-only para a
+        execução."""
+        applied = self.config.get("cap_applied_at") or ""
+        if not applied:
+            return  # nunca aplicado (default 0.0) — nada a decidir
+        today = datetime.now(timezone.utc)
+        try:
+            applied_dt = datetime.fromisoformat(str(applied))
+        except (ValueError, TypeError):
+            return
+        if today - applied_dt < timedelta(days=float(
+                self.config.get("cap_reminder_days") or 7)):
+            return
+        # já há decisão? decisão = há fills reais pós-cap que o estudo usaria
+        # (o estudo reporta decidido quando os fills pós-cap não são "0").
+        # Runs persistidos de `study_cap_effect` não existem na BD — usamos
+        # uma avaliação leve: algum fill real MT5 aberto DEPOIS de
+        # `cap_applied_at`? (os pendentes nunca-preenchidos não contam)
+        never = ("pending_expired", "pending_orphan", "pending_cancelled")
+        since = (today - timedelta(days=float(
+            self.config.get("cap_reminder_lookback_days") or 30))).isoformat()
+        has_after = False
+        try:
+            for t in self.db.trades_opened_since(since):
+                if not (t.execution_mode or "").startswith("mt5"):
+                    continue
+                if (t.exit_reason or "") in never:
+                    continue
+                try:
+                    if datetime.fromisoformat((t.opened_at or "")).timestamp() \
+                            >= applied_dt.timestamp():
+                        has_after = True
+                        break
+                except (ValueError, TypeError):
+                    continue
+        except Exception as exc:
+            print(f"[cap] verificação de fills pós-cap falhou: {exc}")
+            return
+        # sem fills pós-cap ainda? lembra de decidir (uma vez por dia — guard)
+        if has_after:
+            return  # já há dados — o estudo decide; não repetir o lembrete
+        last = self.config.get("cap_reminder_last_sent")
+        if last == today.date().isoformat():
+            return
+        self.config["cap_reminder_last_sent"] = today.date().isoformat()
+        self._persist_config(["cap_reminder_last_sent"])
+        days = (today.date() - applied_dt.date()).days
+        await self.notifier.send(
+            "system",
+            f"⏰ Cap autónomo (0.5×) aplicado há {days} dias e ainda sem "
+            f"fills reais pós-cap. Corre "
+            f"`PYTHONIOENCODING=utf-8 .venv/Scripts/python -m "
+            f"app.study_cap_effect --days 30` para decidir se o cap fica, "
+            f"aperta ou volta ao default com os dados reais.",
+        )
+
     async def _check_daily_summary(self) -> None:
-        today = date.today().isoformat()
+        today = datetime.now(timezone.utc).date().isoformat()
         if self.config.get("summary_sent_date") == today:
             return
         try:
@@ -2902,11 +3167,112 @@ class BotState:
             target = time(int(hh), int(mm))
         except (ValueError, AttributeError):
             return
-        if datetime.now().time() >= target:
+        if datetime.now(timezone.utc).time() >= target:
             await self.daily_summary()
 
+    def _journal_forward_summary_lines(self, today: str) -> list[str]:
+        """Build the single daily evidence block for feed and Telegram.
+
+        It is deliberately observational: reports read persisted journal and
+        shadow rows, while the normal ``daily_summary`` notification remains
+        the only send operation and no execution/config decision is made.
+        """
+        try:
+            from app.execution.evidence import (forward_gate_report,
+                                                journal_quality_report)
+            quality = journal_quality_report(self.db, day=today)
+            orders = quality.get("orders") or {}
+            tapes = quality.get("trades") or {}
+            lines = [
+                "🧾 Qualidade journal (UTC): "
+                f"{quality.get('events', {}).get('total', 0)} eventos · "
+                f"{quality.get('signals', {}).get('received', 0)} sinais · "
+                f"{quality.get('management', 0)} gestão · "
+                f"{quality.get('fills', {}).get('open', 0)} fills abertura / "
+                f"{quality.get('fills', {}).get('close', 0)} fecho · "
+                f"ordens {orders.get('accepted', 0)} aceites / "
+                f"{orders.get('rejected', 0)} recusadas · "
+                f"{tapes.get('incomplete_tape', 0)} fitas incompletas",
+            ]
+            gate = forward_gate_report(self.db, days=30)
+            status = (gate.get("period") or {}).get("status", "rolling")
+            lines.append(
+                "🧪 Gate forward (shadow, sem promoção automática): "
+                f"{status} · janela {(gate.get('period') or {}).get('start', '')[:10]} → "
+                f"{(gate.get('period') or {}).get('end', '')[:10]}"
+            )
+            for row in gate.get("strategies", []):
+                failed = [key for key, value in (row.get("gates") or {}).items() if not value]
+                lines.append(
+                    f"  {row.get('strategy_id')}: N={row.get('closed', 0)}/"
+                    f"{gate.get('policy', {}).get('min_trades', 20)} · "
+                    f"PF={row.get('profit_factor') if row.get('profit_factor') is not None else '—'} · "
+                    f"{'PASSOU' if row.get('eligible') else 'em recolha'}"
+                    + (f" · falta: {', '.join(failed)}" if failed else "")
+                )
+            lines.append(self._recount_summary_line(today))
+            return lines
+        except Exception as exc:
+            # A falha de telemetria nunca pode impedir o resumo operacional.
+            return [f"🧾 Evidência journal/gate indisponível neste resumo: {exc}"]
+
+    def _be_plus_summary_line(self, today: str) -> str:
+        """Linha BE+ do resumo diário: saídas protegidas com lucro hoje e o
+        contrafactual "BE clássico teria corrido até TP2" (quando há velas).
+        Read-only; a falha nunca impede o resumo."""
+        try:
+            from app.execution.audit import daily_execution_audit
+            audit = daily_execution_audit(
+                self.db, day=today)
+            bp = audit.get("be_plus") or {}
+            total = int(bp.get("exits_total") or 0)
+            if not total:
+                return "🛡️ BE+ do dia: sem saídas protegidas"
+            profit = int(bp.get("exits_with_profit") or 0)
+            kept = bp.get("kept_running_to_tp2")
+            checked = int(bp.get("checked") or 0)
+            line = (f"🛡️ BE+ do dia: {total} saídas protegidas · "
+                    f"{profit} com lucro")
+            if kept is not None:
+                line += f" · {kept} teriam corrido até TP2 (de {checked} verificadas)"
+            return line
+        except Exception:
+            return ""
+
+    def _recount_summary_line(self, today: str) -> str:
+        """Linha de qualidade dos recounts do dia para o resumo diário (R2).
+
+        Conta os recounts recebidos hoje, os implausíveis (candle-check) e
+        quem divergiu (o grupo ou a execução), a partir do journal quando
+        ligado. Observacional: só lê, nunca altera execução.
+        """
+        try:
+            rows = [r for r in self.db.list_trade_recounts(limit=500)
+                    if (r.get("received_at") or "")[:10] == today]
+            if not rows:
+                return "📋 Recounts do dia: nenhum recebido hoje"
+            total = len(rows)
+            # implausíveis: eventos do journal de hoje (evidência estruturada,
+            # o mesmo cruzamento do fill-audit)
+            from app.execution.evidence import _recount_implausible_evidence
+            impl = _recount_implausible_evidence(
+                self.db, f"{today}T00:00:00+00:00",
+                f"{today}T23:59:59.999999+00:00",
+            )
+            diverged = sum(1 for e in impl if not e.get("bot_traded"))
+            line = f"📋 Recounts do dia: {total} recebidos"
+            if impl:
+                line += f" · {len(impl)} implausíveis"
+                if diverged:
+                    line += f" · {diverged} sem execução do bot"
+            else:
+                line += " · sem implausíveis (journal desligado ou relatos ok)"
+            return line
+        except Exception as exc:
+            return f"📋 Recounts do dia indisponíveis: {exc}"
+
     async def daily_summary(self) -> dict:
-        today = date.today().isoformat()
+        today = datetime.now(timezone.utc).date().isoformat()
         trades = self.db.trades_closed_on(today)
         pnl = round(sum(t.pnl for t in trades), 2)
         wins = [t for t in trades if t.pnl > 0]
@@ -2919,6 +3285,7 @@ class BotState:
             )
         else:
             text = f"📊 Resumo diário ({today}): sem trades fechadas hoje."
+        text += "\n\n" + self._window_summary_line()
         # 🏁 corrida da Fase 2: saldo/PF da auto_escada_3 vs referência e o
         # progresso para os critérios do SPEC v2 (N ≥ 20 · PF ≥ 1.5)
         race = self._phase2_race_line()
@@ -2929,6 +3296,12 @@ class BotState:
         f3 = self._fase3_mt5_line()
         if f3:
             text += "\n\n🚀 " + f3
+        evidence_lines = self._journal_forward_summary_lines(today)
+        if evidence_lines:
+            text += "\n\n" + "\n".join(evidence_lines)
+        be_plus_line = self._be_plus_summary_line(today)
+        if be_plus_line:
+            text += "\n\n" + be_plus_line
         self.config["summary_sent_date"] = today
         self.db.set_config("summary_sent_date", today)
         await self.notifier.send("summary", text)

@@ -9,6 +9,1689 @@ Formato: `### YYYY-MM-DD — título` · bullets com o quê/porquê.
 
 ---
 
+### 2026-09-16 — Boot da lane tp2 corrigido + falha de boot ≠ bloqueio runtime + WhatsApp single-lane + CLOSE ALL na tp2_protect
+
+- **Boot da tp2 falhava SEMPRE com worker saudável** (causa raiz): o lifespan
+  inicializava o `mt5_provider2` LOCAL — que tem bloqueio permanente por
+  design quando `MT5_DRY_RUN=0` ("a API MetaTrader5 usa uma ligação global
+  por processo") — em vez do `RemoteProvider` do worker. O feed mostrava
+  "⛔ Execução MT5 bloqueada na lane tp2 ..." em todos os arranques e a lane
+  só ligava depois via reconnect do market_loop. Agora `_lane2_provider()`
+  (`app/main.py`) devolve o MESMO provider que o reconnect usa (worker
+  quando `LANE2_WORKER_ENABLED`, local em dry-run).
+- **`RemoteProvider.initialize` deixou de poluir `execution_block_reason`
+  com o motivo TRANSITÓRIO de worker offline** (`app/execution/remote2.py`):
+  o motivo fica em `_offline_reason` — um `execution_block_reason` truthy
+  fazia o `_reconnect_mt5` saltar a lane para sempre (a tp2 falhava no boot
+  e nunca mais tentava religar).
+- **Falha de boot ≠ bloqueio runtime no feed**: a falha transitória de
+  arranque notifica kind `system` ("⏳ [lane] MT5 não ligou no arranque —
+  transitória"); o bloqueio permanente (conta não hedged, config errada)
+  continua kind `risk` ("⛔"). Quando o reconnect/retry liga a lane que
+  falhou no boot, emite a RECUPERAÇÃO ("✅ [lane] MT5 religado após falha de
+  arranque").
+- **Retry único em background no arranque**: task própria do lifespan
+  (`nexgen:boot_retry`, cancelada no shutdown) re-tenta UMA vez as lanes que
+  falharam no boot, passado `MT5_BOOT_RETRY_DELAY` (default 30s) — cobre a
+  corrida com o arranque do worker portable pelo boot.ps1 (o worker demora
+  segundos a abrir a porta/ligar o terminal e o 1º initialize perde-a).
+  Sucesso → notificação de recuperação; bloqueio permanente → `risk`. Se
+  falhar de novo, o reconnect do market_loop (throttle 10s) continua.
+- **WhatsApp: UMA mensagem por sinal, só da lane 2** (`app/whatsapp_mixin.py`):
+  antes, main e tp2 fechavam em ticks diferentes e o dedup por tick não
+  cobria — o grupo recebia DUAS mensagens (dual-lane) do mesmo sinal. Agora
+  o hook filtra `lane_id == "tp2"` (fechos da main não enviam) e usa o
+  formato single-lane `format_trade_close` com o rótulo da conta tp2. O
+  smoke-test usa a mesma regra (`notify_smoke`).
+- **`tp2_protect` honra `close_all`** (`app/strategies.py`, decisão do
+  utilizador): quando o grupo diz "CLOSE ALL" / "we're out", as duas lanes
+  saem ao mercado como a `nova_gestao` — antes a tp2_protect ignorava e a
+  lane 2 continuava a correr para o TP2 (observado ao vivo 16/09 12:08).
+  Continua a ignorar `close_tp1`/`move_sl`. Nome novo: "Sair no TP2 +
+  protect + close_all".
+- **Diagnóstico/BD**: eventos novos `boot_retry_success`/`boot_retry_failure`
+  em `mt5_connection_events`.
+- testes: 631.
+
+### 2026-09-05 — Marcador durável de revive no histórico de sinais (badge "🔄 de rejected" + motivo guardado)
+
+- O sinal passou a guardar **de que estado veio quando a janela foi reaberta**:
+  colunas novas `revived_from` / `revived_reason` / `revived_at` em `signals`
+  (migração automática em `db._migrate`), preenchidas no `_revive_signal` com o
+  estado anterior e o **motivo gravado** da recusa/erro ANTERIOR.
+- A tabela **Sinais** da dashboard mostra agora um badge `🔄 de rejected`
+  (verde tracejado) ao lado do estado, com tooltip com a hora do reaberto e o
+  motivo anterior; o marcador **sobrevive à execução** — depois de o sinal
+  reaberto executar (ou ser rejeitado outra vez), o histórico continua a
+  mostrar que aquele sinal veio de uma rejeição, à primeira vista.
+- O marcador é preservado em edições seguintes dentro da janela (`_apply_edit`
+  copia `revived_*` do existente) e aparece no snapshot (`signals` → `to_dict`)
+  e na resposta `POST /api/signals` (`signal.revived_from/reason/at`). O feed
+  mantém o alerta kind `revived` com o motivo no texto (grupo "🔄 Revives").
+- **Testes**: asserções novas no revive de `rejected` — marcador no payload,
+  persistência e exposição no snapshot depois de executar.
+- testes: 592.
+
+### 2026-09-05 — Sinal `rejected` reabre a janela quando o grupo re-edita com conteúdo válido (janela de revive configurável)
+
+- **Antes**: uma rejeição (guard de zona/cap, lote mínimo, risco global) era
+  terminal — uma edição posterior do grupo caía em "sinal já finalizado
+  (rejected)" e ficava muda. A recusa era sobre o conteúdo/preço ANTIGO, mas
+  a intenção nova do grupo perdia-se.
+- **Agora** (`app/state.py::_ingest_telegram` + `_revive_signal`): se a
+  mesma mensagem Telegram for re-editada com conteúdo VÁLIDO dentro de
+  `rejected_revive_minutes` (default 10, env `SIGNALBOT_REJECTED_REVIVE_MINUTES`)
+  da chegada original, o sinal volta a `awaiting_edit` (`action: revived`,
+  `revived_from: rejected`) e corre a pipeline de novo — com **alerta claro**
+  no feed (kind `revived`): "A entrada ANTERIOR foi recusada (<motivo>).
+  Janela de Ns reaberta." O motivo vem do `error` gravado na rejeição.
+  Parse só via IA (LLM) continua a ser registo apenas (Item 12, nunca
+  executa). Depois da janela, a recusa é reavaliada honestamente: pode
+  executar ou ser rejeitada de novo.
+- **Depois da janela**: uma re-edição tardia (>X min) NÃO reabre nada (não se
+  perseguem entradas recusadas há demasiado tempo) — mas o operador recebe
+  um aviso `system` de que o grupo voltou a mexer com conteúdo válido e a
+  recusa anterior se mantém (só quando o re-edit parseia, não em edições
+  parciais).
+- **Config**: `rejected_revive_minutes` em DEFAULT_CONFIG (visível em
+  `/api/status` → `config`), coerção float no boot. O revive de `failed`
+  continua com a janela fixa de 5 min (inalterada).
+- **Testes**: `test_rejected_signal_revived_when_group_reedits` (rejeição por
+  cap → re-edição → revived + alerta com o motivo → executa com o conteúdo
+  novo) e `test_rejected_signal_edit_after_revive_window_alerted_and_ignored`
+  (janela expirada → mantém rejeitado + aviso).
+- testes: 592.
+
+### 2026-09-04 — Rejeição de sinal mostra o bloqueio REAL de cada lane (incidente 07:32 sell XAUUSD)
+
+- **Sintoma**: sell XAUUSD (4475-4479, TP1..TP4, SL 4483) rejeitado às
+  07:32:27 com "lote mínimo não cabe no risco configurado em main (16.00 >
+  10.02)" — sem ordens enviadas em NENHUMA lane e sem a lane 2 aparecer no
+  motivo. O grupo ainda mandou "SL HIT" 11 min depois (o preço tinha
+  atravessado o SL; o shadow-paper do mesmo sinal fechou logo em SL:
+  nova_gestao -32€, auto_escada_3 -24€ às 07:32:28 — executar era entrar a
+  perder de certeza).
+- **Causa raiz**: o gate de lote mínimo é PRÉ-computado por lane no início
+  do loop (fica no dicionário `exceeded`) MESMO quando a lane é bloqueada
+  ANTES pelo guard de zona (preço fora da zona entre o guard inicial e a
+  execução, sem confirmação manual no modo autónomo). O branch de rejeição
+  mostrava só o resumo dos gates excedidos → culpava o lote mínimo (que
+  nunca foi a causa — com SL 8 e auto-fit, 1 perna de 0.01 cabe nos €10.02)
+  e calava as notas reais das lanes.
+- **Fix** (`app/state.py`): quando nenhuma lane abriu e há gates excedidos,
+  a mensagem de rejeição mostra PRIMEIRO as notas reais por lane
+  (zona/risco/exceção) e só junta o resumo do lote mínimo se alguma lane
+  chegou mesmo ao gate e não coube. As notas de zona deixam de ser
+  engolidas; o caso puro lote-mínimo mantém a mensagem anterior intacta.
+- **Teste**: `test_reject_message_mostra_bloqueio_real_quando_zona_ganha_ao_lote`
+  (guard 1 na zona → guard 2 fora da zona → rejeição mostra a zona e NÃO o
+  lote mínimo).
+- testes: 590.
+
+### 2026-09-04 — Stalls do `snapshot.build` eliminados: WAL no SQLite + caches (worker, blocos informativos, lanes reutilizadas)
+
+- **Causa raiz final dos stalls de 3.5–6.4s do `snapshot.build` encontrada e
+  eliminada**: o SQLite corria em `journal_mode=delete` num ficheiro de
+  647MB — com o journal de execução ligado (~3M linhas), CADA commit dos
+  inserts de quotes do tick (1×/s) fsyncava o ficheiro inteiro: 15–580ms
+  por commit (medido numa cópia da BD), congelando o event loop. A ligação
+  agora abre em **WAL + synchronous=NORMAL** (`app/db.py`): commits ~0ms,
+  leituras não bloqueiam escritas e o checkpoint é assíncrono; sem
+  corrupção em crash (só perde as últimas transações num corte de energia
+  — aceitável para journal/telemetria). O backup (`backup_db.py`, API do
+  sqlite3) e os testes funcionam com WAL.
+- **RemoteProvider (lane 2) passou a cachear `account()`/`positions()` com
+  TTL** (mesma semântica do `MT5Provider` local) — antes CADA chamada era
+  um HTTP ao worker (15–160ms): o snapshot consultava a conta 5–8× e as
+  posições 2–3× por lane por tick. A EXECUÇÃO (engine →
+  `_mt5.positions_get`) fica FORA do cache — nunca há stale para decidir
+  SL/TP.
+- **`_execution_state` reutiliza o snapshot de lanes já construído** em vez
+  de reconstruir as lanes uma 2ª vez por snapshot (duplicava ~8 leituras
+  MT5/worker por lane por tick).
+- **Cache TTL para blocos informativos caros do snapshot** (`_ttl_get` em
+  `BotState`): `risk_preview` por lane (5s, chamado 3×/tick),
+  `paper_status`/`shadow_paper_status` (10s), `window_status` (10s —
+  carregava `list_trades(200000)` por tick!) e `fase3_*` (60s). O snapshot
+  do tick deixa de pagar ~20 agregações DB por segundo; os handlers que
+  MUTAM o estado invalidam a cache inteira. Frescura: os painéis
+  informativos atualizam em ≤ TTL (5–60s) — read-only para a execução.
+- **Journal bounded + stats cacheado**: `execution_event_stats(7)` (GROUP
+  BY de ~1s sobre milhões de linhas) com cache de 60s e retenção
+  configurável `EXECUTION_JOURNAL_RETENTION_DAYS` (default 30) com purge
+  no arranque e no watchdog (~6h) — a tabela nunca volta a crescer sem
+  limite (3M linhas → o primeiro purge removeu 52k+).
+- **Resultado ao vivo**: `snapshot.build` de 3.5–6.4s → ~0.5s no steady-
+  state (sem fases ≥2s no stallwatch); o healthcheck não registou NENHUMA
+  observação "sem resposta HTTP" desde o restart WAL (antes escalava e
+  matava o servidor).
+- testes: 589.
+
+### 2026-09-04 — Vigia de stalls do event loop: quando + onde (bloco ⏱️ Loop stalls no Diagnóstico)
+
+- **Sintoma a resolver**: o healthcheck registava "sem resposta HTTP" e os
+  logins penduravam sem se saber QUANDO nem ONDE o event loop congelou.
+- **Monitor de congelamentos** (`app/stallwatch.py`): task própria do
+  lifespan (fora do BackgroundRuntime) que acorda a cada 0.5s
+  (`LOOP_STALL_INTERVAL`) e mede o atraso real do wakeup com `loop.time()`
+  (monotónico) — um loop bloqueado N segundos faz a task acordar N segundos
+  tarde. Congelamento ≥ `LOOP_STALL_THRESHOLD_SECONDS` (default 2s) é
+  gravado em `loop_stall_events` (nova tabela) com kind `stall`.
+- **Atribuição da causa**: fases on-loop instrumentadas gravam kind `phase`
+  quando demoram ≥ limiar — `tick.update:main`/`tick.update:tp2` (o
+  engine.update por lane no tick), `snapshot.build` (construção do snapshot
+  no fim do tick) e `diagnostics.on_loop` (parte on-loop do Diagnóstico que
+  lê o terminal) — o sintoma e a causa aparecem lado a lado na BD.
+- **Bloco "⏱️ Loop stalls" no Diagnóstico**: total das últimas 24h + últimos
+  registos (hora · duração · evento loop vs fase) com o limiar e o intervalo
+  do monitor; sem episódios mostra "monitor ativo" (confirmação de que o
+  vigia está a correr).
+- **Bounded**: retenção de 14 dias (`purge_old_loop_stalls`) no purge
+  periódico do watchdog (~6h) e no arranque, e **rate-limit por tipo**
+  (`LOOP_STALL_MIN_GAP_SECONDS`, 30s entre registos do mesmo kind+phase) —
+  um padrão crónico (ex.: snapshot.build a 4-9s por tick) mostra-se no
+  Diagnóstico (1 registo/30s) sem encher a BD. Read-only para execução:
+  nunca decide nem envia ordens.
+- testes: 584.
+
+### 2026-09-04 — A/B com dimensionamento por lane no Diagnóstico + event loop blindado (snapshot cacheado, worker/subprocessos fora do loop, boot rápido, healthcheck com grace de boot)
+
+- **Diagnóstico "⚖️ A/B lanes" mostra o dimensionamento de CADA conta**: o
+  `GET /api/lanes/ab` junta `main.sizing`/`tp2.sizing` (risco base
+  `risk_pct:<lane>`, lote fixo `lots_override:<lane>`, lots/perna, total e
+  nº de pernas do preview) — a comparação de P&L lê com os tamanhos de
+  posição em contexto (ex.: main 1.0% vs tp2 0.6% · fixo 0.04 l/perna).
+  Read-only; o cálculo corre fora do loop (to_thread).
+- **Causa raiz dos "sem resposta HTTP" do healthcheck e dos logins que
+  penduram: I/O bloqueante no event loop único.** (1) `/api/status`
+  reconstruía o snapshot — leituras ao broker MT5/worker — por REQUEST; o
+  market_loop agora constrói o snapshot 1×/s e os endpoints read-only
+  servem `BotState.last_snapshot()` (a cache é invalidada nos handlers que
+  mutam config/sinal/kill switch para um GET logo a seguir ver o write);
+  (2) o Diagnóstico corria `status_summary` do worker + subprocessos
+  `netstat`/`schtasks` no próprio handler — `asyncio.to_thread`;
+  (3) o watchdog do listener corria o subprocesso PowerShell no loop —
+  `to_thread` + timeout 8s.
+- **Boot rápido**: o lifespan fazia `initialize` + até 10 retries com
+  sleeps (30-40s em que a porta escuta mas o HTTP ainda não serve) — o
+  healthcheck via "sem resposta" e MATAVA o servidor a meio do boot
+  (restart wars, bind 10048, login/dashboard partidos durante minutos).
+  Agora: uma única tentativa por lane, em paralelo e num thread
+  (`_initialize_mt5_lane_at_boot`); falhou → o reconnect do market_loop
+  (throttle 10s) repete em background já com o servidor a servir.
+- **Healthcheck com grace de boot**: um processo que segura a porta mas tem
+  <5 min (`HEALTHCHECK_BOOT_GRACE`) nunca é morto (idade via
+  Get-CimInstance); as falhas voltam a 1 e a passagem seguinte decide — o
+  mesmo para o worker da lane 2.
+- testes: 580.
+
+### 2026-09-03 — CAUSA RAIZ dos retcodes null `'?'` na lane 2: kwargs vazio no `order_send` remoto (fix no worker)
+
+- **Sintoma**: desde a ativação real da lane 2 (01/09) NENHUMA ordem
+  preenchia — todas as pernas fechavam phantom com retcode `'?'` (resposta
+  `null` do módulo), mais um `NO_TICK`, apesar de o worker/terminal/conta/
+  AutoTrading estarem saudáveis e de ordens MANUAIS no terminal portable
+  preencherem em 43–550 ms.
+- **Isolamento empírico** (03/09, conta demo, ordens 0.01 abertas e fechadas
+  logo a seguir — BD intacta):
+  1. standalone (mesmo módulo/terminal/login) → `order_send` preenche (10009);
+  2. worker real e réplica in-process → `None` + `last_error`
+     `-2 "Unnamed arguments not allowed"`;
+  3. bisect por convenção de chamada no MESMO processo: `mt5.order_send(req)`
+     direto → 10009; `fn(*args)` → 10009; **`fn(*args, **{})` (kwargs dict
+     vazio) → None `-2`**; `fn(request=req)` → 10013 com request a zeros.
+- **Causa raiz**: o wrapper C do `order_send` deste build do módulo
+  (MetaTrader5 5.0.6090, cp314) recusa QUALQUER invocação com um dict de
+  kwargs presente — mesmo vazio. A conta principal chama `order_send(request)`
+  direto no bytecode (sem dict) e preenche; a lane 2 passa SEMPRE por
+  HTTP/JSON → `fn(*args, **kwargs)` com `kwargs={}` → `None` → retcode `'?'`
+  → phantom. Nenhuma ordem chegava ao journal do terminal (por isso o log do
+  terminal não mostrava nada) e o alerta/backfill de retcode null só
+  registava o sintoma, nunca a causa.
+- **Fix** (`app/lane2_worker.py::_mt5_call_impl`): o dict de kwargs vazio
+  nunca mais chega ao módulo — `fn(*args)` quando não há kwargs; kwargs
+  reais continuam a ser passados (positions_get/orders_get/order_delete com
+  `symbol=`/`ticket=` continuam iguais). Mantém-se também a serialização do
+  módulo numa thread única e a captura do `last_error()` quando uma ordem
+  devolve `None` — um futuro `None` volta a gravar o motivo real do módulo
+  em vez de só `'?'`.
+- **Validação**: réplica in-process e worker REAL (8770) passam a preencher
+  ordens 0.01 XAUUSD via `/mt5/call` com `kwargs:{}` — retcode 10009 open e
+  close. `tests/test_lane2_worker.py`: 24 passed.
+
+---
+
+### 2026-09-03 — Marshaling por convenção (grelha de shapes), auto-sonda no boot do worker e smoke test guiado da lane 2
+
+- **Marshaling POR CONVENÇÃO** (`app/lane2_worker.py`): a allowlist passou a
+  grelha `MT5_CALL_SHAPES` (posicionais vs kwargs-only, com os nomes dos
+  args) e o normalizador `normalize_mt5_call()` garante que NENHUMA chamada
+  com convenção errada chega ao C-core — funções posicionais
+  (`order_send`/`symbol_info_tick`/`symbol_info`/...) nunca recebem dict de
+  kwargs (kwargs fundidos em args por nome); kwargs-only
+  (`positions_get`/`orders_get`/`order_delete`/`history_deals_get`) nunca
+  recebem posicionais; formas impossíveis (args a mais, kwargs
+  desconhecidos, obrigatórios em falta) são recusadas com erro claro ANTES
+  do módulo. O `symbol_info_tick` com kwargs ("takes no keyword
+  arguments") que apareceu no /status real também fica bloqueado aqui.
+- **Auto-sonda do worker** (boot e cada reconnect): um `order_send` de
+  símbolo deliberadamente inválido (`__LANE2_PROBE__`, custo zero — o
+  broker recusa com retcode normal) corre UMA vez por episódio de ligação
+  na thread do módulo; se devolver `None` com `last_error`, o /status expõe
+  `probe: {ok: false, error}` com o erro REAL do módulo e o market_loop
+  alerta `risk` (evento `lane2_self_probe_failed`, cooldown 10 min) — um
+  módulo/terminal morto deixa de dar phantoms `'?'` silenciosos e é
+  apanhado no arranque.
+- **Smoke test guiado dual-lane** (`app/smoke.py` +
+  `POST /api/lanes/smoke`): abre e fecha a mercado uma trade REAL de 0.01
+  (XAUUSD — EURUSD só de fallback: o broker da lane 2 recusa com 10030) em
+  CADA conta demo pelas engines reais das duas lanes, com as DUAS trades a
+  partilhar o MESMO sinal — escreve as rows (marcadas
+  `execution_mode='mt5-smoke'`, `strategy_id='smoke_test'`,
+  `exit_reason='smoke_test'` para a analytics nunca as ler como resultado
+  de estratégia), emite os eventos `close`/`trade_closed` por lane e dispara
+  a notificação WhatsApp dual-lane com as duas contas lado a lado e o P&L
+  somado. Se uma lane falhar a abrir, a que já abriu é fechada logo
+  (rollback — nunca deixa posição órfã). Guardas demo-only SEMPRE: opt-in
+  `LANE2_SMOKE_ALLOW=1` no .env, as DUAS lanes reais (dry_run=False) com
+  terminal/worker ligados e AutoTrading ON, contas DEMO obrigatórias
+  (`trade_mode == 0` — em real recusa antes de construir o pedido) e
+  cooldown (`LANE2_SMOKE_COOLDOWN`, default 120 s). As trades de teste
+  ficam marcadas para a analytics nunca as ler como resultado de estratégia.
+- **Testes** (`tests/test_lane2_worker.py` + `test_api.py`): regressão que
+  repete TODAS as formas de chamada dos engines pelo caminho remoto
+  (posicionais sem kwargs / kwargs-only com kwargs / recusas sem tocar no
+  módulo), sonda ok/falha/reconnect + espelho no RemoteProvider, guardas do
+  smoke (conta real recusa, dry-run/offline/AT-off/cooldown) e E2E do round
+  trip DUAL (engine main em processo + worker remoto) com rollback quando
+  a 2ª lane falha a abrir e notificação WhatsApp dual-lane com as duas
+  trades reais.
+- **Prova AO VIVO** (03/09, contas demo 5054644473 + 5055369549,
+  `LANE2_SMOKE_ALLOW=1`): round trips XAUUSD 0.01 pelas engines reais —
+  tickets 58300164867/… (lane 2) + 58300238944/…, P&L por corrida −0.18 a
+  −0.34 € por conta (spread+slippage), WhatsApp dual-lane enviado UMA vez
+  por corrida (sent_count 10→14 no bridge, grupo
+  120363409845259131@g.us). Descobertas ao vivo:
+  (1) o wrapper do módulo recusa comments >28 chars (`-2 Invalid "comment"
+  argument` → None → `'?'`) — os ids do smoke passaram a ser curtos
+  (`t-<epoch>-<rand>`, comment `:legN` ≤ 28; a 2ª lane leva sufixo `-tp2`);
+  (2) o broker da lane 2 recusa EURUSD com 10030 (trade disabled) apesar
+  de ter tick — XAUUSD ficou em primeiro na preferência; (3) o
+  `leftover_open` do report lia o provider com cache de 2s (posição acabada
+  de fechar ainda aparecia): a verificação passou a ler `positions_get`
+  direto do módulo (sem cache).
+- **Lote fixo por perna na 2ª conta** (`POST /api/config`,
+  `lots_override_tp2`): quando definido (ex.: 0.04), cada perna da lane 2
+  abre SEMPRE nesse lote em vez do dimensionamento por risco — o
+  `risk_pct:tp2` deixa de variar o lote com a distância ao SL (a última
+  trade da lane tinha saído a 0.06/perna). Persistido em
+  `lots_override:tp2` (0 = volta ao risco); o risk_preview e o snapshot da
+  lane mostram o lote fixo (`lots_override` na preview,
+  `fixed_lots_per_leg` na entrada de lane). A main fica inalterada.
+- **Config por lane sobrevive a restarts**: `risk_pct:tp2`,
+  `lots_override:tp2` e `peak_balance:tp2` eram persistidos mas NÃO eram
+  recarregados no boot (`_load_config` só restaurava chaves do
+  `DEFAULT_CONFIG` + `peak_balance:tp2`) — cada restart da lane 2 caía
+  silenciosamente no `risk_pct` legado e voltava ao dimensionamento por
+  risco (0.06/perna em vez de 0.04). `_load_config` restaura agora todas
+  as chaves por lane persistidas; `/api/lanes/status` expõe também
+  `effective_risk_pct`/`risk_base_pct`/`fixed_lots_per_leg`/`risk_preview`
+  por lane (antes só no snapshot de `/api/status`).
+
+---
+
+### 2026-09-02 — Lane 2 troca para a demo 10k (5055369549) com `tp2_protect`
+
+- **Nova conta na lane `tp2`**: a 2ª conta demo passou de 111495351
+  (`nova_gestao`) para **5055369549 (saldo 10.000 €)** com a **mesma
+  estratégia da principal — `tp2_protect`** (config persistida
+  `lane2_strategy`+`lane2_label` via `POST /api/config`; env `MT5_2_LOGIN`/
+  `MT5_2_PASSWORD` atualizados no `.env`). O worker da lane 2 foi
+  reiniciado para ligar à conta nova — `/api/diagnostics` e `/api/status`
+  confirmam login 5055369549, balance 10000.0, `margin_mode=2` (hedged),
+  `trade_allowed=true` (AutoTrading ON) e a lane `tp2` com
+  `strategy_id=tp2_protect` (2 pernas, saída no TP2 + protect). O A/B das
+  lanes passa a comparar a mesma estratégia em contas diferentes.
+- A conta foi adicionada pelo utilizador ao terminal portable
+  (`C:\MT5Portable2`) antes da troca; a conta antiga (111495351) fica
+  disponível no terminal mas deixa de ser usada pela lane.
+
+---
+
+### 2026-09-02 — Worker outages no /auditoria (fita + linha temporal) e retenção bounded de exceções (530)
+
+- **Fita de replay inclui as marcas de worker outage**: a exportação
+  `GET /api/operations/replay/tape` transporta os `pending_delete_stuck` e
+  os `pending_order_result` (action=delete) como eventos passivos (kind e
+  payload intactos) — o replay ignora-os como observação, nunca os converte
+  em ordens.
+- **Linha temporal de worker outages** (`GET /api/operations/replay/outages?days=30`,
+  read-only, `worker_outage_timeline` em evidence.py): junta as falhas de
+  delete com as marcas de escalada/re-alerta do watchdog, cronologicamente,
+  e agrupa **episódios por (trade, ticket)** — uma ordem pendente que o bot
+  tentou cancelar e não conseguiu. Cada episódio expõe falhas, escaladas,
+  re-alertas, tentativas máximas, intenção (TTL/gestão), lane/perna (via o
+  ticket da marca) e **resolução derivada do journal** (delete aceite ou
+  fill da perna depois da 1ª falha; sem isso fica aberto, ou a resolução
+  não foi journaled). O /auditoria ganhou o bloco "⏳ Worker outages ·
+  delete de ordens pendentes" (stats + timeline + episódios), no ciclo de
+  60s da página.
+- **Retenção bounded de `operational_exceptions`**: o rate-limit por
+  episódio já impedia centenas de linhas idênticas, mas episódios novos
+  continuavam a crescer — `db.purge_old_exceptions(365)` (política
+  "archive after 365 days" de maintenance.py) apaga linhas com mais de
+  365 dias no purge do watchdog (~6h) e no arranque; a tabela nunca cresce
+  sem limite.
+- **Testes**: a fita exporta as marcas com kind/payload intactos; o
+  relatório agrupa 2 episódios (resolvido por delete ok vs aberto), conta
+  escaladas/re-alertas/falhas e atribui lane/perna às falhas; purge apaga
+  só as exceções antigas; frontend com o bloco/renderer/fetch do /auditoria.
+
+### 2026-09-02 — Watchdog de pendentes persistido na BD, exceções rate-limited e contexto completo no journal (527)
+
+- **Estado do watchdog PERSISTIDO** (nova tabela `pending_delete_states`,
+  PK lane+position_id): tentativas, intenção do delete (TTL/gestão com
+  reason/msg_id) e timestamps de alerta (`escalated_at`/`last_alert_utc`)
+  sobrevivem a um restart do servidor. O motor restaura o estado na
+  inicialização (o Diagnóstico continua a mostrar as pernas presas) e a
+  intenção restaurada completa o cancelamento de gestão com a RAZÃO
+  original após o reboot — nunca rebaixada a expiração TTL. Uma perna já
+  escalonada antes do restart volta a alertar no 1º retry pós-reboot (o
+  monotónico não sobrevive; `escalated_at` é o veredicto durável, com
+  fallback independente do limiar da sessão). Linhas órfãs são limpas: por
+  perna no `_check_pending_real` (deixou de estar `pending_fill`) e por
+  trade no `update()` (trade encerrada) — a tabela nunca acumula lixo.
+- **Exceções rate-limited por episódio**: enquanto a perna presa falha a
+  cada segundo, só a PRIMEIRA falha do episódio grava
+  `operational_exceptions` (contexto com `episode: true`; orders_get e
+  order_delete — TTL e cancelamento de gestão — partilham o marcador por
+  perna) — uma exceção concisa com trace em vez de centenas de linhas
+  idênticas. O marcador reseta quando o retry acaba (delete com sucesso ou
+  perna deixa de estar pendente); um episódio novo volta a gravar.
+- **`pending_delete_stuck` com contexto completo no journal**: cada marca
+  de escalada/re-alerta entra na fita (opt-in) com leg, position_id,
+  ticket, lane, tentativas, kind/razão da intenção, `escalated`/`re_alert`
+  e timestamps — com os `pending_order_result` falhados entre marcas, o
+  replay reproduz uma falha prolongada do worker de forma determinística
+  (a escalada e a cadência de 30 min ficam explícitas na fita).
+- **Diagnóstico**: `stuck_pending_legs()` expõe ainda `intent_kind` e
+  `last_alert_utc`; o bloco "⏳ Ordens pendentes em retry de delete" mostra
+  o tipo de delete (TTL vs gestão) e a hora do último alerta.
+- **Testes**: estado restaurado após restart (tentativas/escalonada/
+  intenção TTL), re-alerta no 1º retry pós-reboot, recuperação com a razão
+  original e BD sem linhas órfãs; rate-limit (2 linhas por 24 falhas;
+  episódio novo volta a gravar); journal com contexto completo + marcas de
+  re-alerta.
+
+### 2026-09-02 — Watchdog de pendentes com re-alerta, retry imediato ao worker voltar e bloco no Diagnóstico (524)
+
+- **Contagem por perna com contexto**: `_pending_delete_failures` passou a
+  guardar leg/trade/símbolo/ticket/abertura por perna (não só a contagem) —
+  serviu para o Diagnóstico sem consultas extra.
+- **Re-alerta periódico**: `pending_delete_stuck` sai no limiar (5 falhas)
+  e volta a sair a cada `PENDING_DELETE_REALERT_EVERY` (30 min) enquanto a
+  perna continuar presa (worker em baixo durante horas nunca fica mudo); o
+  relógio é o do motor (`self.clock.monotonic()`), determinístico nos testes.
+- **Auto-recover sem esperar o TTL**: a intenção do delete falhado fica
+  em `_pending_delete_intent` (kind ttl ou cancel com reason/msg_id). O
+  tick re-tenta o `order_delete` em CADA update enquanto houver intenção —
+  quando o worker volta, o cancelamento de gestão pendente é completado no
+  mesmo tick (evento `close` com a razão/message original, `_maybe_close_trade`
+  fecha a trade) e o TTL idem (reason `pending_expired`). Sem intenção nem
+  TTL vencido nada muda (o fluxo normal fica igual).
+- **Diagnóstico: bloco "⏳ Ordens pendentes em retry de delete"** —
+  `GET /api/diagnostics` expõe `stuck_pending.main/tp2` (tentativas,
+  escalonada?, ticket, idade, trade; vazio = nada preso) e a página mostra-o
+  no ciclo de 10s, a vermelho quando escalonado.
+- **Testes**: re-alerta periódico (uma por episódio e por intervalo),
+  auto-recover de cancelamento de gestão num tick sem TTL, `stuck_pending_legs()`
+  com estado/tentativas e esvaziamento após recuperação; `/api/diagnostics`
+  valida a forma do bloco.
+
+### 2026-09-02 — Delete de pendentes com retry por perna, watchdog de stuck e backfill semanal com evidência (521)
+
+- **order_delete com tratamento por perna no caminho da expiração**
+  (`_check_pending_real` TTL + `_cancel_pending_pos`): uma falha do delete
+  (worker da lane caiu) já não fecha a perna na BD — antes o `try/except:
+  pass` fechava a posição e deixava a ordem pendente viva no MT5 (órfã,
+  podia preencher depois e virar posição fantasma). Agora grava a exceção
+  (`record_exception` com leg/lane/ticket), jornala `pending_order_result`
+  (delete, accepted=False, REMOTE_ERROR), mantém a perna `pending_fill` e o
+  próximo tick repete o cancelamento; o delete aceite jornala accepted=True.
+  `_cancel_pending_pos` devolve `None` sem fechar quando o delete falha
+  (`close_trade_at_market` ignora o evento em falta).
+- **Watchdog `pending_delete_stuck`**: após `PENDING_DELETE_ESCALATE_AFTER`
+  (5) falhas CONSECUTIVAS de delete da mesma perna, o tick devolve o evento
+  para o feed/Telegram (alerta risk "⛔ Ordem pendente não cancelada no
+  MT5…") — uma vez por episódio, nunca em silêncio; o contador reseta
+  quando o delete volta a funcionar ou a perna deixa de estar pendente.
+  Os cancelamentos de gestão (`close_all`, etc.) partilham a mesma contagem.
+- **Backfill semanal automático**: o tick ganhou o guard `_check_refusals_backfill`
+  (ISO-week, config `refusals_backfill_week_last_run`) que re-corre o
+  backfill uma vez por semana com `--apply` — nenhum fecho phantom futuro
+  fica sem trace durável mesmo que o alerta da altura tenha sido perdido;
+  notifica só quando encontrou algo para gravar (sinal de alerta perdido).
+- **Evidência sem journal no backfill**: sem `execution_events`, o backfill
+  mina agora as notificações risk/system da hora (±15 min) e a auditoria de
+  ignoradas — um `10027` liga `auto_trading_off=1` e compõe o erro
+  "AutoTrading desligado…" (como o motor ao vivo), com o texto citado da
+  notificação/ignorada no trace para o auditor.
+- **Testes**: delete TTL/cancel com falha mantém a perna pendente e re-tenta;
+  watchdog escalona uma vez por episódio e reseta; backfill com journal
+  vazio mina notificações/ignoradas e liga a flag 10027.
+
+### 2026-09-02 — Retcodes reais nas recusas remotas + glossário no Diagnóstico + A/B com trace (516)
+
+- **Porque é que 01/09 mostrou `'?'`**: o journal guardou os 12
+  `order_result` com `accepted=False` mas `retcode=None` — o resultado do
+  envio remoto da altura não trazia retcode legível (código da altura não
+  recuperável; o caminho worker→proxy de hoje já o carrega — provado pelo
+  roundtrip e pelos testes novos).
+- **Hardening do envio perna-a-perna** (`_send_open_orders`/`_send_pending_orders`):
+  exceção no `order_send` (worker caiu a meio do envio) já não desenrola o
+  `open_trade` — antes deixava a trade MEIA-ABERTA na BD; agora a perna
+  fecha `order_rejected` com retcode `REMOTE_ERROR` e o texto real da
+  exceção entra no `trade.error` (nunca se perde o motivo). Retcodes
+  ilegíveis continuam `?` (não se inventam); recusas reais (10027, …)
+  chegam como números.
+- **Testes de regressão 01/09**: recusa remota 10027 fim-a-fim (worker →
+  RemoteProvider → MT5Engine) com trace gravado na BD, e worker a levantar
+  no envio sem trade meia-aberta.
+- **A/B voids com trace**: cada fecho phantom do relatório das lanes passa
+  a expor `*_error`/`*_retcodes`/`*_auto_trading_off` da lane void — o
+  porquê do phantom sai do próprio relatório (ver /api/lanes/ab).
+- **Glossário de retcodes no Diagnóstico**: o bloco ⛔ traduz cada retcode
+  (10027 AutoTrading OFF, 10014 fundos, 10018 ordem inválida, …) e marca
+  AutoTrading OFF a vermelho; desconhecidos mostram-se em cru. O cartão A/B
+  mostra main/tp2 phantom e remete para o bloco ⛔.
+
+### 2026-09-02 — Backfill do trace de recusas + bloco "recusas do broker" no Diagnóstico (514)
+
+- **Backfill das 3 trades phantom de 01/09** (`app/backfill_trade_refusals.py`,
+  padrão report/`--apply` dos outros backfills): com as colunas
+  `error`/`retcodes`/`auto_trading_off` agora existentes, as trades tp2
+  recusadas do dia (t-d1363896494e, t-dd05e88c0bd6, t-b92a129d2cdb — 4
+  pernas cada) ficaram com o trace durável gravado a partir da evidência:
+  os eventos `order_result` do journal (accepted=False em todas) + as
+  notificações risk da hora → `retcodes ['?','?','?','?']` (o retcode não
+  era legível no worker à data — nunca se inventa o número) e
+  `auto_trading_off=0`. O script volta a correr a qualquer altura (pega
+  futuras trades phantom sem trace).
+- **`GET /api/trades/refusals`** (`db.refused_trades`): últimas recusas do
+  broker — trades com `error` gravado OU assinatura phantom (fechadas sem
+  `exit_reason` a 0.0), mais recentes primeiro, com retcodes/flag
+  AutoTrading OFF; inclui legados pré-colunas (error null, visíveis na
+  mesma). Read-only.
+- **Diagnóstico: bloco "⛔ Últimas recusas do broker"** — cartão com as
+  últimas 5 recusas (lane, hora, símbolo, retcodes, erro), refrescado no
+  ciclo de 10s sem se duplicar.
+
+### 2026-09-02 — Alerta de fechos phantom, trace durável de recusas e A/B em viva com o feed (513)
+
+- **Alerta risk distinto para fechos phantom**: quando uma lane fecha a
+  trade a 0.0 SEM `exit_reason` (ordens recusadas pelo broker no envio,
+  cleanup `sent==0`) o `_try_execute` emite agora um alerta próprio
+  ("👻 Lane X: sinal Y SEM fill real…") com os retcodes — antes caía no
+  alerta genérico com `retcodes ['?']` e só o A/B (posterior) mostrava a
+  anomalia. AutoTrading OFF (10027) mantém o alerta específico existente.
+- **Trace durável das recusas**: `trades` ganhou as colunas `error`,
+  `retcodes` (JSON) e `auto_trading_off` (migração automática no arranque);
+  `_send_open_orders` persiste-as via `db.set_trade_refusal` — antes viviam
+  só em memória e a auditoria/replay não conseguia explicar o fecho.
+- **Diagnóstico: A/B a refrescar com o feed**: o cartão "⚖️ A/B lanes"
+  agora acompanha o ciclo de 10s do Diagnóstico (substituído, nunca
+  duplicado) — a amostra atualiza sozinha sem refresh manual.
+- **Flakes de calendário/ordem eliminados**: `test_observability` usava
+  dias relativos que cruzavam o fim de mês (agregação mensal separava as
+  amostras XAUUSD a 01/09) → stamps no mês anterior; o dia 6 do
+  `test_e2e_week` dependia do realizado `tp2` acumulado por outros testes
+  → `_realized_today` fixado; o lote do teste de offset diário contava
+  flips de recounts de outros testes → asserções escopadas ao id do
+  recount. Suite: **513 recolhidos · 512 passed + 1 skipped, 2 corridas
+  consecutivas verdes sem deselect**.
+
+### 2026-09-01 — Corrida paper focada nas estratégias em validação (509)
+
+- **Corrida normal reduzida**: depois de as 6 estratégias perdedoras terem
+  saído, a corrida paper passou a abrir **só o que está em validação** — as
+  5 com menu (`nova_gestao`, `nova_gestao_fallback`, `tp2_protect`,
+  `auto_escada_3`, `auto_escada_3_hibrida`) — mais a `nova`, mantida
+  **silenciosamente** como contrafactual do `counterfactual_pnl` (abre
+  papel mas não aparece nos cards da corrida nem no feed). As referências
+  de backtest `auto_3`/`auto_5`/`auto_escada_5` deixaram de abrir papel
+  normal — continuam no dropdown, no backtest/compare e no **shadow**
+  (a `auto_escada_5` mantém a evidência do gate forward pelo
+  `shadow_paper_strategies`, com marcadores `origin=shadow` isolados).
+  `paper_strategy_ids()` (em `app/strategies.py`) é a fonte única da
+  corrida; o feed conta só as visíveis (`strategy_lifecycle.menu`).
+- **Guard `protect_latency`**: o endpoint validava o id só com
+  `engine=backtest`; agora `get_strategy()` corre sempre — id removido
+  devolve 400 em vez de 200 vazio (regra de estudos em voz alta).
+- **Testes**: novo `test_removed_strategy_studies_fail_loudly` (estudos
+  com ids removidos devolvem 400/ValueError, nunca rodam com a principal);
+  helper comum dos testes de papel filtra `origin="race"` (o shadow
+  partilha a tabela `paper_trades` — sem o filtro, uma shadow trade da
+  `auto_escada_5` contaminava as asserções). Suite: **509 recolhidos**
+  (507 passed + 1 skipped + 1 deselected — o flaky e2e da semana).
+
+---
+
+### 2026-09-01 — Estratégias removidas: apagadas do registo (remoção completa) (508)
+
+- **Decisão do utilizador**: `tp2`, `tp2_gestao`, `nova_gestao_3`, `auto_2`,
+  `auto_protect_5` e `auto_escada_3_struggle` (R4) foram **apagadas do
+  registo** (`app/strategies.py`) — deixam de aparecer no `/api/strategies`,
+  no menu, no HELP, nas páginas de teste, no paper e no shadow.
+- **O que deixa de ser reproduzível (documentado)**: o backtest/compare
+  histórico destas 6 variantes (as páginas de teste e os estudos que as
+  usassem passam a falhar com ValueError; os `sweep_auto`/`sweep_atr`
+  deixaram de listar `auto_2`). O registo decisório (PF/DD e o porquê de
+  cada remoção — 19/08 e 20/08) fica no CHANGELOG e nos capítulos
+  históricos do ESTRATEGIAS.md.
+- **Guardas**: `get_strategy()` levanta ValueError para ids desconhecidos
+  (nenhum estudo corre silenciosamente com a estratégia principal); os
+  endpoints `/api/analysis`, `/month`, `/trace`, `/resolution`,
+  `/protect_latency`, `/protect_causal` devolvem 400 para ids removidos.
+  O default do `/api/analysis/trace` passou de `tp2` para `nova` (o braço
+  "Sair no TP2 (puro)" do gráfico mensal da página de teste foi removido).
+- **Frontend**: `common.js` (STRATEGY_NAMES/RACE_COLORS) sem ids mortos +
+  cores novas para `nova_gestao_fallback` e mantidas as vivas; HELP sem a
+  entrada `auto_protect_5`/glossário "Protect precoce".
+- **Docs**: AGENTS.md/TECHNICAL.md/PUBLIC.md/README.md/ESTRATEGIAS.md
+  atualizados para o menu real (7 visíveis — 5 operacionais + referências
+  auto_3/auto_escada_5) e a lista de removidas; os
+  dados paper órfãos (ex.: 13 725 balanços da `auto_protect_5`) ficam na
+  BD sem leitores (nunca se apagam dados). Mecânicas genéricas
+  (`protect_trigger`/`struggle_*`) ficam nos motores para candidatas
+  futuras. Testes atualizados (menu/registo/paper/HELP/frontend): 508
+  recolhidos.
+
+### 2026-09-01 — WhatsApp: retry no push + bridge espera a socket + bug `re` no tick (508)
+
+- **Diagnóstico do dia**: 3 trades reais fecharam hoje (08:41 +4.04 €, 10:49 +4.63 €,
+  12:40 +19.74 €) e o push WhatsApp foi tentado em todas; só a das 12:40 foi entregue
+  (`sent_count` 1 no bridge). As 08:41/10:49 falharam com **500/503** — o bridge estava
+  num **loop permanente de religação** (conflito de sessão `conflict replaced` ~1000×/h
+  desde o arranque de 23:57, janelas de conectividade de ~1-3s) e o `send()` não tinha
+  retry → mensagens perdidas em silêncio (só registadas em `operational_exceptions`).
+- **Fix server** (`app/notify/whatsapp.py`): `send()` faz **3 tentativas com backoff
+  curto (2s/4s)** — uma falha transitória 5xx/ligação deixa de perder a mensagem; a
+  exceção só é registada na BD no fim (1 linha, não 3). Novo teste
+  `test_send_retries_transient_bridge_errors`.
+- **Fix bridge** (`whatsapp/bridge.js`): `/send` **espera até 8s** pela socket voltar a
+  estar `open` (antes devolvia 503 instantâneo na janela de religação) e faz 1 retry
+  interno quando a socket morre a meio do envio (`Connection Closed`).
+- **Fix bug de tick** (`app/lanes.py`): faltava `import re` → `NameError` em
+  `_mt5_positions` (93 ocorrências registadas hoje) que rebentava o fim de **cada**
+  tick (o broadcast de snapshot nunca acontecia via WS).
+- **Reenvio manual (pedido do utilizador)**: as 3 mensagens de hoje foram reenviadas
+  ao grupo com o formato de produção (`format_trade_close`) — entregues à 1ª tentativa
+  após o restart do bridge. ⚠️ Incluindo a das 12:40 (+19.74 €): o bridge tinha
+  registado esse envio como `sent` (limitiu um falso positivo — a socket morreu a meio
+  da entrega), mas o utilizador confirmou que NÃO chegou ao grupo; reenviada e
+  confirmada (`sent_count` 3 no bridge). Lição: um ack do `sendMessage` do Baileys não
+  garante entrega quando a sessão está em loop de religação — o fix duradouro é
+  re-parear a sessão (apagar `whatsapp/session/` + QR novo).
+- **Estado**: servidor reiniciado com o código novo (main 5054644473 · 1032.30 €,
+  lane 2 worker ligado, AutoTrading ON); bridge estabilizado após o restart (0 conflitos
+  desde 20:04 UTC). Se o loop voltar, re-parear: apagar `whatsapp/session/` + QR novo.
+
+- **AutoTrading do terminal portable LIGADO a 01/09** — clique automatizado
+  no último botão da toolbar Standard ("Algo Trading") via `GetWindowRect`+
+  clique real de rato; validado por `terminal_info().trade_allowed = True`
+  através do worker (`/mt5/call`). Continua **por-sessão** (reativar após
+  reboot — como no terminal 1).
+- **`/status` do worker expõe `trade_allowed`** (via `terminal_info`) e o
+  `RemoteProvider` espelha-o (`trade_allowed` + `at_off` em
+  `status_summary`) — o **Diagnóstico mostra ON/OFF** no bloco "Lane 2 ·
+  worker MT5" e o market_loop alerta `risk` automaticamente quando o worker
+  está ligado mas o AutoTrading está OFF (cooldown 10 min, evento
+  `lane2_auto_trading_off`; `lane2_auto_trading_on` quando volta).
+- **A/B das lanes (read-only)**: `GET /api/lanes/ab` (`lane_ab_report` em
+  `app/lanes.py`) compara trades fechadas do mesmo sinal nas duas lanes
+  (P&L lado a lado, win rate, profit factor, delta total) e **só sugere
+  manutenção com ≥20 sinais comparáveis** (`min_comparable`); abaixo disso o
+  veredicto é "amostra insuficiente" (neutro). Bloco "⚖️ A/B lanes" no
+  Diagnóstico (fetch uma vez por página, refresh no botão Atualizar). Nunca
+  altera config nem envia ordens.
+- **Fechos phantom fora do A/B (02/09)**: `lane_ab_report` exclui do
+  comparável trades fechadas **sem `exit_reason`** (o cleanup de ordens
+  recusadas grava 0.0 sem razão — ex.: AutoTrading OFF) e expõe-nas em
+  `voids`/`void_count` com flags por lane (`main_void`/`tp2_void`); com
+  n=0 e voids, o veredicto explica a amostra em vez de contar 0.0 como
+  resultado. Com a amostra real de 02/09 (as 3 trades tp2 de 01/09 eram
+  phantom — o AutoTrading do terminal 2 só foi ligado nessa noite), o
+  **limiar de manutenção mantém-se em 20** — sem fills reais não há base
+  para o baixar; o Diagnóstico mostra "⚠️ N fecho(s) phantom sem fills
+  reais". Diagnóstico e teste: a amostra real explica o n=0 sem aparecer
+  como perda/ganho de nenhuma estratégia.
+- **Flaky eliminado**: `test_e2e_week_autonomous_no_intervention` backdatava
+  o sinal do dia 7 para 2026-08-01 (fixo) — quando o calendário passou os
+  30 dias da janela do relatório de rejeições, o sinal desaparecia do
+  `by_id` (KeyError). Agora backdata 2 dias atrás (relativo); a suite corre
+  **100% verde sem deselect** (511 tests).
+- Testes: `trade_allowed` no worker (ON e OFF), espelho no RemoteProvider
+  (incl. `at_off` e broker caído), 3 cenários do A/B (amostra <20 sem
+  sugestão; 20+ com tp2 à frente → sugestão; 20+ sem diferença → neutro)
+  + 2 novos: phantom excluído do comparável e só-phantoms a explicar a
+  amostra vazia.
+
+### 2026-09-01 — Ativação da lane 2 real (worker + terminal portable) (501)
+
+- Instalado o **2º terminal MetaTrader 5 portable** em `C:\MT5Portable2`
+  (clone da instalação existente; `terminal64.exe` próprio e data folder
+  separada `991DCC…` — a API chama-o com `path=…` + `portable=True`). O
+  instalador oficial atual (`download.terminal.free/cdn/web/metaquotes.ltd/…`)
+  ignora `/portable` (GUI) — a via suportada é a cópia da instalação.
+- `.env` (backup `.env.bak-20260901`): `MT5_2_TERMINAL_PATH=C:\MT5Portable2\
+  terminal64.exe`, `LANE2_WORKER_ENABLED=1`, `MT5_2_DRY_RUN=0`,
+  `LANE2_WORKER_PORT=8770`. Verificado: a API liga à clone e faz login na
+  **111495351 · 100.000 € · margin_mode 2 (hedged)** sem tocar na conta da
+  principal (5054644473 confirmada intacta).
+- **Produção**: worker no ar (8770) e servidor reiniciado com o novo `.env`
+  → `/api/status` mostra `tp2 = nova_gestao · mt5-real · 111495351` ligada
+  ao broker através do `RemoteProvider`; `main` intacta. O A/B das duas
+  estratégias corre agora com fills reais do broker nas duas contas demo.
+- ⚠️ **Ação manual pendente**: ligar o **AutoTrading (Algo Trading)** na janela
+  do 2º MetaTrader 5 (portable). É por-sessão (reativar após reboot, como no
+  terminal 1); com o botão OFF as ordens da lane 2 são recusadas com retcode
+  10027 + alerta (fail-closed, nada muda nas contas).
+
+### 2026-09-01 — Worker isolado da lane 2 (execução real da 2ª conta MT5) (500)
+
+- **`app/lane2_worker.py`** — processo separado dono da ligação MetaTrader5
+  à 2ª conta (terminal **portable**, `MT5_2_TERMINAL_PATH`), shim de I/O por
+  HTTP local (`/ping /status /initialize /account /positions /quote /meta
+  /copy_rates /constants /symbol_select /mt5/call` + allowlist `/mt5/call`
+  para o módulo MT5 bruto), token (`LANE2_WORKER_TOKEN`), logs rotativos
+  (`configure_process_stdio("lane2_worker")`). **Nunca toca na SQLite nem
+  decide nada** — a invariante "todo o estado vive no event loop" mantém-se.
+- **`app/execution/remote2.py`** — `RemoteProvider` com a mesma superfície
+  duck-typed do `MT5Provider` (incluindo `provider._mt5`, o proxy do módulo
+  MT5 com constantes + chamadas serializadas em JSON) ligado pelo `MT5Engine`
+  da lane 2 sem alterar o engine. `main.py`: com `LANE2_WORKER_ENABLED=1` a
+  lane 2 usa o provider remoto (`dry_run=False`); sem ele mantém o dry-run
+  antigo. Só ativo com o env — a produção fica dry-run até o utilizador
+  instalar o 2º terminal portable.
+- **Supervisão**: `start.ps1`/`boot.ps1` arrancam o worker idempotentes por
+  porta (guardiam `MT5_2_TERMINAL_PATH`); `healthcheck.py` ganhou o alvo
+  lane-2 (`/ping`, 2 falhas + cooldown, chaves `worker_*`) e reinicia-o;
+  o market_loop pinga-o ~1×/s e notifica no feed/Telegram as transições
+  online/offline (`lane2_worker_offline`/`online`); o **Diagnóstico** tem o
+  bloco "Lane 2 · worker MT5" (reachable/connected/login/last_sync/último
+  erro/cauda do log + estado desligado em dry-run).
+- ⚠️ **Incidente corrigido com guard rígido**: durante a validação, o worker
+  sem `MT5_2_TERMINAL_PATH` fez `initialize(login=111495351)` no terminal por
+  omissão e **trocou a conta do terminal da principal** (produção ficou a
+  apontar para a 111495351; relogada para 5054644473/1003.89 €). O worker
+  agora **recusa arrancar (exit 2)** sem um `MT5_2_TERMINAL_PATH` existente
+  — teste de regressão `test_worker_recusa_arrancar_sem_terminal_portable`.
+- **Testes**: `tests/test_lane2_worker.py` (9) — worker HTTP em memória com
+  provider fake (auth, initialize/status/account, constants, allowlist,
+  JSON-safe), roundtrip do `RemoteProvider` + proxy `_mt5` (constantes,
+  `order_send`/`positions_get` com retcodes por atributo), fail-closed com
+  worker morto (`open_trade` real recusa) e o guard do path. Suite **500**
+  (492 → +8).
+
+### 2026-09-01 — 2ª conta MT5 (111495351) passa a nova_gestao (492)
+
+- A lane `tp2` (conta demo **111495351**, env `MT5_2_*`) passou de
+  `tp2_protect` para **`nova_gestao`** (TP1..TP5 + gestão) por decisão do
+  utilizador — config persistida (`lane2_strategy`/`lane2_label` via
+  `POST /api/config`, validada contra o registo; `auto_escada_3/5` continuam
+  bloqueadas na lane MT5 pelo gate da Fase 3). A principal fica em
+  `tp2_protect` → as duas lanes passam a dar A/B do mesmo sinal.
+- Estado da lane 2: **dry-run** (`mt5-dry`) — a API MetaTrader5 mantém uma
+  ligação global por processo e a execução real da segunda conta precisa de
+  um **worker isolado** (segundo processo Python com terminal portable via
+  `MT5_2_TERMINAL_PATH`); sem esse worker, a lane 2 fica falha-fechada
+  (`execution_block_reason` no arranque).
+
+### 2026-09-01 — Faixa de preços do topo removida (perf) (492)
+
+- A **faixa de preços** (GOLD..NZDUSD na linha 2 da topbar) foi removida
+  por completo a pedido do utilizador: sem DOM row, sem `renderPriceStrip()`/
+  `TICKER_LABEL`/`_tickPrev` no `common.js` e sem o CSS `.price-chip`/
+  `.pchg`/`.pbar`/`.tb-row2` (aguardava rebuild em cada movimento de preço).
+  O topbar fica estático (só changem relógio/badges/flashes reais) e a
+  altura do header encolhe ~20px — `--hdr-h` já é medido ao vivo.
+- Os flags `market.prices`/`changes` continuam no snapshot (o badge de
+  market "preços reais"/"simulação" usa `real_data`); nenhum endpoint ou
+  motor foi tocado — é só visualização. Contract test atualizado:
+  `test_render_guards_previnem_rebuilds_sem_mudanca` garante que a faixa
+  NÃO volta e que os restantes guards (flash de saldo, feed, tab ativa)
+  permanecem.
+
+### 2026-09-01 — Tema escuro completo (toggle persistido) + ajuste da topbar (492)
+
+- **Tema escuro** como camada `[data-theme=dark]` sobre as variáveis do
+  `style.css` (superfícies/tons escuros, semântica adaptada ao dark,
+  `color-scheme: dark` para controlos nativos). Nenhum hex hardcoded fora
+  das variáveis — a striping das tabelas (`--stripe`) passou a variável
+  para não ficar branca no dark.
+- **Toggle ☾/☀ na barra superior** (comum a todas as páginas, em
+  `common.js`): alterna o atributo no `<html>`, persiste em
+  `localStorage.nx_theme` e sincroniza o ícone/aria-pressed. O tema é
+  aplicado **antes do paint** por um snippet no `<head>` de cada página
+  (sem flash), com default de `prefers-color-scheme` quando o utilizador
+  ainda não escolheu.
+- **Gráficos canvas adaptativos**: `chartPalette()` em `common.js` fornece
+  grelha/eixo/fundo por tema; todas as funções de desenho (equity, corrida
+  paper, daily, recounts, trace, walk-forward, uptime, fills-div) usam-na —
+  as cores de série (verde/vermelho/azul vividos) são iguais nos dois.
+- **Topbar mais robusta**: o bloco de badges encolhe com `overflow:hidden`
+  (nunca parte o layout com badges longas de lanes) e `online-users` cai no
+  breakpoint 1440px — verificado sem overflow horizontal a 1440px.
+- **Login** também respeita o tema (snippet + overrides inline). QR do
+  WhatsApp mantém fundo branco (legibilidade de scanning).
+- **Segue o SO ao vivo**: sem escolha explícita (sem `nx_theme` no storage),
+  o tema acompanha o `prefers-color-scheme` do sistema em tempo real
+  (`matchMedia` `change` listener). Uma escolha no botão fica persistida e
+  o SO deixa de interferir; o arranque do chrome NÃO grava o tema (gravar
+  mataria o follow).
+- Contrato novo em `tests/test_frontend.py` (toggle + camada dark + paleta
+  nos charts + snippet no head de todas as páginas + follow do SO com guard
+  de escolha explícita). Suite: **492** (falha e2e pré-existente inalterada).
+
+### 2026-09-01 — Health check no Diagnóstico, teste do recovery e guards de render (491)
+
+- **NexGen Health no /diagnostico**: `/api/diagnostics` passa a expor
+  `healthcheck` (estado do ficheiro `healthcheck.state`, cauda do log e a
+  Tarefa Agendada via `schtasks`, cacheada 60s porque a página faz polling a
+  cada 10s). Novo bloco na tab Diagnóstico: última corrida/resultado da
+  tarefa, servidor online/offline segundo o check, falhas consecutivas,
+  último restart automático e cauda do log — lado a lado do MT5/listener.
+  Tolerante a ausência (servidor recém-arrancado, schtasks a falhar).
+- **Teste do recovery flow** (`tests/test_healthcheck.py`, 6 testes): corre
+  a lógica real do `healthcheck.py` contra uma porta isolada SEM servidor e
+  controla só o restart com monkeypatch — 1 falha não age, 2 falhas
+  consecutivas alertam+reiniciam, cooldown entre restarts, recuperação limpa
+  o estado e notifica, `--no-restart` nunca reinicia, processo encravado na
+  porta é terminado antes de subir o novo.
+- **Guards de render auditados e cobertos**: a faixa de preços era
+  reconstruída (`innerHTML=`) em CADA snapshot mesmo com preços parados —
+  agora tem guard de assinatura (`contentChanged("pricestrip", …)`) como as
+  tabelas; o flash do saldo já era condicional e ficou verificado (só
+  quando o saldo muda, nunca na 1ª leitura). Contrato novo em
+  `test_frontend.py::test_render_guards_previnem_rebuilds_sem_mudanca`.
+- Suite: 491 passes (6 novos + 1 contrato novo; a falha e2e pré-existente
+  mantém-se).
+
+---
+
+### 2026-09-01 — QA desktop 1400px+ e health check do servidor (NexGen Health)
+
+- **QA visual a largura de desktop** (1440px) em todas as páginas com o
+  agent-browser: corrigido overflow horizontal da barra superior (a faixa de
+  preços/badges estourava ~30px — o sub-título da marca cai agora ≤1440px);
+  paleta de acentos escurecida para contraste AA (badges, tags, preços);
+  landmarks HTML (`<main>`/`<footer>`/h1) em todas as páginas; `aria-label`
+  no filtro de grupo e no strip de preços; cabeçalho de tabela vazio com
+  texto sr-only. axe-core: 0 violações (4 “incomplete” são ícones decorativos
+  com gradiente, não texto).
+- **`healthcheck.py` + Tarefa Agendada `NexGen Health`** (a cada 2 min):
+  verifica `GET /` na porta 8000 (o `/api/status` é pesado e pode demorar
+  >5s) com timeout de 15s e **2 falhas consecutivas** antes de agir — um
+  servidor saudável mas lento nunca é reiniciado por engano. Quando offline:
+  alerta no log rotativo (`healthcheck.log`) + Telegram (se configurado) e
+  **reinicia o servidor** com o comando documentado (`server_runner`,
+  `MT5_DRY_RUN=0`), terminando antes um processo encravado que segure a
+  porta; cooldown de 120s entre restarts (`healthcheck.state`). Modos:
+  `--once` (tarefa), `--watch` (loop), `--no-restart` (só alerta).
+
+---
+
+### 2026-09-01 — Redesign profissional claro da dashboard + otimização de render (frente)
+
+- **Tema claro profissional** (estilo trading app): o tema cyberpunk neon foi
+  removido por inteiro (cores neon, glows, scanlines, fontes Orbitron/Chakra
+  Petch, favicon neon) e substituído por um design system claro: fundo
+  `#f6f8fb`, painéis brancos, bordas subtis, verde/vermelho TradingView
+  (`#089981`/`#f23645`), azul de acento `#2962ff`, números tabulares. Os
+  gráficos canvas (equity, corrida, uptime, recounts) foram re-coloridos
+  para o fundo claro.
+- **Barra de navegação no TOPO**: as duas colunas laterais fixas (menu
+  esquerdo + terminal STATE direito) foram substituídas por uma barra
+  superior única (marca + navegação PRINCIPAL/ESTRATÉGIAS/DIAGNÓSTICO/
+  AUDITORIA/HELP + badges + relógio + kill switch + sair) com uma faixa de
+  preços por baixo — o conteúdo ganha largura total (o `--term-w`/`--term-r`
+  e os overlays móveis ☰/▦ das colunas foram removidos; o ☰ abre a
+  navegação em dropdown ≤960px). A ordem do conteúdo da principal foi
+  reorganizada: status → KPIs → tabs → conteúdo, com os painéis analíticos
+  (corrida/promoção/Fase 2/3/narrativa/shadow) depois do conteúdo.
+- **Menos animações**: o boot sequence da dashboard e do login (overlay
+  com linhas escritas + sons Web Audio) foi removido — a dashboard aparece
+  instantaneamente; sons de notificação removidos; glitch/flicker/pulse/
+  scanlines/backdrop-filter/hover-translate/glows eliminados. Ficam só
+  micro-movimentos funcionais (flash de cor do balanço, sublinhado da tab,
+  fade curto dos toasts) e o bloco `prefers-reduced-motion` como rede.
+- **Otimização de render (o ganho de performance real)**: o snapshot chega
+  ~1×/s e a página reconstruía ~20 secções de DOM por snapshot. Agora: só a
+  tab ativa renderiza (`renderSignals`/`renderPositions`/`renderTrades`),
+  cada renderer só reconstrói quando o conteúdo mudou (cache de assinatura
+  `contentChanged` em common.js), o feed reconstruía em cada tick e agora
+  só em mudança (e o `prependFeed` do WS continua incremental), e os
+  painéis (promoção/Fase 2/3/shadow/auditoria) têm guards próprios. As tabs
+  ocultas mantêm o DOM e são re-renderizadas ao voltar. No servidor, o
+  snapshot passou a enviar 30 notificações em vez de 50.
+- **Polimento profissional**: emojis decorativos removidos do chrome
+  (tabs, labels dos KPIs, títulos, botões, badges); mantidos apenas no
+  conteúdo do feed e nos estados semânticos. Login redesenhado (cartão
+  limpo, sem glitch/boot/scanlines). Favicons atualizados para o N azul
+  sobre claro.
+- Suite: 484 passed (frente — nenhuma mudança de comportamento no backend
+  além do cap de notificações do snapshot).
+
+---
+
+### 2026-08-28 — Contador 'resolvidos' persistido no /auditoria, lembrete do cap e lote semanal do histórico completo (470)
+
+- **Bloco persistido de 'resolvidos' no /auditoria**: o re-check em lote dos
+  recounts grava agora cada corrida em `recount_batch_runs` (nova tabela,
+  read-only) com o contador 'resolvidos' + a lista de flips (data, recount,
+  de → para, offset). A página mostra os stats do último lote (janela
+  diária/semanal, re-corridos, alterados, resolvidos, erros) e o histórico
+  de flips por corrida para ver a evolução das correções do offset GC=F↔spot
+  ao longo do tempo. Nova rota `GET /api/recounts/batches`.
+- **Lembrete no feed para decidir o cap**: enquanto o `entry_guard_auto_cap`
+  estiver aplicado há mais de `cap_reminder_days` (default 7) e ainda não
+  houver fills reais pós-cap, o tick (`_check_cap_reminder`) emite uma vez
+  por dia uma notificação a pedir para correr o `study_cap_effect --days
+  30` e decidir se o cap fica/aperta/reverte (guard por dia — o microssegundo
+  era o bug do dedup).
+- **Lote semanal sobre o histórico COMPLETO**: além do diário (janela
+  recente), o `_check_recount_batch` corre uma vez por semana (`days=0`,
+  guard por ISO-week) para os veredictos antigos ficarem todos corrigidos
+  com o offset medido. O `/api/recounts/recheck-all` aceita `days=0`
+  (histórico completo) nas corridas semanais.
+- **Bónus (teste)**: o `test_confirm_never_bypasses_global_risk_switches`
+  gravava o fecho da perda diária com a data UTC — o relógio local (+1h)
+  está um dia à frente do UTC, logo `realized_today` (que usa `date.today()`
+  LOCAL) não contava a trade e o confirm executava em vez de bloquear. Fix:
+  usar o dia local no `closed_at` da trade. Suite: 470 passed.
+
+---
+
+### 2026-08-27 — Offset por recount no /auditoria, cap_applied_at + decisão do estudo, e lote diário com flips resolvidos (467)
+
+- **Offset aplicado visível por recount no /auditoria**: a coluna do
+  candle-check mostra agora um badge "offset N pips" (o `futures_shift`
+  diário que o check usou — 0 sem amostras) e o tooltip inclui o valor —
+  vê-se ao vivo qual correção produziu cada veredicto.
+- **`cap_applied_at` gravado**: mudar o `entry_guard_auto_cap` via
+  /api/config regista o momento EXATO (config, persiste na BD); o
+  `study_cap_effect` usa-o automaticamente como `--since` (antes assumia
+  hoje 00:00). O estudo ganhou a função pura `decide_after()`: sem fills
+  pós-cap → "sem dados"; cap que corta perdedores → MANTER (poupa); cap
+  que corta ganhadores → REVERTER/afrouxar (custa) — a decisão final só
+  com dados reais depois do cap.
+- **Lote diário com flips RESOLVIDOS**: `recheck_all_recounts` conta agora
+  `resolved` (veredicto implausível/feed_divergence → plausível, que o
+  `changed` não via — o `plausible` já era True na divergência de feed) e
+  o `_check_recount_batch` notifica no feed quando `resolved > 0`: "N
+  resolvido(s) (eram implausíveis/feed e agora plausíveis — o offset diário
+  do GC=F mostrou que eram feed)".
+- **Testes**: `test_recount_candle_check_daily_futures_offset` estendido
+  com o lote (grava feed_divergence → fill → lote → `resolved ≥ 1` e o
+  veredicto persistido passa a plausible com offset 50); novos
+  `test_cap_applied_at_recorded` (grava/re-grava/persiste) e a decisão no
+  `test_cap_effect_passes_guard` (decide_after: sem dados / MANTER / REVERTER).
+  Suite: 467 passed.
+
+---
+
+### 2026-08-27 — Offset diário GC=F↔spot no candle-check dos recounts, estudo do efeito do cap e mini-gráfico da divergência (467)
+
+- **Candle-check do GC=F com OFFSET DIÁRIO** (`state._day_futures_offset`):
+  em vez de um offset fixo, o check do GC=F passa a usar a média GC=F −
+  spot MEDIDA nos fills reais do dia (`market_price_at_open` do guard vs
+  close do candle à hora do sinal; cache 5 min por dia+símbolo; 0 sem
+  amostras). O prémio do futuro varia dia a dia (53–60 pips na BD real) e
+  um offset fixo fabricava implausíveis falsos (baseline 66% no GC=F). O
+  check expõe `futures_shift` por recount. Teste: um  relato plausível no spot (reversão 4351 vs low 4340) fica implausível no GC=F sem correção
+  (low 4390) e volta a plausível com o offset +50 do dia. Sem fills do próprio
+  dia, o offset cai na média dos últimos 30 dias do símbolo (medida, nunca
+  fixa); sem nenhuma amostra, 0. Ao vivo: o recount de 08-19 passou de
+  `feed_divergence` para `plausible` (shift 55.95) no re-check em lote — o
+  GC=F passou a concordar com o spot.
+- **`app/study_cap_effect.py` (read-only)**: compara fills reais antes/depois
+  do momento do cap (`--since`) e aplica a regra real do guard como
+  contrafactual (passa se ≤ tolerância ou ≤ largura × cap_widths). Veredicto
+  na BD real: o cap 0.5× teria cortado 1 fill (937c65, 3.64 pips, **+8.80 €**)
+  — o teto de segurança custa dinheiro no histórico (corta um ganhador);
+  os outros 9/10 continuam a entrar; 0 rejeições por cap até agora.
+  Re-correr `--since` depois de alguns dias para a comparação antes/depois
+  real. Relatório em `reports/cap_effect_20260827.json`.
+- **Mini-gráfico 🛰️ no /auditoria**: canvas `fillsDivChart` com as falsas
+  perseguições (barras) vs offset médio GC=F−spot (linha) por dia — a
+  evolução da divergência do feed sem abrir tabelas.
+- **Testes**: `test_recount_candle_check_daily_futures_offset` (offset 0 →
+  feed_divergence; com fill do dia → +50 → plausível, sem feed_divergence)
+  e `test_cap_effect_passes_guard` (regra real do guard). Suite: 467 passed.
+
+---
+
+### 2026-08-27 — Divergência GC=F↔spot quantificada no /auditoria, cap aplicado ao vivo e notificação de rejeição por cap (464)
+
+- **Painel 🛰️ "Divergência GC=F↔spot por dia" no /auditoria** (dentro do
+  bloco 🏃): para cada fill com ambas as fontes, `feed_divergence` =
+  preço GC=F (candle Yahoo) − preço spot (guard MT5) à hora do sinal;
+  agrega por dia (offset médio/máx) e conta as **falsas perseguições**
+  (na zona no spot — autoritativo — mas fora no GC=F) vs as **reais**
+  (fora nas duas). Na BD real: offset médio **+55.95 pips** (o GC=F do
+  ouro negocia ~56 pips acima do spot), **5/10 fills eram falsas
+  perseguições** — os "8 fora até 65 pips" do relatório eram o feed de
+  futuros, não entradas arriscadas. As tabelas de fills (dash, teste e
+  /auditoria) mostram agora o preço **spot** com o GC=F + offset como
+  contexto por linha.
+- **`entry_guard_auto_cap` aplicado ao vivo**: 0.0 → **0.5** (2.0 pips ≈
+  0.5× largura da zona — recomendação do `study_persecution_cap`). Com a
+  largura mediana 4.0, o teto de perseguição desce de 20 pips (5× largura)
+  para ~2.0 pips: os fills recentes (0.87–1.27 pips) continuam a entrar; a
+  cauda (3.64 pips, P&L +8.80) passa a ser rejeitada — documentado como
+  teto de segurança, não correção (a leitura de 65 pips era feed).
+- **Notificação de rejeição por cap autónomo**: o texto passou a mostrar a
+  distância real e o valor do cap — "⛔ Sinal XAUUSD rejeitado pelo cap
+  autónomo: preço 36.00 pips fora da zona (cap 20.00 pips · 0.50× largura)
+  — perseguição além do limite, não executada."
+- **Testes**: extensões em `test_autonomous_zone_deviation_rejects_beyond_cap`
+  (texto da notificação com distância+cap) e
+  `test_rejection_report_zone_and_orphans` (feed_divergence, offset, falsas
+  vs reais perseguições, `market_price` por fill). Suite: 464 passed.
+
+---
+
+### 2026-08-27 — Perseguições no /auditoria, cap honesto e notificação de fill fora da zona (464)
+
+- **`fills_zone` agora mede com a fonte AUTORITATIVA (spot)**: a distância de
+  cada fill real passa a vir do guard (`trade.entry_distance` — spot MT5 no
+  momento da execução), com fallback para candles Yahoo marcado por fill
+  (`distance_source` guard/candles). Na BD real os 10 fills dos últimos 30
+  dias tinham 0–3.64 pips de desvio; os "8 fora até 65 pips" que o relatório
+  mostrava com candles eram DIVERGÊNCIA GC=F↔spot (documentada no AGENTS.md),
+  não perseguições reais.
+- **`fills_zone.by_day`** — histórico por dia (UTC) de colocação: total /
+  na zona / perseguições / distância máx, para ver QUANDO as entradas longe
+  do mercado acontecem.
+- **Bloco 🏃 "Entradas longe da zona · perseguições" no /auditoria** —
+  stats + tabela por dia + detalhe por trade (fonte spot/candles visível),
+  carregado no `loadAudit()` (usa o mesmo endpoint do relatório de rejeições).
+- **`app/study_persecution_cap.py` (read-only)** — usa a distribuição REAL
+  das distâncias dos fills (guard spot) para recomendar um
+  `entry_guard_auto_cap` honesto: quantis, tabela de caps candidatos com o
+  P&L do que cada cap cortaria (cortar ganhadoras é um teto de segurança,
+  não uma correção), recomendação = menor cap que mantém ≥ 90% dos fills,
+  convertido também em × largura da zona. Veredicto na BD real: sem
+  perseguições reais (máx 3.64 pips) — cap 2.0 pips ≈ 0.5× largura como
+  teto, manter o default é igualmente defensável; relatório em
+  `reports/persecution_cap_20260827.json`.
+- **Notificação de perseguição executada**: quando uma ordem pendente na
+  zona PREENCHE com o preço fora da zona além da tolerância automática, o
+  tick emite "🏃 Perseguição executada" com a distância real em pips
+  (guard spot) — uma notificação por trade (agrega as pernas do mesmo
+  tick), para o operador ver as entradas arriscadas em tempo real.
+- **Testes**: `test_pending_fill_persecution_notifies_feed` (fill fora da
+  zona → notificação com distância), `test_persecution_cap_recommendation`
+  (função pura `recommend()`: sem perseguições → manter default; com cauda
+  → corta mantendo ≥ 90%), e `by_day`/`distance_source` no teste de
+  zona/órfãs. Suite: 464 passed.
+
+---
+
+### 2026-08-26 — Notificação agregada de órfãs, zona-vs-preço nos fills reais e filtros no "porquê sem trade" (462)
+
+- **Notificação no feed/Telegram quando o relatório deteta pendentes órfãs**:
+  o tick ganhou `_check_orphan_report` — a cada ~1h (guard
+  `orphan_report_last_check`, cada perna só notifica uma vez) agrega por
+  categoria as pendentes fechadas desde a última corrida (órfã vs cancelada
+  vs expirada) e emite UMA notificação "🧨 'Porquê sem trade'" — já não é
+  preciso abrir o relatório para saber que ordens da zona não entraram.
+  O guard avança só depois da consulta correr bem (falha = re-tenta, nunca
+  perde a notificação).
+- **Zona-vs-preço no histórico de trades reais (fills)**: nova secção
+  `fills_zone` no relatório — para cada trade real (mt5-real/mt5-dry) aberta
+  na janela, compara a zona do sinal com o preço na hora e agrega quantos
+  fills entraram DENTRO da zona vs quantos foram persecuções fora dela
+  (contagem, % na zona, distância máxima + tabela por trade com P&L). As
+  pendentes que nunca preencheram (pending_*) ficam de fora dos fills — são
+  as órfãs do bloco 🧨. Novo helper `db.trades_opened_since`.
+- **Filtros no bloco "porquê sem trade"**: seletor de símbolo + intervalo
+  de distância à zona (mín/máx em pips) — isola rapidamente os padrões de
+  rejeição que mais custam trades; aplicado também às órfãs (por símbolo) e
+  com contador "mostrando N de M". Presente na dashboard e nas páginas de
+  teste.
+- Corrigido um bug de sintaxe JS pré-existente (chaveta extra no fim de
+  `renderRejectionOrphans`/`renderTesteRejectionOrphans`) que partia o
+  script inteiro das páginas — os ficheiros estáticos nunca tinham sido
+  validados com `node --check`.
+- Testes novos: `test_orphan_report_notifies_aggregated` (agregação + guard)
+  e asserções de `fills_zone` no teste de zona/órfãs. Suite: 462 passed.
+
+
+- **Zona do sinal vs preço real quando chegou**: cada sinal rejeitado no
+  relatório expõe agora `zone_vs_price` — o preço no candle que cobre a
+  hora da mensagem, a zona da entrada, se o preço estava na zona e quantos
+  pips faltavam (`distance`). A dashboard e as páginas de teste mostram uma
+  coluna "Zona vs preço real" (na zona / fora com distância), para perceber
+  de imediato quão longe a entrada ficou do mercado na hora.
+- **Pendentes órfãs/expiradas no relatório**: além dos sinais rejeitados, o
+  "porquê sem trade" junta as ordens pendentes da zona que foram fechadas
+  com `pending_expired`/`pending_orphan`/`pending_cancelled` (DB
+  `closed_pending_positions`, junta aos trades para a zona). Para cada perna
+  órfã o relatório explica **porque o preço não voltou ao nível da entrada**:
+  o range de preços durante a vida da ordem, se tocou a entrada e quanto
+  faltou — sub-bloco 🧨 no bloco do relatório.
+- Teste novo `test_rejection_report_zone_and_orphans` e asserções de
+  `zone_vs_price` no teste de categorias. Read-only: o relatório nunca abre
+  trades nem escreve na BD.
+
+- **Bloco "porquê sem trade" nas páginas de teste**: `teste.html` mostra
+  agora o relatório de rejeições com o replay a usar os parâmetros da
+  estratégia selecionada (`GET /api/analysis/rejections?strategy_id=<id>` —
+  max_legs/gestão mudam o que o replay simula).
+- **Notificação de pendentes órfãs no feed**: quando uma ordem pendente da
+  zona expira (TTL), é cancelada pelo broker ou é órfã (ticket inexistente),
+  o tick emite notificação no feed com texto que distingue os três casos —
+  antes ficava só na BD e no Diagnóstico.
+- **Conversa do grupo no relatório**: as mensagens ignoradas (tab 🚫
+  Ignoradas) entram no mesmo relatório de rejeições como categoria
+  `ignored` — o "porquê sem trade" distingue "rejeitei" de "nem tentou"
+  (conversa pura nunca entra na pipeline).
+
+### 2026-08-26 — "Porquê sem trade" (Fase 2), calibração data-driven das guardas (Fase 3) e reconciliação de pendentes órfãs + E2E de 7 dias (Fase 4) (458)
+
+- **Fase 2 — bloco "porquê sem trade"**: `GET /api/analysis/rejections`
+  conta os sinais rejeitados/falhados dos últimos N dias por categoria
+  (`zone`, `min_lot`, `global_risk`, `pending_expired`, `broker`, `parse`,
+  `llm`, `execution_failed`, `outro`) e, para cada sinal parseável, corre um
+  **replay hipotético** com candles reais + gestão correlacionada (mesmo
+  pipeline do `run_analysis`) — o que TERIA acontecido. Read-only: nunca
+  abre trades nem escreve na BD. A dashboard (tab Relatório) mostra os
+  contadores e o replay por sinal. `rejection_kind` passou a classificar
+  rejeições de risco por lane (ex.: "nenhuma lane abriu a trade: ... perda
+  diária ...") como `global_risk` em vez de `execution_failed`.
+- **Fase 3 — sweep de calibração (`app/study_guard_calibration.py`)**: grelha
+  read-only (cap 0–3× largura × tolerância 0.25–1.0 × risco 2–5%) sobre os
+  sinais reais dos últimos 30 dias com candles spot MT5 (fallback GC=F),
+  mesmo pipeline do backtest (kill diário incluído). Veredicto honesto:
+  período perdedor (PF<1 em todas as células) — **MANTER os defaults**, sem
+  calibração; relatório JSON em `reports/`.
+- **Fase 4 — reconciliação de pendentes órfãs**: `reconcile_live_state`
+  compara as pernas `pending_fill` da BD com `orders_get` do broker — ordem
+  com ticket que já não existe no broker = óRFÃ (expirada/cancelada
+  externamente ou restart antes do envio), sem ticket = órfã imediata; o
+  diagnóstico expõe `pending.ok`/`pending.orphans` (read-only, o TTL fecha
+  as órfãs no tick).
+- **Fase 4 — E2E de 7 dias sem intervenção**: `test_e2e_week_autonomous_no_intervention`
+  percorre uma semana de operação autónoma (mercado em zona, pendente que
+  preenche, rejeição além do cap, auto-fit de lote mínimo, TTL de pendente,
+  perda diária, pendente órfão expirado) e garante que NENHUM sinal fica
+  `pending`/`awaiting_edit` no fim — cada rejeição explicada no relatório
+  com contador + replay. Bug real corrigido no caminho: `_try_execute` não
+  gravava `signal.error` no objeto em memória no ramo `execution_failed`
+  (a BD tinha a razão, a resposta não).
+
+### 2026-08-26 — Blindagem do Item 12: LLM nunca executa por GO/revive, confirm respeita os switches globais, métrica de edições pós-execução (442)
+
+- **Buraco do GO fechado**: o handler `go` do grupo executava qualquer
+  sinal em `awaiting_edit` sem erro — e um sinal `llm_parsed` não tem erro.
+  O GO passa a ignorar sinais parseados pela IA, e `_try_execute` ganhou um
+  **choke-point**: qualquer caminho (GO, revive, finalização, confirm) que
+  lá chegue com `llm_parsed=True` regista + alerta e nunca abre trade.
+- **Revive LLM**: um sinal falhado que o grupo completa só com parse da IA
+  já não reabre a janela — fica `failed`/auditoria com o alerta (registo
+  apenas, nunca executa).
+- **Confirm respeita os switches globais (regressão)**: a rota
+  `/api/signals/{id}/confirm` só contorna as guards de zona/lote; o kill
+  switch, a perda diária e o máximo de posições voltam a correr por lane em
+  `_try_execute` (verificado + 3 testes novos: kill switch, perda diária,
+  max_positions).
+- **Métrica contínua de edições pós-execução**: as edições a sinais que
+  executaram sem janela passam a gravar `edited_at`; `db.post_execution_edit_metric`
+  expõe `post_execution_edited/total/rate/pct` em `/api/edits` e no snapshot
+  (`edit_metric`); o tick verifica a cada ~30 min e, com amostra ≥20 e taxa
+  >5%, dispara alerta `risk` (feed + Telegram, cooldown 24h) — a regra
+  "completo → executa já" do Item 12 tinha sido decidida com taxa real de
+  0.0% e deve ser revista se o comportamento do grupo mudar. A página
+  Diagnóstico mostra o valor face ao limiar de 5%.
+- Suite: **442 testes** verdes.
+
+### 2026-08-26 — Item 12: modo manual removido; janela de edição validada com dados reais (438)
+
+- **Modo `manual` removido**: `config.mode` deixou de existir — o pipeline
+  (`app/state.py`), o registo de configuração (`app/config.py`), o modelo
+  (`app/models.py`) e o risk engine passam a ter **apenas o caminho auto**.
+  O snapshot continua a expor `mode: "auto"` para a dashboard não quebrar.
+- **Botões Aprovar/Rejeitar e `POST /api/signals/{id}/approve` removidos** da
+  UI e do backend; os testes de rota confirmam que o endpoint devolve
+  `404/405`. Ficam a rota `confirm` (só para sinais bloqueados pelas guards
+  de zona de entrada / lote mínimo) e o `reject` correspondente — nunca é
+  uma aprovação geral de sinais.
+- **Fallback LLM sem destino manual (spec, opção b)**: um sinal
+  `llm_parsed=True` nunca abre trade automaticamente e nunca fica pendente
+  — é registado com status `failed` ("parseado por IA — registo apenas") e
+  emite notificação `system` para auditoria. Aplicado em `_ingest_immediate`
+  e em `finalize_awaiting_signals`.
+- **Janela de edição — decisão com dados reais**: a spec exigia consultar a
+  frequência de edições a sinais completos antes de mudar a regra. Medição
+  de 26/08 sobre a BD real (342 sinais live): dos 305 que chegaram completos
+  no primeiro parse, **0 foram editados depois (0.0%)** — abaixo do limiar
+  de 5%. Regra mantida: completo → executa já; janela de 20s só para parses
+  incompletos (documentado em TECHNICAL.md §4.1, ESTRATEGIAS.md, PUBLIC.md
+  e AGENTS.md).
+- **`go` do grupo**: finaliza já a janela e executa no único caminho auto
+  (sem ramo "pendente manual"); o fluxo pós-janela passou a ser só risk
+  checks + execução.
+- **Frontend**: badges estáticos das páginas (teste/diagnóstico/help/
+  auditoria) e o header (`hdr-badges`) deixaram de referir modo manual;
+  o terminal lateral não mostra mais o seletor auto/manual.
+- **Testes**: cobertura de modo manual removida de `test_api.py`/`test_timestamps.py`
+  (sinais completos executam já, sem `/approve`); novos testes do caminho
+  LLM (nunca executa, regista + alerta) e de rejeição de `mode: manual` no
+  config. Suite: **438 testes** verdes.
+
+### 2026-08-20 — R2 recounts por trade, R3 MFE win rate, R4 regra struggle
+
+- **R2 — recount por trade como fill-audit externo**: o classificador
+  reconhece `Signal #N: Sell at X … +N pips` (`kind=recount`), o parser novo
+  (`app/messages/recounts.py`) extrai direção/entrada/excursão/reversão/pips,
+  e o estado guarda em `trade_recounts` (dedup por message_id).
+  `_recount_fill_audit` compara com as trades REAIS fechadas do mesmo dia
+  (direção + entrada mais próxima, tolerância 40 pips): entrada ≥20 pips ou
+  pips ≥30 de diferença disparam alerta `risk` no feed/Telegram.
+  `GET /api/recounts` lista (read-only).
+- **R3 — MFE win rate (convenção do grupo)**: o `simulate_signal` mede
+  `mfe_pips` (excursão máxima favorável, observação pura) e o `aggregate()`
+  expõe `mfe_win_rate`/`mfe_threshold_pips` (wins = MFE ≥ 25 pips por
+  defeito, mesmo fechando em loss/BE). A divergência grupo↔bot compara agora
+  com o `mfe_win_rate` quando disponível — menos falsos positivos para
+  trades que andaram +40 pips e voltaram ao SL (win para o grupo, não para
+  o bot).
+- **R4 — regra "struggle" (backtest-only)**: novos parâmetros
+  `struggle_ae_pips`/`struggle_fraction` no registo e no `simulate_signal`
+  (antes do TP1, se o preço andou N pips contra e volta à entrada, fecha
+  uma fração a BE e protege as restantes). Candidata
+  `auto_escada_3_struggle` criada e HIDDEN. **Veredicto do sweep (20/08)**:
+  a grelha `ae 5–25 × frac 0.25–0.75` (`app/sweep_struggle.py`, read-only)
+  nas `auto_escada_3/5` não tem edge — a regra não disparou no período
+  atual e só 3 sinais no histórico completo, com números idênticos à
+  baseline. A candidata continua backtest-only, não promovida.
+- `GET /api/recounts` passou a devolver cada recount com o seu fill-audit
+  (`matched`/`alert`) e a tab Relatório ganhou a tabela "📋 Recounts do
+  grupo vs fills reais" com os divergentes marcados. Um recount AO VIVO sem
+  trade correspondente no dia emite notificação informativa `system`.
+- **Audit enriquecido (20/08)**: o fill-audit compara também a **direção**
+  (grupo SELL vs bot BUY → alerta) e o **candle-check**
+  (`_recount_candle_check`): a excursão/reversão reportadas pelo grupo são
+  validadas contra o high/low real dos candles Yahoo 15m do dia (sem
+  símbolo no recount, resolve pelo sinal do dia com entrada próxima;
+  sem dados → `checked=False`, nunca inventa). A agregação `weekly`
+  (coerentes/divergentes/sem trade por semana ISO) alimenta o mini-gráfico
+  da tab Relatório, e a notificação sem trade passou a apontar a **causa
+  provável** cruzada com os sinais do dia (`_recount_no_trade_cause`:
+  failed/rejected, pendente, direção oposta, kill switch/manual). Novo
+  teste E2E do fluxo completo (tabela + audit + candle-check + notificação
+  + contrato da dashboard).
+- **Alerta de replay implausível (20/08)**: um recount AO VIVO cuja
+  excursão/reversão reportada não cabe no range real dos candles do dia
+  (`candle_check.plausible=False`) dispara notificação `risk` "Recount
+  implausível vs candles do dia" para o operador investigar o relato.
+- **Janela horária no candle-check (20/08)**: o high/low do dia inteiro
+  mistura sessões (um pico às 22:00 não valida um relato do sinal das
+  09:00). Quando a hora do sinal alvo é conhecida, o `_recount_candle_check`
+  mede também o range dos candles ±3h à volta dela e usa ESSE veredicto
+  como `plausible` (a sessão do sinal); o dia inteiro fica em
+  `day_plausible`/`day_high`/`day_low`. A notificação implausível mostra a
+  janela com as flags; o tooltip da tabela de recounts expõe dia + janela.
+- **Scripts read-only (20/08)**: `app/sweep_recount_candles.py` valida a
+  plausibilidade de todos os recounts guardados (plausíveis/implausíveis/
+  sem dados + taxa) e `app/backfill_recounts.py` re-analisa o histórico
+  (`ignored_messages`/`signals` falhadas) à procura de `Signal #N`
+  descartados como conversa e insere-os em `trade_recounts` com `--apply`
+  (por omissão só pré-visualiza). Executado na BD real (20/08): recuperou
+  1 recount (a mensagem de correção do R1) e o sweep marcou-o implausível
+  (reversão 4351 abaixo do low do dia 4378 — a entrada 4357 nem foi tocada
+  pelos candles).
+- **Estudo R3 vs recounts (20/08)**: `app/study_recount_mfe.py` (read-only)
+  compara os pips reportados pelo grupo com o MFE real dos candles
+  (concordância de win / falsos win / wins não reportados). Com 1 recount
+  na BD: 0/1 concordância, 1 falso win (grupo reporta +110 pips, MFE real
+  −3120) — amostra indicativa, não estatística.
+- **Journal de implausíveis (20/08)**: quando o candle-check marca um
+  recount implausível e o journal está ligado
+  (`execution_journal_enabled`), o `_handle_recount` grava um evento
+  `recount_implausible` em `execution_events` (signal_id, message_id,
+  entrada/direção/excursão/reversão/pips, scope janela/dia, flags) —
+  evidência passiva para o replay e o fill-audit (o replay ignora kinds
+  desconhecidos, por isso nunca autoriza nem altera decisões).
+- **Badge visual de plausibilidade por janela (20/08)**: a tabela de
+  recounts da principal mostra agora dois badges quando a janela ±3h está
+  disponível — "✓ janela ok" (verde) ou "✗ janela implausível" (vermelho)
+  como veredicto da sessão, mais o contexto "dia ok"/"dia fora" — visível
+  sem depender do tooltip (que mantém dia + janela + flags).
+- **Estudo implausíveis vs fills (20/08)**: `app/study_recount_implausible.py`
+  (read-only) cruza cada recount implausível com as trades reais do dia:
+  o bot negociou (compara entrada/pips de cada lado) ou não negociou
+  (causa provável por sinal do dia). Na BD real: 1/1 implausível, o bot
+  NÃO negociou — o sinal do dia ficou `rejected` (formato/janela), ou seja
+  quem divergiu foi a execução, não só o relato.
+- **Bloco de qualidade de recounts no /auditoria (20/08)**: nova secção
+  "📋 Qualidade dos recounts do grupo" — stats (total, coerentes,
+  divergentes, sem trade, plausíveis, implausíveis, sem candles), tabela de
+  cada recount com fill + candle-check e o estado semanal, carregada no
+  `loadAudit` junto do journal-quality, fill-audit e forward-gate.
+- **Fill-audit com evidência de recounts (20/08)**: o
+  `compare_broker_fills` passou a devolver `recount_evidence` — os eventos
+  `recount_implausible` do journal listados como divergência de evidência
+  ("real" = relato do grupo, "replay" = range dos candles), com
+  `bot_traded`/`bot_trade` para cruzar quem divergiu (grupo ou execução),
+  sem re-consultar o Yahoo. A página /auditoria mostra-os num details do
+  card de fill-audit.
+- **Mini-gráfico semanal de implausibilidade (20/08)**: o bloco de
+  recounts do /auditoria ganhou um canvas por semana (% plausíveis vs
+  implausíveis vs sem candles) ao lado do estado semanal em tabela.
+- **Re-check com candles frescos (20/08)**: `POST /api/recounts/{id}/recheck`
+  refaz o fill-audit + candle-check de um recount específico (o Yahoo pode
+  ter corrigido/expandido o histórico) e devolve o veredicto atualizado;
+  read-only — não altera a linha guardada nem o journal. Botão "🔄
+  re-check" por linha no /auditoria.
+- **Veredicto agregado do estudo implausíveis-vs-fills (20/08)**: o
+  `app/study_recount_implausible.py` classifica cada implausível como erro
+  de relato / erro de execução / sem dados e emite o agregado + top-5 de
+  cada. Na BD real: 1/1 erro de execução (sinal rejected).
+- **Causa de execução perdida no fill-audit (20/08)**: o `recount_evidence`
+  cruza cada implausível com `bot_traded=False` com os reinícios do
+  listener (±15 min à volta do evento) e o kill switch persistido
+  (`kill_switch`/`killswitch_rearm_at`) e devolve `miss_reason` — sinal
+  possivelmente perdido no arranque do listener ou kill ativo no dia.
+- **Toggle do journal no /auditoria (20/08)**: botão ⏸️/▶️ no card de
+  qualidade do journal liga/desliga `execution_journal_enabled` com
+  confirmação, sem sair da página (estado refletido no botão).
+- **Linha de recounts no resumo diário (20/08)**: o resumo ganhou "📋
+  Recounts do dia: N recebidos · X implausíveis · Y sem execução do bot"
+  (journal quando ligado), junto das linhas de journal e Fase 3.
+- **Baseline de falsos positivos do candle-check (20/08)**: novo estudo
+  read-only `app/study_recount_baseline.py` — corre o mesmo filtro sobre os
+  SINAIS reais dos últimos 30 dias (relato sintético exato = range real da
+  janela ±3h). Resultado: 66% das entradas reais ficam fora da janela — o
+  feed Yahoo serve GC=F (futuros) e o grupo negocia spot, divergência de
+  dezenas de pontos; um implausível NÃO prova relato falso, tem de ser
+  cruzado com os fills do bot.
+- **Offset GC=F↔spot calibrado (20/08)**: o candle-check passou a usar o
+  `_gold_futures_offset` — calibra o offset futuros↔spot com os fills
+  REAIS de XAUUSD (mediana da diferença entre o candle GC=F na hora do
+  fill e a entrada do bot; requer ≥3 amostras e |offset| ≥ 5 pontos).
+  Quando aplicável, os preços reportados pelo grupo são corrigidos para o
+  referencial dos candles antes de comparar (exposto como `gold_offset` no
+  candle-check) — reduz os falsos positivos sem inventar plausibilidade.
+  Na BD real ainda não há amostras suficientes (1 fill), por isso não
+  altera os resultados atuais.
+- **Atraso sinal→mercado (20/08)**: novo estudo read-only
+  `app/study_signal_delay.py` — mede em minutos quando o GC=F toca a
+  entrada anunciada vs a hora do Telegram. Resultado real (30d, 101
+  sinais): mediana 224 min (~3.7h), p90 60h, só 28% das entradas tocadas
+  ≤3h — a janela ±3h do candle-check é justa face ao atraso real entre o
+  grupo e o feed de futuros; parte dos implausíveis é divergência de
+  feed/hora, não relato falso.
+- **Watchdog vs reinício manual no miss_reason (20/08)**: o
+  `recount_evidence` classifica o reinício do listener (`restart_kind`:
+  watchdog se o motivo contém "watchdog", senão manual/externo) e estima
+  os  sinais na janela de arranque (`signals_lost_est`, mensagens do grupo
+  nos 60s após o reinício — o replay do histórico recupera, mas a execução
+  ao vivo atrasa). O /auditoria mostra a taxa de implausibilidade dos
+  recounts vs o baseline (66%) para o operador ver se o relato é pior que
+  o esperado ou só divergência do feed.
+- **Re-baseline com janela 6h + offset (20/08)**: o `study_recount_baseline`
+  aceita `--window-hours` e `--apply-offset`; com 6h a taxa cai 66.3% →
+  62.4%. O offset ainda não está ativo na BD real (1 fill < mínimo de 3),
+  por isso a melhoria é só da janela — o mecanismo de calibração fica
+  validado para quando a demo acumular amostras.
+- **Painel do offset no /auditoria (20/08)**: o `recounts_report` expõe o
+  bloco `calibration` (offset estimado, amostras, ativo sim/não) e o bloco
+  de recounts mostra "Offset GC=F↔spot: X (N amostras)" — o operador sabe
+  quando a calibração passa a estar ativa (≥3 fills).
+- **gold_offset no journal (20/08)**: o evento `recount_implausible` grava o
+  `gold_offset` aplicado no payload — o replay reproduz o mesmo veredicto
+  com os mesmos dados.
+- **vps_reboot no miss_reason (20/08)**: quando `restart_kind=manual`, o
+  `recount_evidence` cruza o reinício com o arranque do servidor
+  (`server_booted_at` persistido no lifespan pelo boot.ps1) e devolve
+  `vps_reboot=true` se o reinício coincide com o boot — distingue reboot
+  da VPS (Tarefa NexGen Boot) de reinício manual isolado. O lifespan
+  persiste `server_booted_at` na config.
+- **Re-check em lote (20/08)**: novo `POST /api/recounts/recheck-all` —
+  refaz o fill-audit + candle-check de TODOS os recounts com candles
+  frescos (buscados uma vez por símbolo) e o offset mais recente, e
+  persiste o veredicto em `trade_recounts.candle_check` (+ `checked_at`,
+  migração automática no arranque). O /auditoria ganhou o botão "🗂
+  re-check todos" e as linhas mostram o veredicto guardado pelo lote.
+- **Janela adaptativa por símbolo (20/08)**: o candle-check usa agora
+  `recount_window_hours_by_symbol` (config, JSON) por símbolo, com
+  fallback para `recount_window_hours` (default 3h), limitado a [1, 24]h.
+  O `study_signal_delay` mede o atraso por símbolo e recomenda a janela
+  (p75 limitado a [3, 12]h; `--apply` grava). Na BD real foi aplicado
+  XAUUSD=6h — a recomendação automática (12h) é contaminada pelo feed
+  GC=F (p75 29h ≫ mediana 3.7h: a cauda é o futuro a tocar a entrada
+  tarde); 6h é o meio-termo validado pelo re-baseline (62.4%).
+- **Estudo MT5 spot vs GC=F (20/08)**: novo read-only
+  `app/study_recount_mt5_feed.py` — corre o MESMO candle-check com candles
+  M15 de XAUUSD do terminal (spot nativo, sem offset) lado a lado com o
+  GC=F. Resultado real: o recount de 08-19 que o GC=F marcava implausível
+  é PLAUSÍVEL no spot MT5 (reversão 4351 cabe no low real 4335; excursão
+  4362 no high da janela 4362) — falso positivo do feed de futuros, não
+  relato falso. Aproveitou-se para corrigir dois bugs latentes do
+  `MT5Provider.copy_rates`: `or []` sobre a structured array do numpy
+  (truthiness ambíguo → o download falhava sempre) e o acesso a campos
+  por atributo (o numpy 2.x removeu-o → velas com ts=0); agora usa acesso
+  por índice com fallback para atributo (fakes dos testes).
+- **Notificação da calibração do offset (20/08)**: o tick verifica a cada
+  ~30 min (`_check_gold_offset_calibration`) o offset GC=F↔spot e notifica
+  quando passa a estar ATIVO (≥3 fills: "✅ Calibração ativa"), quando
+  muda ≥ 10 pontos ("↔️ Offset mudou materialmente") e quando perde as
+  amostras — estado persistido em `gold_offset_reported` (config).
+- **Candle-check com spot MT5 como fonte primária (20/08)**: o check de
+  produção passou a usar os candles M15 de XAUUSD do terminal (spot nativo,
+  cache 5 min por símbolo) com fallback para o Yahoo GC=F quando o
+  terminal está desligado — a divergência futuros↔spot deixa de fabricar
+  implausíveis. Veredicto COMBINADO: quando o spot diz plausível mas o
+  GC=F implausível, `feed_divergence=true` e `verdict_kind="feed_divergence"`
+  ("⚠️ provável divergência de feed" no /auditoria e na dashboard, em vez
+  de relato suspeito); o offset GC=F↔spot só se aplica à fonte futuros
+  (spot é nativo). O `study_recount_mt5_feed --signals` recalibrou o
+  baseline: com o spot real **0.0%** das entradas do grupo ficam fora da
+  janela ±3h (vs 66.3% no GC=F) — os implausíveis eram TODOS divergência
+  do feed de futuros.
+- **Re-check em lote diário (20/08)**: o tick corre `_check_recount_batch`
+  uma vez por dia UTC (guard `recount_batch_last_run` na config) — refaz o
+  check de todos os recounts com as fontes combinadas e notifica quando
+  algum veredicto persistido muda de regime ou há erros.
+- **Offset GC=F↔spot eliminado + janela resetada (20/08)**: com o spot MT5
+  como fonte primária, o offset de futuros perdeu o propósito — o GC=F é
+  comparado SEM correção e só classifica a divergência do feed. Removidos
+  o `_check_gold_offset_calibration` (tick), o painel "Offset GC=F↔spot" do
+  /auditoria e o bloco `calibration` do `recounts_report`; a janela
+  alargada XAUUSD=6h foi resetada para o default 3h. Verificação: o
+  `study_signal_delay` com spot mede 101/101 entradas tocadas ≤3h (100% vs
+  28% no GC=F), mediana 106 min — a janela 3h cobre tudo e os implausíveis
+  do spot seriam relatos suspeitos reais.
+- **Alerta de relato suspeito só com confirmação (20/08)**: a notificação
+  risk "Recount implausível" passou a exigir que o spot MT5 (primária) E o
+  GC=F discordem do relato (ou sem GC=F para confirmar) — se o spot diz
+  implausível mas o GC=F diz plausível, não há confirmação e não dispara
+  alerta. O /auditoria mostra "Implaus. confirmados" (spot+GC=F) e
+  "Divergência de feed" (GC=F implausível, spot plausível) separados, com
+  baseline 0% (o 66% era do feed de futuros).
+- **Spot MT5 para XAGUSD/forex (20/08)**: o `_recount_candles` já era
+  agnóstico ao símbolo (copy_rates por símbolo com fallback Yahoo);
+  verificado ao vivo que o terminal devolve velas M15 de XAUUSD, XAGUSD e
+  EURUSD — o feed spot cobre os metais menores e forex com o mesmo padrão.
+- **ETA da Fase 3 conta o shadow (20/08)**: o `_fase3_eta` contava a origem
+  race (vazia com o kill switch ON — a corrida só abre quando a principal
+  executa) e mostrava N=0/sem ritmo, enquanto o gate já tinha 5–7 trades
+  shadow. Passou a medir a MESMA origem do gate (`origin="shadow"` nas
+  stats/ritmo/curva) — o painel mostra agora o ritmo real da evidência.
+- **Gate forward com referência híbrida + limiar menor (20/08)**: a referência
+  da `auto_escada_3` era só a corrida race da `nova_gestao` (que só enche
+  quando a principal executa — com o kill switch ON ficava a 0 e o gate nunca
+  ficava `reference_comparable`). Agora (a) `min_reference_trades` baixou de
+  20 para **10** (a comparação de P&L/saída é descritiva e nunca promove
+  sozinha); (b) a referência é **híbrida race+shadow** — a race tem
+  precedência por sinal e o shadow (a `nova_gestao` foi adicionada a
+  `shadow_paper_strategies`) cobre os sinais em que a principal não negociou.
+  O gate deixa de depender de 20 trades reais para decidir.
+- **Fix de "undefined" na legenda do comparativo (20/08)**: o
+  `loadTesteCompare` buscava `nova`/`nova_gestao`/`tp2`, mas o mapa
+  `NAMES`/`COLORS` só tinha `nova_gestao`/`tp2_protect`/auto-escadas — a
+  legenda renderizava o literal "undefined" para `nova` e `tp2` e as curvas
+  caíam na cor do grid (strokeStyle undefined). Adicionados nomes/cores para
+  `nova` e `tp2` + fallback (`STRATEGY_NAMES[id]` e `#8a94a6`).
+- **Slider da perda diária (20/08)**: o bloco "Limites" da dashboard ganhou um
+  slider `dailyLossSlider` (0–15%, step 0.5; 0 = sem limite) que persiste
+  `daily_loss_limit_pct` na config (debounced) e mostra o valor vivo
+  (`dailyLossVal`); o `limitsLbl` ficou só com "máx N posições".
+- **No-cache + cache-busting nos assets (20/08)**: o browser passou a servir
+  `common.js` antigo (o slider ficava em 3.0% com o config em 4.5%).
+  Adicionado middleware `no-cache, no-store, must-revalidate` em tudo o que
+  não é `/api/`/`/ws`, e as páginas apontam agora `style.css`/`common.js` com
+  `?v=<sha1 do conteúdo>` (segunda defesa contra caches que ignorem o
+  no-store).
+- **Slider 0 alinhado com a API (20/08)**: `daily_loss_limit_pct` aceita 0
+  (`ge=0`, antes `ge=0.5` rejeitava o min do slider) e o `RiskEngine` trata 0
+  como "sem limite diário" (off), igual ao `apply_daily_stop` do backtest.
+- Suite completa: **389 testes passados** + 1 warning conhecido.
+
+### 2026-08-20 — Janela de 28/08, rearme e correções de summaries
+
+- Adicionado `GET /api/window` com trades reais fechadas/abertas, P&L, dias
+  restantes, ritmo face à meta 10–20 e o gate+ETA da `auto_escada_3`.
+- O resumo diário inclui a linha operacional da janela; a dashboard mostra o
+  cartão compacto de progresso para promoção.
+- `killswitch_rearm_at` fica persistido; o tick rearma no prazo UTC definido,
+  notifica feed/Telegram e limpa a chave de forma idempotente.
+- O classificador reconhece `summary_correction`, atualiza o summary alvo por
+  reply/período inequívoco e reativa a divergência grupo↔bot.
+- Suite completa: **368 testes passados** + 1 warning conhecido.
+
+### 2026-08-20 — Exportação, arquivo e bloqueio do gate forward
+
+- A página `/auditoria` passou a exportar o bundle journal + fill-audit + gate
+  em JSON/CSV e a arquivar snapshots UTC na tabela `evidence_archives`, com
+  histórico read-only das janelas.
+- O resumo diário envia no feed/Telegram uma única mensagem com qualidade do
+  journal e progresso de `auto_escada_3/5`, sem alterar a execução.
+- A promoção das auto-escadas fica bloqueada visualmente e no backend até
+  todos os gates objetivos da janela forward passarem.
+- Regressões e documentação atualizadas; suite desta alteração: **364 testes passados** + 1 warning conhecido.
+
+### 2026-08-20 — Auditoria diária, fill↔replay e gate forward shadow
+
+- Adicionados `GET /api/operations/journal-quality`, `GET
+  /api/analysis/fill-audit` e `GET /api/analysis/forward-gate`.
+- A nova página `/auditoria` mostra a cobertura diária do journal, retcodes e
+  latências, trades sem fita completa, a primeira divergência fill real vs
+  replay e o gate das `auto_escada_3/5`.
+- O gate usa janela UTC de 30 dias, mínimo N=20, PF≥1.5, IC95% positivo,
+  DD≤125%, comparação com `nova_gestao` e promoção sempre manual.
+- Regressões adicionadas para os relatórios, endpoints e frontend.
+- Suite completa desta alteração: **361 testes passados** + 1 warning conhecido.
+
+### 2026-08-20 — Evidência MT5 de fills, retcodes e latência no replay
+
+- O `MT5Engine` passou a registar no journal opt-in pedidos/resultados de
+  abertura e fecho, modifies de SL, fills simulados ou confirmados, retcodes,
+  tickets, preços, P&L e latências sinal→ordem→fill.
+- O replay preserva estes eventos como `broker_observations` passivas: usa-os
+  para auditoria sem aceitar respostas históricas como comandos e sem tocar no
+  broker/BD de produção.
+- A exportação por trade mantém a fita completa e a documentação explica a
+  ativação controlada de `execution_journal_enabled`.
+- Regressões MT5/replay acrescentadas. Suite parcial desta alteração: **43
+  testes passados**.
+
+### 2026-08-19 — Exportação e inspeção passo a passo do replay
+
+- `GET /api/operations/replay/tape` junta automaticamente `execution_events`
+  aos sinais estruturados e resolve a correlação de gestão por reply; aceita
+  filtro por sinal/trade.
+- O replay devolve snapshots depois de cada evento; `GET
+  /api/operations/replay/snapshots` permite seleccionar um passo sem tocar na
+  BD de produção ou no MT5.
+- O histórico da dashboard ganhou `🔁 replay` por trade, com relatório de
+  paridade e estado dos três engines.
+- Adicionadas regressões de exportação, snapshots e frontend. Suite nesta
+  alteração: **353 testes**.
+
+### 2026-08-19 — Fita de replay determinístico entre motores
+
+- Criado `app/execution/replay.py` com contrato UTC ordenado por `sequence` para
+  eventos `signal`, `quote` e `management`.
+- O harness read-only alimenta a mesma fita ao SimEngine, PaperRace e MT5
+  dry-run em BDs temporárias e compara decisões por perna, SL, razão e P&L.
+- Adicionado `POST /api/operations/replay`; o endpoint limita a fita a 10.000
+  eventos e nunca usa a BD de produção nem o broker.
+- Regressões novas cobrem ordenação, TP1→BE, gestão protect e isolamento.
+  Suite completa após a alteração: **350 testes passados** + 1 warning conhecido
+  Starlette/httpx.
+
+### 2026-08-19 — Journal opt-in, lifecycle explícito e roteamento fail-safe
+
+- Adicionado `execution_events` + `app/execution/journal.py`: quotes e gestão
+  podem ser recolhidos sem efeitos laterais e reproduzidos em ordem num estudo
+  read-only. A captura fica desligada por defeito (`execution_journal_enabled`)
+  e é exposta por `GET /api/operations/events`.
+- O `PaperRace` usa o relógio injetável também para o dia do kill diário; os
+  estudos deixam de depender dessa decisão do relógio civil da máquina.
+- O registo de estratégias expõe `lifecycle` (`backtest`/`paper`/`shadow`/
+  `menu`/`promotable`) e as contas paper passam a usar esse contrato central.
+- Gestão sem reply fica fail-safe quando há várias trades de sinais diferentes
+  do mesmo símbolo: não adivinha o alvo e deixa a notificação de risco para o
+  operador confirmar.
+- As métricas paper expõem intervalo bootstrap determinístico e um gate
+  descritivo de evidência; nada promove automaticamente uma estratégia.
+- A tab Diagnóstico passou a expor reconciliação read-only DB↔broker (legs em
+  falta, posições desconhecidas e SL divergente), sem autocorrigir nem fechar
+  posições.
+- Regressões novas: journal/replay, lifecycle, evidence e ambiguidade shadow.
+  Suite completa: **346 testes passados** + 1 warning conhecido Starlette/httpx.
+
+### 2026-08-19 — Reducer comum e relógio determinístico (343 testes)
+
+- Consolidado `reduce_auto_protect()` em `app/execution/protection.py`: o
+  gatilho, a fórmula de proteção do grupo e os movimentos monotónicos passam a
+  ter uma única decisão pura reutilizada pelo backtest, PaperRace, SimEngine e
+  MT5 dry/real; cada adapter continua responsável pelos seus fills, broker e
+  persistência.
+- Adicionado `app/execution/clock.py` com `SystemClock` e `ManualClock`.
+  O PaperRace e os engines aceitam relógio injetável; o estudo de polling
+  avança explicitamente 1s/250ms/100ms, sem depender de `time.time()` ou de
+  sleeps do processo.
+- Removido o spec não rastreado duplicado `docs/SPEC-auto-gestao.md`; a fonte
+  documental continua a ser `docs/ESTRATEGIAS.md`.
+- A principal `nova_gestao`, kill switch, `MT5_DRY_RUN=1`, produção a ~1s e
+  shadow-paper não foram alterados.
+- Suite completa: **343 testes passados** + 1 warning conhecido Starlette/httpx.
+
+### 2026-08-19 — Estudos de gestão, walk-forward e cadência paper (341 testes)
+
+- O walk-forward calibrado foi expandido para `current`, `90`, `all` e `old`;
+  a gestão completa foi positiva em 3/3 folds no formato recente, mas só
+  1/3 nos últimos 90 dias e no histórico completo. O regime antigo OOS teve
+  2/3 folds positivos, sem invalidar o facto de o P&L agregado ser perdedor.
+- `all_fallback_60` foi incluído como candidato conservador; não alterou os
+  resultados nos períodos maiores e continua desligado por defeito.
+
+- Criado `app.study_strategies` com estudos read-only de ablation dos kinds de
+  gestão, walk-forward calibrado, distribuição de risco por perna, fallback
+  mecânico após TP1 e sensibilidade do `PaperRace` a 1s/250ms/100ms.
+- Na amostra atual de 30 dias (107 sinais), a gestão completa ficou em
+  PF 3.34 / +2 438.76 € / DD 22.7%; o `protect` isolado foi o maior
+  contribuinte (PF 3.09 / +2 177.62 €), sem promoção nem alteração da principal.
+- O fallback aplicou-se a 1 sinal e acrescentou apenas 0.90 €; ficou desligado
+  por defeito. Com saldo 1 000 €, pesos TP3–TP5 são neutralizados pelo lote
+  mínimo; o estudo de sensibilidade foi separado em saldo 10 000 €.
+- O benchmark sintético mostrou que 1s pode perder spikes que 250ms/100ms
+  observam, mas não é evidência de P&L mensal nem altera o loop de produção.
+- O kill switch, `MT5_DRY_RUN=1`, `nova_gestao` e o shadow-paper permanecem
+  inalterados.
+- Suite completa: **341 testes passados** + 1 warning conhecido Starlette/httpx.
+
+### 2026-08-19 — Preparação segura da principal após reboot (338 testes)
+
+- Confirmado o arranque automático pós-reboot: um par lógico de servidor/listener,
+  Caddy e MetaTrader 5 ativos; listener a obter heartbeat e a reenviar o
+  histórico com respostas `200 OK`.
+- Promovida a principal persistida para `nova_gestao`, a melhor estratégia no
+  backtest comparável recente; `max_positions=5` e shadow-paper de
+  `auto_escada_3`/`auto_escada_5` foram preservados.
+- Recalibrados `balance`/`peak_balance` para 1.000 € e reduzido o risco base para
+  1,0%, removendo a redução artificial para 0,1% causada pelo antigo high-watermark
+  de 11.304 €.
+- Mantidos deliberadamente `kill_switch=true` e `MT5_DRY_RUN=1`: a dashboard e
+  o shadow continuam a receber sinais, mas não há ordens MT5 sem autorização
+  operacional explícita. Backup local pré-alteração: `backups/signalbot-20260819-205634.db`.
+- Suite completa: **338 testes passados** + 1 warning conhecido Starlette/httpx.
+
+### 2026-08-19 — Auto-protect visível no dropdown (338 testes)
+
+- Corrigidos os quatro menus de navegação (`/`, `/teste`, `/diagnostico` e `/help`) para exporem `auto_protect_5` como **Auto 5 TPs + protect precoce**, com link para a página de teste.
+- Sincronizados `STRATEGY_NAMES` e `TERM_ORDER` no `common.js`, evitando que a estratégia exista no registo mas fique inacessível no frontend.
+- Acrescentada regressão estática para exigir a entrada consistente nas quatro páginas; a suite completa terminou com **338 testes passados** e 1 warning conhecido de Starlette/httpx.
+
+### 2026-08-19 — Risco defensivo, estado restart-safe e shadow de duas auto-escadas (337)
+
+- Adicionado `def_risk_pct=1.25%` ao modo defensivo das auto-escadas: após uma janela completa de 10 trades com PF < 1.0, backtest, PaperRace, SimEngine e MT5 aplicam o mesmo cap absoluto, sem aumentar o risco dinâmico nem cortar pernas.
+- Criada a tabela `protection_states`, com backup pré-migração local em `backups/signalbot-20260819-144647.db`; picos/vales, TP1, escadas, SLs e timestamps sobrevivem a restart de cada motor e são removidos de forma idempotente quando a trade fecha.
+- O shadow-paper da VPS foi configurado para `auto_escada_3` e `auto_escada_5`, mantendo contas/origens isoladas; estratégia principal `auto_escada_5` e kill switch não foram alterados.
+- Adicionadas regressões para o cap defensivo, janela completa, sizing paper e reconstrução do pico após restart.
+- Suite completa validada: **337 testes passaram** + 1 warning conhecido de depreciação Starlette/httpx.
+
+### 2026-08-19 — Auto-protect, replay seguro e análise de resolução (334)
+
+- Adicionada a candidata `auto_protect_5`: fecha a primeira perna a 75% do caminho até TP1 e protege as restantes com a mesma fórmula monotónica do `protect` do grupo, partilhada pelo backtest, SimEngine, PaperRace e MT5; continua desligada da principal e exige sweep/paper antes de promoção.
+- O replay histórico passou a transportar `reply_to_msg_id`, `message_id`, `move_sl` com nível explícito e `close_tp` por perna; replies não resolvidos são descartados em vez de contaminarem outra trade do mesmo símbolo.
+- Criado `GET /api/analysis/resolution`, com M1 nativo até 7 dias, fallback explícito para horizontes maiores e sensibilidade a atrasos 0/8/60/300 s, sem writes nem look-ahead.
+- Sincronizados o HELP, o painel de estratégia e o shadow-paper; a suite atual tem **334 testes**.
+- Verificação read-only na BD atual: em 30 dias/107 sinais, `nova_gestao` ficou em PF 3.35 / +€2 439.75 / DD 22.7%, `auto_escada_5` em PF 1.33 / +€345.41 / DD 35.9% e `auto_protect_5` em PF 1.27 / +€281.41 / DD 38.6%; a candidata não supera a auto 5.
+- O sweep da candidata (gatilho 0.25–1.0 × buffer 0–0.20) não encontrou combinação PF≥1 nos períodos atual e antigo: o melhor atual foi PF 1.96 / +€618.62, mas o melhor antigo continuou PF 0.50 / −€3 450.62.
+- A análise temporal confirmou M1 nativo até 7 dias (23 sinais: PF 4.24 vs 7.72 em 15m) e fallback explícito para 15m em 30 dias; não se apresentou histórico parcial como M1.
+
+### 2026-08-19 — HELP sincronizado com as estratégias visíveis (325)
+
+- Atualizada a página `/help`: os sete fluxos visíveis (`nova_gestao`,
+  `tp2_protect`, `auto_3`, `auto_escada_3`, a híbrida, `auto_escada_5` e
+  `auto_protect_5`) agora têm mecânica explícita, e o glossário inclui
+  escada, trailing, modo defensivo e shadow-paper isolado.
+- Corrigido o comentário que identificava `tp2_protect` como oculta; a página
+  continua a obter o registo do backend e a esconder as seis estratégias
+  apenas de backtest/contrafactual.
+- A regressão estática exige uma entrada `HELP_FLOW` por estratégia visível e
+  mantém a regra no `AGENTS.md` para futuras alterações ao registo.
+- Suite: **325 testes** (sem aumento do número de casos).
+
+### 2026-08-19 — Auditoria final do isolamento shadow e gestão sem reply (325)
+
+- Corrigido o fallback da gestão shadow para seguir a mesma ordem segura da
+  conta real — reply exato, símbolo identificado e, por fim, a trade shadow
+  aberta mais recente — sempre filtrando `origin="shadow"`.
+- Corrigido o `divergence report` para comparar apenas trades da mesma origem;
+  uma referência `race` já não pode gerar uma divergência falsa numa auto
+  `shadow` sem referência shadow.
+- Adicionada uma regressão de gestão pendente sem reply, uma de divergência
+  entre origens e uma de não redirecionamento para uma trade shadow alheia.
+- Suite: **325 testes passaram** + warning conhecido de depreciação do
+  Starlette.
+
+### 2026-08-19 — Shadow-paper: contas race/shadow realmente separadas (322)
+
+- Corrigido o isolamento da corrida shadow: a deduplicação agora considera
+  `signal_id + strategy_id + origin`, permitindo que o mesmo sinal seja
+  observado pelas contas `race` e `shadow` sem duplicar nenhuma delas.
+- Saldos virtuais, kill diário, PF e histórico de conta são separados por
+  origem; a conta shadow começa em 1 000 € e nunca contamina a evidência da
+  corrida normal. Adicionadas duas regressões para a abertura simultânea e o
+  caminho de execução principal.
+- Suite: **322 testes passaram** + warning conhecido de depreciação do
+  Starlette.
+
+### 2026-08-19 — Shadow-paper forward isolado (320)
+
+- Criado o modo `shadow_paper_enabled` (default ativo) com seleção persistente
+  de estratégias (`shadow_paper_strategies`, por defeito `auto_escada_3`). Sinais
+  live completos entram numa conta paper marcada `origin="shadow"` antes das
+  decisões de risco/kill da principal, mas nunca chamam o motor MT5; replays
+  históricos e propostas LLM ficam excluídos.
+- A deduplicação por sinal/estratégia evita trades virtuais duplicadas. O painel
+  principal mostra o estado isolado e permite ligar/desligar e escolher as
+  estratégias. Gestão por reply, correções TP1/SL e pendências usam marcadores
+  separados para execução real, corrida paper e shadow (`applied`,
+  `paper_applied`, `shadow_applied`); uma entrega shadow não consome a pendência
+  que uma trade paper normal ainda precisa. `out at BE` mantém a proteção a BE
+  quando a instrução fica enfileirada.
+- Atualizados `AGENTS.md`, `TECHNICAL.md`, `PUBLIC.md`, `ESTRATEGIAS.md` e
+  `DEPLOY.md`; adicionadas regressões de histórico/LLM, kill switch, origem,
+  gestão com trade real em paralelo, TP1/SL e pendências BE.
+- Suite: **320 testes passaram** + warning conhecido de depreciação do Starlette.
+
 ### 2026-08-19 — Itens 10/17: observabilidade operacional e CI (308)
 
 - **Item 10**: exceções de runtime, observações de spread MT5, eventos de

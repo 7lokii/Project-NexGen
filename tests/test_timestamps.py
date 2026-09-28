@@ -87,10 +87,8 @@ def test_ingested_signal_row_is_utc(client):
 
 
 def test_trade_row_opened_at_is_utc(client):
-    """Ao executar (aprovar), a LINHA em `trades` tem `opened_at` UTC."""
+    """Ao executar (caminho auto único), a LINHA em `trades` tem `opened_at` UTC."""
     r = client.post("/api/signals", json={"raw_text": EURUSD, "source": "demo"})
-    sid = r.json()["signal"]["id"]
-    r = client.post(f"/api/signals/{sid}/approve")
     assert r.json()["action"] == "executed"
     trade_id = r.json()["trade"]["id"]
 

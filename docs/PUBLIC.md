@@ -3,13 +3,28 @@
 Este documento explica o projeto em linguagem simples, sem código. Se és o
 Rúben ou o Miguel, começa por aqui.
 
+A ferramenta de evidência também regista, quando autorizada, o que o broker
+respondeu: fills de abertura/fecho, retcodes de ordens e alterações de stop,
+tickets e tempos de execução. A página **Auditoria** mostra a qualidade diária
+desses dados, compara cada fill com um replay seguro e indica a primeira
+inconsistência. Também mostra um gate de 30 dias para as auto-escadas em
+shadow-paper, com pelo menos 20 trades e regras estatísticas explícitas.
+Isto melhora a auditoria, mas continua desligado por defeito e não transforma
+um replay numa ordem real nem promove uma estratégia sozinho. Na página
+**Auditoria** podes descarregar o relatório em JSON/CSV e arquivar a janela
+forward para enviar ou consultar mais tarde. O resumo diário mostra no feed e
+no Telegram quantos eventos estão completos e como avança cada auto-escada.
+Enquanto faltar qualquer regra do gate, o botão **Promover** aparece bloqueado;
+o servidor também recusa a promoção, mesmo que alguém tente fazê-la por API.
+
 ---
 
 ## Em uma frase
 
 Um programa que **lê os sinais do grupo de Telegram**, valida rapidamente se a
-mensagem incompleta foi **editada** e depois — conforme o modo escolhido —
-**faz a trade sozinho** ou **mostra-te o sinal para tu aprovares**.
+mensagem incompleta foi **editada** e depois **faz a trade sozinho** — sempre
+em modo automático, com as verificações de risco sempre ativas (não existe
+modo manual).
 
 > ⚠️ **Importante e honesto:** o projeto suporta simulação/paper e execução
 > numa conta **demo MT5**. O servidor da VPS pode enviar ordens para a demo;
@@ -20,21 +35,41 @@ mensagem incompleta foi **editada** e depois — conforme o modo escolhido —
 
 ## O que o programa faz, passo a passo
 
+### Validação técnica sem tocar na conta
+
+Existe também uma ferramenta de estudo chamada **replay determinístico**. Ela
+recebe uma sequência de sinais, preços, mensagens de gestão e, quando existe,
+evidência do broker (fills, retcodes, alterações de stop e latência). Repete os
+eventos de decisão nos três caminhos internos (simulação, paper e MT5 em
+MT5 dry-run) e compara decisões, stops, motivo de saída e lucro. A evidência do
+broker é apenas passiva no estudo; não força um resultado. Corre em bases de
+dados temporárias: não cria trades na produção, não envia ordens e não altera a
+estratégia principal.
+
+No histórico de trades existe também o botão **🔁 replay**. Ele recolhe a fita
+daquela trade a partir do journal (sinal, preços e gestão), corre a mesma
+sequência nos três motores e mostra se houve divergências passo a passo. É uma
+ferramenta de auditoria: continua read-only, não envia ordens MT5 e não mexe no
+saldo nem na estratégia principal.
+
 1. **Recebe o sinal** — ou clicas num botão de demonstração na dashboard, ou
    o programa **lê o grupo de Telegram** (ver guia abaixo).
 2. **Entende o sinal** — o programa "lê" a mensagem e extrai os dados:
    qual o par (ex.: EURUSD), se é compra ou venda, a entrada, o stop loss e
    os alvos (**TP1 a TP5**, conforme o grupo enviar). Funciona em português
    e inglês.
-3. **Espera por edições (8 segundos por defeito)** — uma mensagem incompleta
+3. **Espera por edições (10 segundos por defeito)** — uma mensagem incompleta
    pode ser corrigida pelo grupo logo depois de enviada. O relógio reinicia
-   quando chega uma edição. Um sinal já completo não espera: em Auto segue
-   imediatamente para as verificações de risco; o valor é configurável na
-   dashboard (`edit_window_seconds`).
+   quando chega uma edição. Um sinal já completo não espera: segue
+   imediatamente para as verificações de risco (decisão baseada em dados —
+   ver secção "Janela de edição"); o valor é configurável na dashboard
+   (`edit_window_seconds`).
 4. **Verifica o risco** — antes de qualquer trade, confirma que está tudo
    dentro dos limites (ver abaixo).
-5. **Decide** — em modo **Auto** faz a trade sozinho; em modo **Manual** aparece
-   na dashboard com os botões **Aprovar** e **Rejeitar**.
+5. **Decide** — faz a trade sozinho: só existe o modo automático (o modo
+   manual foi removido). Sinais bloqueados pelas proteções de zona de
+   entrada/lote mínimo ficam `pending` para confirmação explícita do
+   operador na dashboard.
 6. **Reage às instruções do grupo** — além dos sinais, o programa lê as
    mensagens de **gestão** do grupo e age nelas sozinho (ver secção abaixo).
 
@@ -65,6 +100,8 @@ O grupo também **dá instruções ao vivo** e o programa obedece:
 | "we're out" | Fecha **tudo** ao preço atual; "out at BE" protege as pernas restantes na entrada (não força um fecho imediato) |
 | "SL HIT" | Regista e reconcilia com o broker |
 | Resumo diário/semanal | Guarda o win rate que o grupo reporta (ver "páginas de teste") |
+| "Correction: … Trades Sent …" | Atualiza o resumo original quando a mensagem responde a ele (ou identifica um único período) e volta a comparar os números com o bot |
+| "Signal #1: Sell at 4357 … +110 pips" | Guarda o **recount por trade** e compara-o com o que o bot realmente fechou nesse dia (entrada e pips) — se divergirem, avisa-te |
 
 Estas mensagens são tratadas **na hora** (não esperam o minuto da janela de
 edição — seria tarde demais) e aparecem no histórico com o ícone 📨.
@@ -80,6 +117,17 @@ e é aplicada automaticamente quando a trade abrir.
 > não aumenta o que arriscas se o stop loss for atingido.
 
 ---
+
+## A janela até 28 de agosto e a promoção
+
+Na página principal existe um cartão **“Quanto falta para promover a
+auto_escada_3”**. Ele junta quantas trades shadow já fecharam, PF, intervalo
+IC95, drawdown e o ritmo/ETA. Enquanto faltar qualquer regra objetiva, o botão
+de promoção continua bloqueado — isto não muda a conta demo sozinho.
+
+A mesma informação, incluindo trades reais fechadas/abertas, P&L, dias restantes
+e ritmo face à meta mínima 10 e alvo 20, está disponível em `GET /api/window`.
+A janela termina às 00:00 UTC de 29/08/2026.
 
 ## O slider de risco
 
@@ -103,9 +151,9 @@ dói quando eles forem maus.
 | Proteção | O que faz |
 |---|---|
 | **Kill switch** | Um botão vermelho que pausa tudo na hora. As posições já abertas continuam a ser geridas (para não as largar ao acaso), mas nada de novo é aberto. |
-| **Limite de perda diária** | Se hoje já perdeste mais do que o limite (ex.: 3%), o programa **pausa sozinho** e avisa. Só volta quando alguém reativar manualmente. |
+| **Limite de perda diária** | Se hoje já perdeste mais do que o limite (ex.: 3%), o programa **pausa sozinho** e avisa. Normalmente reativa-se manualmente; quando existe um prazo `killswitch_rearm_at`, pode rearmar automaticamente no instante UTC definido e avisa no feed/Telegram. |
 | **Máximo de posições** | Limita quantas trades podem estar abertas ao mesmo tempo (default 5; configurável). |
-| **Mesmas regras em ambos os modos** | Mesmo no modo manual, clicar "Aprovar" **não** contorna as verificações de risco. |
+| **Confirmação explícita (não é modo manual)** | Só sinais bloqueados pelas proteções (zona de entrada / lote mínimo) ficam pendentes para confirmação do operador — e mesmo essa confirmação **não** contorna os interruptores globais (kill switch, limite diário, máximo de posições). |
 
 ### A proteção híbrida (em teste)
 
@@ -127,14 +175,14 @@ desligada, nas três janelas históricas, sem misturar dados entre variantes.
 Ligá-la reduziu o drawdown antigo de **312,9% para 278,3%** e baixou o PF
 atual só de **1,27 para 1,26** (0,79%, dentro do limite de 10%). Por isso,
 essa estratégia passou a usar a confirmação por defeito. Isto altera apenas
-a estratégia de teste/paper — a principal `nova_gestao` e a conta demo não
+a estratégia de teste/paper — a referência `nova_gestao`; a conta demo usa `tp2_protect` e não
 foram promovidas.
 
 Antes de uma estratégia automática poder passar da corrida paper para a conta
 demo MT5, o programa percorre uma janela de 10 trades reais: compara a saída
 com o paper (tem de coincidir em pelo menos 9), verifica se todas as posições
 têm stop loss, se não há ordens duplicadas e se o broker aceitou os modifies.
-Se um gate falhar, volta sozinho à estratégia principal `nova_gestao`. Isto é
+Se um gate falhar, o mecanismo pode fazer rollback para a estratégia configurada na demo. Isto é
 uma proteção da conta demo; nunca promove uma conta real.
 
 ---
@@ -167,13 +215,38 @@ completa e valida as regras de documentação. Existe um teste manual opcional
 que cria uma falha deliberada apenas para confirmar que o CI a assinala; ele
 não é executado nas alterações normais.
 
-## Modos de funcionamento
+### Shadow-paper: aprender com sinais live sem abrir a demo
 
-- **Manual** — o sinal aparece na dashboard e tu decides (Aprovar/Rejeitar).
-  É o modo mais seguro para começar.
-- **Auto** — o programa faz tudo sozinho, desde que passe nas verificações de
-  risco. Mais rápido (importante se os sinais "batem ao início"), mas só deves
-  usar quando confiares nos sinais.
+A dashboard tem um painel **👻 Shadow-paper**. Quando está ativo, cada sinal
+live completo abre uma cópia numa conta virtual da estratégia escolhida — por
+defeito `auto_escada_3` — mesmo que a conta principal esteja em **Manual** ou
+com o **Kill switch** ligado. Isto serve para acumular evidência forward da
+auto sem permitir uma única ordem no MT5.
+
+A cópia fica separada e identificada como `shadow`: tem saldo virtual,
+kill diário e métricas próprios, e não altera saldo, posições, risco ou
+execução da conta demo nem a conta da corrida paper normal. Edições do sinal
+e mensagens do grupo como
+`TP1 HIT`, `protect`, `we're out`, `move SL` e correções `TP1 ... SL ...`
+seguem também para o papel shadow, com a mesma relação de resposta do Telegram.
+As entregas da gestão shadow e da corrida paper normal têm marcadores separados,
+por isso uma instrução pendente não se perde quando só uma das contas já abriu.
+O replay histórico e propostas interpretadas por IA não entram nesta amostra.
+Podes desligar o modo ou escolher várias estratégias no painel; desligá-lo
+impede novas aberturas, mas não apaga as trades shadow já registadas.
+
+Existe também um **journal opcional de execução** para investigações: guarda
+quotes e mensagens de gestão numa fita read-only que pode ser reproduzida para
+perceber porque os motores tomaram uma decisão. Está desligado por defeito,
+não abre trades e não muda o intervalo normal de produção.
+
+## Modo de funcionamento
+
+O programa corre sempre em **modo automático**: faz tudo sozinho, desde que
+passe nas verificações de risco. As proteções (kill switch, limite diário,
+máx. posições) estão sempre ativas — não existe modo manual. Só sinais
+bloqueados pelas proteções de zona de entrada/lote mínimo ficam pendentes
+para **confirmação explícita** do operador na dashboard.
 
 ---
 
@@ -192,20 +265,30 @@ Em ecrãs largos, o fundo mostra **terminais de código animados** (como um
 monitor antigo) com o **tema do próprio bot**: sinais XAUUSD com TP1..TP5 e
 SL, ticks de preço, fills e saldo/equity, com uma retícula ao centro. A
 **navegação está numa barra fixa no topo** (itens horizontais; no telemóvel
-abre com o ☰) e o **terminal de estado está numa barra fixa em baixo**: os
-badges (modo, estratégia, MT5, execução), os **preços ao vivo** (GOLD,
-SILVER, EURUSD… a verde/vermelho conforme o movimento e com uma **barrinha
-da variação % do dia** — passa o rato para veres o detalhe), os
-utilizadores online + relógio, o **🛑 Kill switch** e o **Sair**. Navegas
+abre com o ☰) e a barra de estado no topo: os badges (modo, estratégia,
+MT5, execução), os utilizadores online + relógio, o **🛑 Kill switch** e o
+**Sair**. A faixa de **preços ao vivo** (GOLD, SILVER, EURUSD…) foi
+**removida** para um topbar mais limpo e rápido — o preço ao vivo vive no
+badge "preços reais"/"simulação". Navegas
 com as **setas ↑↓ + Enter** (ou com o rato) entre a **página principal**
-(a conta MT5 real, com a estratégia ativa — **começa a partir de hoje**,
+(a conta MT5 demo com execução broker, com a estratégia ativa (`tp2_protect`) — **começa a partir de hoje**,
 sem simulação do passado) e o **dropdown ▚ ESTRATÉGIAS** no topo — onde
-vivem as **6 estratégias atualmente visíveis** (`nova_gestao`, `tp2_protect`,
-`auto_3`, `auto_escada_3`, `auto_escada_3_hibrida` e `auto_escada_5`), cada uma
-com a sua página de simulação (saldo a começar há 1 mês com 1.000 €, curva,
-comparação e corrida paper ao vivo). As restantes estratégias continuam no
-registo para backtest/compare ou para o contrafactual paper, sem serem
-apagadas. A **TP1..TP5 + gestão** é a **referência** (a estratégia ativa na
+vivem as **7 estratégias atualmente visíveis** (`nova_gestao`,
+`nova_gestao_fallback`, `tp2_protect`, `auto_3`, `auto_escada_3`,
+`auto_escada_3_hibrida` e `auto_escada_5`), cada uma com a sua página de
+simulação (saldo a começar há 1 mês com 1.000 €, curva,
+comparação e corrida paper ao vivo). As estratégias antigas perdedoras
+(`tp2`, `tp2_gestao`, `nova_gestao_3`, `auto_2`, `auto_protect_5` e a regra
+R4 `auto_escada_3_struggle`) foram removidas do programa a 01/09; `nova` e
+`auto_5` continuam apenas como referências internas de backtest (ocultas do
+menu).
+
+Na análise de resolução, o bot só chama um resultado de M1 quando o Yahoo ainda
+conserva os candles (até cerca de 7 dias). Para períodos maiores, o relatório
+mostra claramente o fallback para 15m/1h; também compara atrasos de 0, 8, 60 e
+300 segundos. Assim não confundimos uma amostra recente de M1 com um histórico
+completo.
+ A **TP1..TP5 + gestão** é a **referência** (a estratégia ativa na
 config, que a principal executa e que aparece na corrida paper) — e o bot
 mostra quem está a ganhar entre as visíveis ao vivo. Há ainda uma página
 **HELP** (no
@@ -262,7 +345,7 @@ Na tab **🔧 Diagnóstico** há também um botão "🧹 Limpar reinícios" (com
 confirmação) para apagar à mão o histórico de reinícios do listener, e um
 bloco **"⏱️ Atraso das edições do grupo"** que mostra quanto tempo o grupo
 demora a editar as mensagens (mínimo, média, mediana, p90, máximo) face à
-janela atual de 8s — a mediana a verde se estiver dentro da janela e a
+janela atual de 20s — a mediana a verde se estiver dentro da janela e a
 vermelho se não, para saberes se a janela está bem calibrada com dados
 reais em vez de por tentativa.
 Se o grupo **editar uma mensagem depois de o bot já ter executado** a
@@ -295,8 +378,8 @@ desligado). O som respeita as regras do navegador — desbloqueia no primeiro
 clique, e silencia-se no próprio navegador (mute do separador).
 
 - **Sinais** — o histórico completo dos sinais recebidos do Telegram, com
-  filtro por grupo, estado (à espera de edições, pendente, histórico, etc.)
-  e botões Aprovar/Rejeitar;
+  filtro por grupo e estado (à espera de edições, pendente, histórico, etc.);
+  sinais pendentes por guard de zona/lote têm botão de confirmação explícita;
 - **Posições** — as trades abertas em tempo real;
 - **Histórico** — todas as trades fechadas, com P&L;
 - **Relatório** — win rate, profit factor, risco/recompensa, consistência
@@ -418,11 +501,12 @@ grupo. (Se tiveres 2FA, pede também a password.)
 ### O que vais ver
 
 - Uma mensagem incompleta que pareça um sinal aparece na dashboard com
-  **⏳ 8s** por defeito — é a janela de edição a funcionar.
+  **⏳ 20s** por defeito — é a janela de edição a funcionar.
 - Se o grupo **editar** a mensagem, a dashboard mostra a versão nova.
-- Depois dos **8s** (ou do valor configurado), em modo **Manual** aparece com
-  botões Aprovar/Rejeitar; em modo **Auto** é executado (se passar nas
-  verificações de risco).
+- Depois dos **20s** (ou do valor configurado), o sinal é executado (se
+  passar nas verificações de risco) — só existe o modo automático. Sinais
+  bloqueados pelas proteções de zona/lote ficam pendentes para confirmação
+  explícita do operador.
 - Mensagens que não pareçam sinais (conversa normal) são ignoradas — vê no
   terminal do leitor os `[skip]`.
 
@@ -447,7 +531,32 @@ grupo. (Se tiveres 2FA, pede também a password.)
 Só quando tiveres confiança (e dados reais de sinais) é que faz sentido pensar
 em ligar isto a uma conta real.
 
+### Estado da preparação na demo
+
+Depois do reboot da VPS, o Caddy, servidor, listener e MetaTrader 5 voltaram a
+arrancar. A conta demo `5054644473` está ligada, em modo hedging, com
+`trade_allowed=true`. A principal escolhida é `tp2_protect` (2 pernas, saída no
+TP2). Em 01/09/2026, o saldo observado era **€1.003,89**. O servidor está em
+`mt5-real` com `MT5_DRY_RUN=0`, portanto novos sinais aprovados podem enviar
+ordens para esta conta demo. O paper/shadow continua isolado; isto não autoriza
+uma conta real.
+
 ---
+
+## Proteção extra durante uma sequência de perdas
+
+As duas estratégias auto-escada em shadow (`auto_escada_3` e
+`auto_escada_5`) observam o mesmo mercado, mas sem enviar ordens para a conta
+MT5. Se as últimas 10 trades dessa estratégia tiverem PF inferior a 1, o bot
+entra temporariamente em modo defensivo: aperta o trailing, ativa o time stop
+e limita o risco de cada nova entrada a 1,25%. Quando a janela recupera, volta
+ao risco normal. A conta virtual de cada estratégia é independente da outra e
+da conta real.
+
+O estado da proteção também é guardado. Se a VPS reiniciar depois de TP1 ou
+durante um trailing, o bot recupera o pico, os SLs e o momento da proteção em
+vez de começar a trade do zero. Esta recuperação é automática e não altera a
+estratégia principal nem o kill switch.
 
 ## Perguntas frequentes
 

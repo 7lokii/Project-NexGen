@@ -1,9 +1,9 @@
 /* =========================================================
    Project NexGen — common.js
    JS partilhado por TODAS as páginas da dashboard:
-   helpers, áudio, boot sequence, WebSocket, chrome global
-   (header badges, statusbar, terminais, toasts) e ações comuns.
-   Cada página define `pageRender(s)` para o seu conteúdo.
+   helpers, WebSocket, render do chrome global (barra superior:
+   navegação + estado + preços), badges, statusbar, toasts e
+   ações comuns. Cada página define `pageRender(s)`.
    ========================================================= */
 
 let last = null;
@@ -74,133 +74,209 @@ let CURRENCY = "$";
 const cur = (v) => CURRENCY + fmt(v);
 const money = (v) => (v > 0 ? "+" : "") + cur(v);
 
-/* ------------------------------------------- som sintetizado (Web Audio) */
-let audioCtx = null;
-function ensureAudio() {
-  try {
-    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
-    if (audioCtx.state === "suspended") audioCtx.resume();
-    return audioCtx;
-  } catch (e) { return null; }
+/* ------------------------- cache de assinatura de conteúdo (render diffs)
+   contentChanged(key, payload) devolve true quando o payload mudou desde a
+   última chamada — permite aos renderers saltar rebuilds de DOM em snapshots
+   que não mudaram (o snapshot chega ~1×/s). */
+const _sigCache = {};
+function contentChanged(key, payload) {
+  let s;
+  try { s = JSON.stringify(payload); } catch (e) { s = String(payload); }
+  if (_sigCache[key] === s) return false;
+  _sigCache[key] = s;
+  return true;
 }
-function beep(freq, dur, type, delay, gain) {
-  const ctx = ensureAudio();
-  if (!ctx) return;
-  try {
-    const t0 = ctx.currentTime + (delay || 0);
-    const osc = ctx.createOscillator();
-    const g = ctx.createGain();
-    osc.type = type || "square";
-    osc.frequency.setValueAtTime(freq, t0);
-    g.gain.setValueAtTime(gain || 0.045, t0);
-    g.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
-    osc.connect(g).connect(ctx.destination);
-    osc.start(t0);
-    osc.stop(t0 + dur + 0.02);
-  } catch (e) { /* sem áudio disponível */ }
-}
-/* clique de teclado curto (linhas do boot) */
-function tick() {
-  const ctx = ensureAudio();
-  if (!ctx) return;
-  try {
-    const t0 = ctx.currentTime;
-    const osc = ctx.createOscillator();
-    const g = ctx.createGain();
-    osc.type = "square";
-    osc.frequency.setValueAtTime(1700 + Math.random() * 500, t0);
-    g.gain.setValueAtTime(0.022, t0);
-    g.gain.exponentialRampToValueAtTime(0.001, t0 + 0.035);
-    osc.connect(g).connect(ctx.destination);
-    osc.start(t0);
-    osc.stop(t0 + 0.05);
-  } catch (e) {}
-}
-/* sons por tipo de notificação */
-function soundTradeOpen() { beep(660, .09, "square"); beep(990, .12, "square", .1); }
-function soundTradeClose() { beep(520, .1, "square"); }
-function soundRisk() { beep(170, .18, "sawtooth"); beep(120, .22, "square", .16); }
-function soundMgmt() { beep(440, .08, "square"); beep(440, .08, "square", .12); }
-function soundBlip() { beep(880, .06, "square", 0, .028); }
-const NOTIF_SOUNDS = { trade_open: soundTradeOpen, trade_close: soundTradeClose, risk: soundRisk, management: soundMgmt, summary: soundBlip, system: soundBlip };
-function playNotifSound(kind) { const fn = NOTIF_SOUNDS[kind]; if (fn) fn(); }
-/* primeiro gesto do utilizador desbloqueia o áudio (autoplay policy) */
-document.addEventListener("pointerdown", () => { try { ensureAudio(); } catch (e) {} });
+function setActiveTab(id) { window._activeTab = id; }
 
-/* ------------------------------------------- boot sequence da dashboard */
-const dashBoot = $("dashBoot");
-const dashBootText = $("dashBootText");
-let _bootBaseDone = false;
-let _bootSnapshotDone = false;
-let _pendingComplete = null;
-function dashBootLine(txt) { dashBootText.textContent += txt + "\n"; tick(); }
-function finishDashBoot() {
-  // esconde sempre: com snapshot (linhas reais) ou no fallback de ~3s
-  // (sem snapshot — ex.: WebSocket bloqueado) o boot tem de sair do ecrã
-  if (dashBoot) {
-    setTimeout(() => dashBoot.classList.add("hide"), 400);
-    setTimeout(() => { dashBoot.style.display = "none"; }, 950);
-  }
-}
-function completeDashBoot(s) {
-  if (_bootSnapshotDone) return;
-  const build = () => {
-    _bootSnapshotDone = true;
-    const exec = s.execution || {};
-    if (exec.mode && exec.mode.startsWith("mt5")) {
-      dashBootLine(exec.connected ? "> MT5 BRIDGE ........... OK" : "> MT5 BRIDGE ........... OFFLINE");
-      if (exec.connected) dashBootLine(exec.trade_allowed ? "> ALGO TRADING ......... OK" : "> ALGO TRADING ......... OFF");
-      dashBootLine("> MODO ................. " + (exec.mode === "mt5-real" ? "REAL (DEMO)" : exec.mode.toUpperCase()));
-    } else {
-      dashBootLine("> SIM ENGINE ........... OK");
-    }
-    dashBootLine("> DASHBOARD ONLINE .....");
-    finishDashBoot();
-  };
-  if (_bootBaseDone) build();
-  else _pendingComplete = build;
-}
-function runDashBoot() {
-  if (!dashBoot) return;
-  // o boot só corre UMA vez por sessão (login → index): ao trocar de página
-  // (teste/diagnóstico/help) o overlay some logo e o conteúdo aparece direto
-  let bootDone = false;
-  try { bootDone = sessionStorage.getItem("nexgenBootDone") === "1"; } catch (err) { /* ignore */ }
-  if (bootDone) {
-    dashBoot.style.display = "none";
-    _bootSnapshotDone = true;  // o snapshot do WS não precisa de linhas de boot
-    _bootBaseDone = true;
-    return;
-  }
-  try { sessionStorage.setItem("nexgenBootDone", "1"); } catch (err) { /* ignore */ }
-  const lines = ["> INIT PROJECT NEXGEN ...", "> ESTABLISHING UPLINK ...", "> TELEGRAM LISTENER .... OK"];
-  let i = 0;
-  const step = () => {
-    if (i < lines.length) { dashBootLine(lines[i]); i++; setTimeout(step, 320); }
-    else {
-      _bootBaseDone = true;
-      if (_pendingComplete) { _pendingComplete(); _pendingComplete = null; }
-      else setTimeout(() => { if (!_bootSnapshotDone) { dashBootLine("> DASHBOARD ONLINE ....."); finishDashBoot(); } }, 3000);
-    }
-  };
-  step();
+/* ------------------------ chrome global: barra superior (fonte única)
+   Renderizado UMA vez aqui — as páginas só trazem um placeholder vazio
+   <div id="appChrome"></div>. A barra tem duas linhas: navegação + estado
+   (badges/relógio/kill/sair) e a faixa de preços do mercado. */
+const STRATEGY_MENU = [
+  { id: "nova_gestao", label: "TP1..TP5 + gestão", sub: "principal · referência" },
+  { id: "nova_gestao_fallback", label: "TP1..TP5 + gestão + fallback", sub: "experimental · 5 min" },
+  { id: "tp2_protect", label: "Sair no TP2 + protect only", sub: "só protect do grupo" },
+  { id: "auto_3", label: "Auto 3 TPs", sub: "3 pernas" },
+  { id: "auto_escada_3", label: "Auto 3 TPs + escada", sub: "Fase 2 · escada + trailing" },
+  { id: "auto_escada_3_hibrida", label: "Auto 3 TPs + escada + protect híbrido", sub: "paper · proteção mecânica + grupo" },
+  { id: "auto_escada_5", label: "Auto 5 TPs + escada + confirmação", sub: "5 pernas + confirmação" },
+];
+/* ordem = ordem do DOM: PRINCIPAL, as 7 estratégias do dropdown, SISTEMA. */
+const TERM_ORDER = ["principal",
+  ...STRATEGY_MENU.map(s => "teste-" + s.id),
+  "diagnostico", "auditoria", "help"];
+
+function _menuItemHTML(page, label, sub, opts = {}) {
+  const href = opts.href || ("/teste?s=" + String(page).replace(/^teste-/, ""));
+  return `<a class="term-menu-item${opts.cls ? " " + opts.cls : ""}" data-page="${page}" href="${href}"><span class="cur">▸</span>${label}<span class="sub">${sub}</span>${opts.best ? '<span class="best"></span>' : ""}</a>`;
 }
 
+/* re-hidrata o dropdown ▚ ESTRATÉGIAS a partir de /api/strategies — o registo
+   em strategies.py é a fonte única; o STRATEGY_MENU acima é só o fallback. */
+async function hydrateStrategyMenu() {
+  const drop = $("dropEstrategias");
+  if (!drop) return;
+  try {
+    const reg = await fetch("/api/strategies").then(r => r.json());
+    const menu = Array.isArray(reg.menu) ? reg.menu : [];
+    if (!menu.length) return;
+    const current = new URLSearchParams(location.search).get("s");
+    drop.innerHTML = menu.map(s =>
+      _menuItemHTML("teste-" + s.id, s.label, s.sub || "", { best: true }))
+      .join("\n    ");
+    if (current) {
+      const item = drop.querySelector(`[data-page="teste-${current}"]`);
+      if (item) item.classList.add("active");
+    }
+    if (window._wireStrategyDrop) window._wireStrategyDrop();
+    const summary = $("strategyLifecycleSummary");
+    if (summary) {
+      summary.innerHTML = (reg.strategies || []).map(s => {
+        const lc = s.lifecycle || {};
+        const state = lc.state || (s.hidden ? "hidden" : "active");
+        const cls = state === "retired" ? "loss" : (state === "candidate" ? "warn" : "win");
+        return `<span class="strategy-lifecycle-chip ${cls}"><b>${esc(s.nome || s.id)}</b><small>${esc(state)}</small></span>`;
+      }).join("");
+    }
+  } catch (e) { /* fallback local já renderizado */ }
+}
+
+/* ------------------------------------------- tema claro/escuro */
+/* o atributo data-theme é aplicado antes do paint por um snippet no <head>
+   de cada página; o common.js garante o estado aqui para páginas antigas e
+   mantém o botão sincronizado. */
+const THEME_KEY = "nx_theme";
+function currentTheme() {
+  return document.documentElement.dataset.theme === "dark" ? "dark" : "light";
+}
+function _syncThemeButton(t) {
+  const b = $("btnTheme");
+  if (!b) return;
+  const dark = t === "dark";
+  b.textContent = dark ? "☀" : "☾";
+  b.title = dark ? "Tema claro" : "Tema escuro";
+  b.setAttribute("aria-label", dark ? "Mudar para tema claro" : "Mudar para tema escuro");
+  b.setAttribute("aria-pressed", String(dark));
+}
+function applyTheme(t) {
+  document.documentElement.dataset.theme = t;
+  try { localStorage.setItem(THEME_KEY, t); } catch (e) { /* cookies off */ }
+  _syncThemeButton(t);
+}
+function toggleTheme() { applyTheme(currentTheme() === "dark" ? "light" : "dark"); }
+function themeIsDark() { return currentTheme() === "dark"; }
+/* --- seguir o SO ao vivo ---
+   Enquanto o utilizador NÃO escolher manualmente (sem nx_theme no storage),
+   o tema acompanha o prefers-color-scheme do sistema, incluindo mudanças
+   ao vivo. Uma escolha explícita no botão passa a mandar (fica persistida)
+   e o SO deixa de interferir. */
+function hasExplicitTheme() {
+  try { return localStorage.getItem(THEME_KEY) !== null; }
+  catch (e) { return true; } // sem storage: conservador, não segue o SO
+}
+function systemTheme() {
+  try { return matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"; }
+  catch (e) { return "light"; }
+}
+function applySystemTheme() {
+  document.documentElement.dataset.theme = systemTheme();
+  _syncThemeButton(systemTheme());
+}
+function followSystemTheme() {
+  if (hasExplicitTheme()) return;
+  applySystemTheme();
+}
+(function wireSystemThemeFollow() {
+  try {
+    const mq = matchMedia("(prefers-color-scheme: dark)");
+    mq.addEventListener("change", followSystemTheme);
+  } catch (e) { /* media query API indisponível — fica com o tema do head */ }
+})();
+/* paleta dos gráficos canvas — cores de série (vividas) ficam iguais;
+   grelha/eixo/fundo adaptam-se ao tema para leitura em ambos. */
+function chartPalette() {
+  return themeIsDark()
+    ? { grid: "#273142", axis: "#8896ab", track: "#101828" }
+    : { grid: "#e2e8f0", axis: "#94a3b8", track: "#f6f8fb" };
+}
+
+function _appChromeHTML() {
+  return `
+  <header class="topbar" id="topBar">
+    <div class="tb-row1">
+      <button id="btnMenu" class="ghost tb-burger" title="Menu" aria-label="Abrir menu">☰</button>
+      <a class="tb-brand" href="/">
+        <span class="tb-logo">N</span>
+        <span class="tb-title">Project NexGen</span>
+        <span class="tb-sub">copy-trading · execução real (demo MT5)</span>
+      </a>
+      <nav class="tb-nav" id="tbNav" aria-label="Navegação">
+        ${_menuItemHTML("principal", "PRINCIPAL", "conta MT5 · estratégia ativa", { cls: "main", href: "/", best: true })}
+        ${_menuItemHTML("segundaria", "SEGUNDA CONTA", "lane tp2 · 2ª conta demo", { href: "/segundaria" })}
+        <span class="term-drop-toggle" id="dropEstrategiasToggle" role="button" tabindex="0" aria-expanded="false">▚ ESTRATÉGIAS <span class="drop-caret">▾</span></span>
+        <div class="term-drop" id="dropEstrategias">
+          ${STRATEGY_MENU.map(s => _menuItemHTML("teste-" + s.id, s.label, s.sub, { best: true })).join("\n    ")}
+        </div>
+        ${_menuItemHTML("diagnostico", "DIAGNÓSTICO", "MT5 · listener · BD", { href: "/diagnostico" })}
+        ${_menuItemHTML("auditoria", "AUDITORIA", "journal · replay · forward", { href: "/auditoria" })}
+        ${_menuItemHTML("help", "HELP", "estratégias · conceitos", { href: "/help" })}
+      </nav>
+      <div class="tb-state">
+        <span class="hdr-badges" id="hdrBadges">
+          <span id="modeBadge" class="badge auto">auto</span>
+          <span id="strategyBadge" class="badge violet" style="display:none" title="Estratégia ativa da conta principal"></span>
+          <span id="execBadge" class="badge mt5-dry" style="display:none"></span>
+          <span id="marketBadge" class="badge manual">simulação</span>
+          <span id="killBadge" class="badge paused" style="display:none">PAUSADO</span>
+        </span>
+        <span class="online-users" id="onlineUsers" title="Utilizadores com a dashboard aberta">—</span>
+        <span class="clock" id="clock">—</span>
+        <button id="btnTheme" class="ghost tb-theme" title="Tema escuro" aria-label="Mudar para tema escuro" aria-pressed="false">☾</button>
+        <button id="btnKill" class="danger">Kill switch</button>
+        <button id="btnLogout" class="ghost" style="display:none" title="Terminar sessão">Sair</button>
+      </div>
+    </div>
+  </header>`;
+}
+
+/* página ativa a partir do URL */
+function _currentPageId() {
+  const p = location.pathname;
+  if (p.startsWith("/teste")) return "teste-" + (new URLSearchParams(location.search).get("s") || "nova_gestao");
+  if (p.startsWith("/segundaria")) return "segundaria";
+  if (p.startsWith("/diagnostico")) return "diagnostico";
+  if (p.startsWith("/auditoria")) return "auditoria";
+  if (p.startsWith("/help")) return "help";
+  return "principal";
+}
+
+/* vista de lane a partir do URL (?lane=tp2|main) — comum a todas as páginas
+   que partilham o chrome (o index.html tem a própria LANE_VIEW com o mesmo
+   critério) */
+function _laneViewId() {
+  const v = new URLSearchParams(location.search).get("lane") || "";
+  return v === "tp2" || v === "main" ? v : "";
+}
+
+/* injeta o chrome no placeholder (as páginas só trazem <div id="appChrome">) */
+(() => {
+  const host = $("appChrome");
+  if (host && !host.childElementCount) host.innerHTML = _appChromeHTML();
+})();
+
+/* ------------------------------------------- WebSocket */
 function connect() {
-  // HTTPS (túnel/VPS) exige wss:// — ws:// num site https é bloqueado
-  // pelo navegador (mixed content) e o snapshot nunca chega
   const scheme = location.protocol === "https:" ? "wss://" : "ws://";
   const ws = new WebSocket(`${scheme}${location.host}/ws`);
   ws.onmessage = (e) => {
     const m = JSON.parse(e.data);
-    if (m.type === "snapshot") { render(m.data); completeDashBoot(m.data); }
+    if (m.type === "snapshot") { render(m.data); }
     if (m.type === "notification") {
       if (typeof prependFeed === "function") prependFeed(m);
       if (m.kind === "revived") toast("🔄 " + m.text.replace(/^🔄\s*/, ""), "info");
     }
   };
   ws.onclose = () => {
-    // se a sessão expirou, o servidor fecha o WS — confirmar e ir para o login
     fetch("/api/status").catch(() => {});
     setTimeout(connect, 2000);
   };
@@ -208,28 +284,26 @@ function connect() {
 
 /* ---------------------------------------------------------------- render */
 
-/* a barra de tabs cola por baixo do header — a altura do header muda com o
-   zoom do navegador (e quando os elementos envolvem), por isso mede-se ao
-   vivo e expõe-se em --hdr-h; o zoom dispara resize no browser */
+/* a barra de tabs cola por baixo da barra superior — a altura é medida ao
+   vivo e exposta em --hdr-h (muda com o zoom do navegador) */
 function updateHdrH() {
-  const h = document.querySelector("header");
-  document.documentElement.style.setProperty("--hdr-h", (h ? h.offsetHeight : 52) + "px");
+  const h = document.querySelector(".topbar") || document.querySelector("header");
+  document.documentElement.style.setProperty("--hdr-h", (h ? h.offsetHeight : 96) + "px");
 }
 window.addEventListener("resize", updateHdrH);
 updateHdrH();
 
 /* estratégia ativa + corrida paper (aviso se um teste ganha à principal) */
-const STRATEGY_NAMES = { nova: "TP1..TP5", nova_gestao: "TP1..TP5 + gestão", tp2: "TP1→BE + sair no TP2", nova_gestao_3: "TP1..TP3 + gestão", tp2_gestao: "Sair no TP2 + gestão", tp2_protect: "Sair no TP2 + protect only", auto_2: "Auto 2 TPs", auto_3: "Auto 3 TPs", auto_5: "Auto 5 TPs", auto_escada_3: "Auto 3 TPs + escada", auto_escada_3_hibrida: "Auto 3 TPs + escada + protect híbrido", auto_escada_5: "Auto 5 TPs + escada + confirmação" };
+const STRATEGY_NAMES = { nova: "TP1..TP5", nova_gestao: "TP1..TP5 + gestão", nova_gestao_fallback: "TP1..TP5 + gestão + fallback", tp2_protect: "Sair no TP2 + protect only", auto_3: "Auto 3 TPs", auto_5: "Auto 5 TPs", auto_escada_3: "Auto 3 TPs + escada", auto_escada_3_hibrida: "Auto 3 TPs + escada + protect híbrido", auto_escada_5: "Auto 5 TPs + escada + confirmação" };
 
 /* períodos do bloco "desde o início": todo o histórico (0), formato atual
-   (2026-07-28, data da 1ª mensagem do formato atual) e só o mês corrente
-   (1º dia do mês — dinâmico para não ficar preso a agosto) */
+   (2026-07-28) e só o mês corrente (dinâmico) */
 const _ALL_FIRST = (() => {
   const d = new Date();
   return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-01";
 })();
 const _ALL_MONTHS = ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"];
-let _allPeriod = "0"; /* valor do seletor de período (since ou "0") — partilhado pelas páginas de teste, persistido na config */
+let _allPeriod = "0";
 function _allPeriodLabel(since) {
   if (!since || since === "0") return "no início do grupo";
   if (since === "2026-07-28") return "a 28/07 (formato atual)";
@@ -270,14 +344,14 @@ function renderStrategyBadge(sid, s) {
   b.classList.remove("flash");
   b.innerHTML = orphan
     ? `<span class="badge-main">⚠️ ${esc(sid || "?")} (config órfã)</span><span class="badge-sub">a correr com ${esc(p.nome || "a principal")} — ${esc(pt)}</span>`
-    : `<span class="badge-main">♟ ${esc(name)}</span><span class="badge-sub">${esc(pt)}</span>`;
+    : `<span class="badge-main">${esc(name)}</span><span class="badge-sub">${esc(pt)}</span>`;
   b.title = orphan
     ? `⚠️ A estratégia "${esc(sid)}" da config já não existe no registo — a conta principal está a correr com ${esc(p.nome || "nova_gestao")} (fallback). Corrige a config (promove outra estratégia).`
     : `Estratégia ativa da conta principal — execução real com: ${pt}`;
   b.style.display = "";
   if (_prevStrategy !== null && _prevStrategy !== sid) {
     b.classList.add("flash");
-    toast((orphan ? "⚠️ Config órfã: " : "♟ Estratégia ativa mudou: ") + name + " — " + pt, orphan ? "err" : "ok");
+    toast((orphan ? "⚠️ Config órfã: " : "Estratégia ativa mudou: ") + name + " — " + pt, orphan ? "err" : "ok");
   }
   _prevStrategy = sid;
 }
@@ -285,6 +359,26 @@ function renderStrategyBadge(sid, s) {
 function renderExecBadge(exec) {
   const b = $("execBadge");
   if (!exec.mode) { b.style.display = "none"; return; }
+  const lanes = (exec.lanes || []).filter(l => l.enabled !== false);
+  if (lanes.length > 1) {
+    const modeLabel = exec.mode === "mt5-dry" ? "MT5 dry-run"
+      : exec.mode === "mt5-real" ? "MT5 real" : "simulação";
+    const parts = lanes.map(l => {
+      const acct = l.account || {};
+      const login = acct.login || "";
+      return `${login || l.lane_id} · ${l.strategy_id}`;
+    });
+    b.textContent = `${modeLabel} · ${parts.join(" + ")}`.trim();
+    b.title = lanes.map(l => {
+      const acct = l.account || {};
+      const bal = `${fmt(acct.balance ?? 0)} ${acct.currency || ""}`.trim();
+      return `lane ${l.lane_id} · ${l.strategy_id} (${l.strategy_name || ""}) · conta ${acct.login || "?"} · saldo ${bal}`;
+    }).join("\n");
+    b.className = "badge " + (exec.mode === "mt5-dry" ? "mt5-dry"
+      : exec.mode === "mt5-real" ? "mt5-real" : "manual");
+    b.style.display = "";
+    return;
+  }
   const acct = exec.account || {};
   const bal = `${fmt(acct.balance ?? 0)} ${acct.currency || ""}`.trim();
   if (exec.mode === "mt5-real" && exec.connected) {
@@ -293,12 +387,12 @@ function renderExecBadge(exec) {
       b.title = `O terminal MT5 está com a negociação algorítmica DESLIGADA — liga o botão "Algo Trading" na barra de ferramentas.\nconta ${acct.login} · saldo ${bal} · equity ${fmt(acct.equity ?? 0)} ${acct.currency || ""}`;
       b.className = "badge mt5-off";
     } else {
-      b.textContent = `🔌 MT5 real · ${acct.login || ""} · ${bal}`.trim();
+      b.textContent = `MT5 real · ${acct.login || ""} · ${bal}`.trim();
       b.title = `conta ${acct.login} · equity ${fmt(acct.equity ?? 0)} ${acct.currency || ""} · alavancagem 1:${acct.leverage ?? "?"}`;
       b.className = "badge mt5-real";
     }
   } else if (exec.mode === "mt5-dry" && exec.connected) {
-    b.textContent = `🧪 MT5 dry-run · ${acct.login || ""} · ${bal}`.trim();
+    b.textContent = `MT5 dry-run · ${acct.login || ""} · ${bal}`.trim();
     b.title = `conta ${acct.login} · equity ${fmt(acct.equity ?? 0)} ${acct.currency || ""} · ordens registadas, nunca enviadas`;
     b.className = "badge mt5-dry";
   } else if (exec.mode.startsWith("mt5")) {
@@ -306,19 +400,16 @@ function renderExecBadge(exec) {
     b.title = "Abre o terminal MT5 e faz login para o bot conseguir executar.";
     b.className = "badge mt5-off";
   } else {
-    b.textContent = "🧪 simulação";
+    b.textContent = "simulação";
     b.className = "badge manual";
   }
   b.style.display = "";
 }
 
-const TICKER_LABEL = { XAUUSD: "GOLD", XAGUSD: "SILVER" };
 /* cores das estratégias na corrida paralela / páginas de teste / HELP */
-const RACE_COLORS = { nova: "#3b82f6", nova_gestao: "#9A4FE8", tp2: "#f5a524", nova_gestao_3: "#22d3ee", tp2_gestao: "#f97316", tp2_protect: "#10b981", auto_2: "#fb7185", auto_3: "#22d3ee", auto_5: "#64748b", auto_escada_3: "#a3e635", auto_escada_3_hibrida: "#c084fc", auto_escada_5: "#f59e0b" };
+const RACE_COLORS = { nova: "#3b82f6", nova_gestao: "#6d28d9", nova_gestao_fallback: "#16a34a", tp2_protect: "#0d9488", auto_3: "#0891b2", auto_5: "#64748b", auto_escada_3: "#65a30d", auto_escada_3_hibrida: "#9333ea", auto_escada_5: "#d97706" };
 
-/* risco % e saldo inicial do sim das páginas de teste (estudos). O saldo
-   default é 1000 (o saldo próprio da conta paper da estratégia) — nunca o
-   saldo da conta MT5. */
+/* risco % e saldo inicial do sim das páginas de teste (estudos) */
 function testeSimQS() {
   let q = "";
   const rEl = $("testeRisk");
@@ -329,55 +420,46 @@ function testeSimQS() {
   q += "&balance=" + (b > 0 ? b : 1000);
   return q;
 }
-/* cor do preço conforme a variação vs o valor anterior (verde = subiu,
-   vermelho = desceu, neutro = igual/1ª leitura) — movimento ao vivo */
-let _tickPrev = {};
-function renderPriceStrip(market) {
-  const strip = $("priceStrip");
-  if (!strip) return;
-  const sources = market.sources || {};
-  const prices = market.prices || {};
-  const syms = Object.keys(prices);
-  if (!syms.length) { strip.innerHTML = ""; return; }
-  strip.innerHTML = syms.map(sym => {
-    const src = sources[sym] || "sim";
-    const v = prices[sym];
-    const label = src === "real" ? "preço real" : "simulado";
-    const cls = src === "real" ? "real" : "sim";
-    const show = TICKER_LABEL[sym] || sym;
-    const val = v === null || v === undefined ? "—" :
-      (v >= 100 ? fmt(v) : fmt(v, 4));
-    let dir = "";
-    if (v !== null && v !== undefined) {
-      const prev = _tickPrev[sym];
-      if (prev !== undefined) dir = v > prev ? " up" : (v < prev ? " down" : "");
-      _tickPrev[sym] = v;
-    }
-    // variação % do dia (chartPreviousClose do Yahoo) — só quando há valor
-    const chg = (market.changes || {})[sym];
-    let chgH = "";
-    if (chg !== undefined && chg !== null) {
-      const chgN = Number(chg);
-      const chgCls = chgN > 0 ? "up" : chgN < 0 ? "down" : "";
-      // barrinha da magnitude (2% = largura total) com tooltip a explicar
-      const mag = Math.max(4, Math.round(Math.min(Math.abs(chgN) / 2.0, 1) * 100));
-      const bCol = chgN > 0 ? "var(--green)" : chgN < 0 ? "var(--red)" : "var(--muted)";
-      const tip = `Variação do dia: ${chgN > 0 ? "+" : ""}${chgN.toFixed(2)}% vs o fecho de ontem (chartPreviousClose)`;
-      chgH = `<span class="pchg ${chgCls}">${chgN > 0 ? "+" : ""}${chgN.toFixed(2)}%</span>` +
-        `<span class="pbar ${chgCls}" title="${tip}"><i style="width:${mag}%;background:${bCol}"></i></span>`;
-    }
-    const tip = `${esc(sym)} (${show}) · ${label}${chg ? ` · variação do dia ${chg > 0 ? "+" : ""}${Number(chg).toFixed(2)}% (barrinha vs fecho de ontem)` : ""}`;
-    return `<span class="price-chip ${cls}" title="${tip}">${esc(show)} <span class="pr"><span class="p${dir}" data-text="${esc(val)}">${val}</span>${chgH}</span></span>`;
-  }).join("");
+/* ---------------------------------------------------- status bar / health */
+function ensureGlobalHealthBanner() {
+  if ($("healthBanner")) return $("healthBanner");
+  const anchor = document.querySelector(".wrap header, .wrap .statusbar");
+  if (!anchor) return null;
+  const banner = document.createElement("div");
+  banner.id = "healthBanner";
+  banner.className = "health-banner";
+  banner.setAttribute("role", "status");
+  banner.setAttribute("aria-live", "polite");
+  banner.innerHTML = '<span class="health-icon" aria-hidden="true">●</span><div><b id="healthTitle">A ligar…</b><span id="healthDetail" class="muted">A verificar serviços…</span></div><span id="healthUpdated" class="health-updated">—</span>';
+  anchor.insertAdjacentElement("afterend", banner);
+  return banner;
 }
 
-/* ---------------------------------------------------- status bar / auto preview */
+function renderHealthBanner(s) {
+  const banner = ensureGlobalHealthBanner();
+  if (!banner) return;
+  const ex = s.execution || {}, lis = s.listener || {};
+  const issues = [];
+  if (ex.mode && ex.mode.startsWith("mt5") && !ex.connected) issues.push("MT5 offline");
+  if (ex.mode && ex.mode.startsWith("mt5") && ex.connected && !ex.trade_allowed) issues.push("AutoTrading desligado");
+  if (lis && lis.alive === false && !lis.need_code) issues.push("listener Telegram offline");
+  if (s.config && s.config.kill_switch) issues.push("kill switch ativo");
+  const critical = issues.some(x => x.includes("offline") || x.includes("desligado"));
+  banner.classList.toggle("healthy", issues.length === 0);
+  banner.classList.toggle("attention", issues.length > 0 && !critical);
+  banner.classList.toggle("critical", critical);
+  const title = $("healthTitle"), detail = $("healthDetail"), updated = $("healthUpdated");
+  if (title) title.textContent = issues.length ? (critical ? "Atenção necessária" : "Operação pausada") : "Operação normal";
+  if (detail) detail.textContent = issues.length ? issues.join(" · ") : "MT5 · AutoTrading · listener Telegram verificados";
+  if (updated) updated.textContent = "atualizado " + new Date().toLocaleTimeString("pt-PT", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
 function renderStatusBar(s) {
   const dot = $("stDot"), txt = $("stText");
   const c = s.config, ex = s.execution || {};
   const kill = !!c.kill_switch;
   if (kill) { dot.className = "dot bad"; txt.innerHTML = "<b style='color:var(--red)'>PAUSADO</b> · kill switch ativo — nada abre até reativares"; $("stLast").textContent = ""; return; }
-  if (c.mode === "auto") {
+  {
     const wait = (s.signals || []).find(x => x.status === "awaiting_edit");
     if (wait) {
       dot.className = "dot warn";
@@ -387,9 +469,6 @@ function renderStatusBar(s) {
       dot.className = "dot " + (hasOpen ? "warn" : "ok");
       txt.innerHTML = `Modo <b style='color:var(--green)'>auto</b> · ${ex.connected && ex.trade_allowed ? "execução real ligada" : "sem execução (ver badge MT5)"}${hasOpen ? ` · <b>${s.account.open_trades}</b> trade(s) aberta(s) a ser geridas` : " · a aguardar próximo sinal"}`;
     }
-  } else {
-    dot.className = "dot ok";
-    txt.innerHTML = `Modo <b style='color:var(--blue)'>manual</b> · sinais ficam <b>pendentes</b> — aprova-os na tab Sinais`;
   }
   const mgmt = (s.signals || []).find(x => x.status === "management");
   $("stLast").textContent = mgmt ? "Última do grupo: " + when(mgmt.received_at) + " " + String(mgmt.raw_text || "").replace(/\*\*/g, "").replace(/\s+/g, " ").trim().slice(0, 70) : "";
@@ -398,10 +477,9 @@ function renderStatusBar(s) {
 const _persistToasts = {};
 const _toastSnooze = {};
 function persistentToast(key, msg, kind) {
-  // dispensado há menos de 5 min? o utilizador já viu — volta só se persistir
   if (_toastSnooze[key] && Date.now() - _toastSnooze[key] < 5 * 60 * 1000) return;
   const box = document.getElementById("toasts") || (() => {
-    const el = document.createElement("div"); el.id = "toasts"; document.body.appendChild(el); return el;
+    const el = document.createElement("div"); el.id = "toasts"; el.setAttribute("role", "region"); el.setAttribute("aria-label", "Avisos"); document.body.appendChild(el); return el;
   })();
   let el = _persistToasts[key];
   if (!el) {
@@ -434,16 +512,14 @@ function watchAutoTrading(exec) {
   const on = !!exec.trade_allowed;
   const conn = !!exec.connected;
   if (!conn) {
-    persistentToast("mt5", "⚠️ MT5 sem terminal — a ligação ao MetaTrader caiu. Abre o terminal e faz login, senão nada executa.", "err");
+    persistentToast("mt5", "⚠️ MT5 offline · abre o terminal e faz login.", "err");
   } else if (!on) {
-    persistentToast("mt5", "⚠️ AutoTrading DESLIGADO no terminal MT5 — liga o botão \"Algo Trading\" na barra de ferramentas, senão as ordens serão recusadas.", "err");
+    persistentToast("mt5", "⚠️ AutoTrading OFF · liga o Algo Trading no MT5.", "err");
   } else {
     clearPersistentToast("mt5");
   }
-  if (_lastConnected !== null && conn !== _lastConnected && conn && on) { toast("✅ MT5 reconectado", "ok"); soundTradeOpen(); }
-  if (_lastTradeAllowed !== null && on !== _lastTradeAllowed && on) { toast("✅ AutoTrading ligado — trades reais ativas", "ok"); soundTradeOpen(); }
-  if (_lastConnected !== null && conn !== _lastConnected && !conn) soundRisk();
-  if (_lastTradeAllowed !== null && on !== _lastTradeAllowed && !on) soundRisk();
+  if (_lastConnected !== null && conn !== _lastConnected && conn && on) { toast("✅ MT5 reconectado", "ok"); }
+  if (_lastTradeAllowed !== null && on !== _lastTradeAllowed && on) { toast("✅ AutoTrading ligado — trades reais ativas", "ok"); }
   _lastTradeAllowed = on;
   _lastConnected = conn;
 }
@@ -453,19 +529,19 @@ function watchListener(lis) {
   if (!lis) { _lastListenerAlive = null; clearPersistentToast("listener"); return; }
   const alive = !!lis.alive;
   if (!alive && !lis.need_code) {
-    persistentToast("listener", "⚠️ Listener do Telegram OFFLINE — o servidor vai tentar reiniciá-lo automaticamente. Se precisar de código de login, aparece aqui.", "err");
+    persistentToast("listener", "⚠️ Telegram offline · watchdog vai tentar reiniciar.", "err");
   } else if (alive) {
     clearPersistentToast("listener");
   }
   if (_lastListenerAlive !== null && alive !== _lastListenerAlive) {
-    if (!alive) soundRisk();
-    else { toast("✅ Listener do Telegram online", "ok"); soundTradeOpen(); }
+    if (!alive) { /* silêncio: o toast persistente já avisa */ }
+    else { toast("✅ Listener do Telegram online", "ok"); }
   }
   _lastListenerAlive = alive;
 }
 function renderCodePrompt(lis) {
   const box = document.getElementById("toasts") || (() => {
-    const el = document.createElement("div"); el.id = "toasts"; document.body.appendChild(el); return el;
+    const el = document.createElement("div"); el.id = "toasts"; el.setAttribute("role", "region"); el.setAttribute("aria-label", "Avisos"); document.body.appendChild(el); return el;
   })();
   let el = document.getElementById("codeToast");
   if (!(lis && lis.need_code)) {
@@ -501,7 +577,7 @@ function renderCodePrompt(lis) {
 /* ------------------------------------------------------------- actions */
 function toast(msg, kind = "info") {
   const box = document.getElementById("toasts") || (() => {
-    const el = document.createElement("div"); el.id = "toasts"; document.body.appendChild(el); return el;
+    const el = document.createElement("div"); el.id = "toasts"; el.setAttribute("role", "region"); el.setAttribute("aria-label", "Avisos"); document.body.appendChild(el); return el;
   })();
   const t = document.createElement("div");
   t.className = "toast " + kind;
@@ -535,47 +611,67 @@ $("btnKill").onclick = async () => {
 };
 $("btnLogout").onclick = async () => {
   await fetch("/api/logout", { method: "POST" });
-  // novo login → volta a mostrar o boot (a animação é por sessão)
-  try { sessionStorage.removeItem("nexgenBootDone"); } catch (err) { /* ignore */ }
   location.href = "/login";
 };
 
 /* ------------------------------------------------------- chrome global */
+function relativeAge(now) {
+  if (!now) return "atualização pendente";
+  const sec = Math.max(0, Math.round((Date.now() - now) / 1000));
+  return sec < 2 ? "atualizado agora" : `atualizado há ${sec}s`;
+}
+
+function initGlobalOriginFilter() {
+  const el = $("globalOriginFilter");
+  if (!el) return;
+  try { el.value = localStorage.getItem("nexgenOriginFilter") || "all"; } catch (e) {}
+  el.onchange = () => {
+    try { localStorage.setItem("nexgenOriginFilter", el.value); } catch (e) {}
+    document.body.dataset.originFilter = el.value;
+    if (typeof window.onOriginFilterChanged === "function") window.onOriginFilterChanged(el.value);
+  };
+  document.body.dataset.originFilter = el.value;
+}
+
+let _lastSnapshotAt = null;
 function render(s) {
   last = s;
+  _lastSnapshotAt = Date.now();
+  const updated = $("pageUpdatedAt");
+  if (updated) updated.textContent = relativeAge(_lastSnapshotAt);
   const a = s.account, c = s.config;
   CURRENCY = (a.currency || "USD") === "EUR" ? "€" : (a.currency || "USD") + " ";
-  updateHdrH();  // mantém o sticky das tabs alinhado com o header atual
+  updateHdrH();
 
   const ou = $("onlineUsers");
   if (ou) {
     const users = (s.online_users || []).map(u => u.user);
     const n = users.length;
-    if (n === 0) { ou.textContent = "👥 0"; ou.title = "Ninguém com a dashboard aberta"; }
-    else if (n === 1) { ou.textContent = "👥 " + users[0]; ou.title = users[0] + " ligado"; }
+    if (n === 0) { ou.textContent = "—"; ou.title = "Ninguém com a dashboard aberta"; }
+    else if (n === 1) { ou.textContent = users[0]; ou.title = users[0] + " ligado"; }
     else {
-      ou.textContent = "👥 " + users.join(" · ");
+      ou.textContent = users.join(" · ");
       ou.title = n + " utilizadores ligados: " + users.join(", ");
     }
   }
 
   const badge = $("modeBadge");
-  badge.textContent = c.kill_switch ? "pausado" : (c.mode === "auto" ? "auto" : "manual");
-  badge.className = "badge " + (c.kill_switch ? "paused" : c.mode);
+  badge.textContent = c.kill_switch ? "pausado" : "auto";
+  badge.className = "badge " + (c.kill_switch ? "paused" : "auto");
   $("killBadge").style.display = c.kill_switch ? "" : "none";
-  $("btnKill").textContent = c.kill_switch ? "▶ Reativar" : "🛑 Kill switch";
+  $("btnKill").textContent = c.kill_switch ? "Reativar" : "Kill switch";
   $("btnKill").className = c.kill_switch ? "green" : "danger";
 
   const mb = $("marketBadge");
   const execMode = (s.execution || {}).mode;
   if (execMode === "mt5-real" && (s.execution || {}).connected) {
-    mb.textContent = "⚡ execução real (demo MT5)";
+    mb.textContent = "execução real (demo MT5)";
     mb.className = "badge mt5-real";
   } else if (execMode === "mt5-dry" && (s.execution || {}).connected) {
-    mb.textContent = "🧪 dry-run (demo MT5)";
+    mb.textContent = "dry-run (demo MT5)";
     mb.className = "badge mt5-dry";
   } else {
-    mb.textContent = (s.market && s.market.real_data) ? "📈 preços reais" : "🎲 simulação";
+    mb.textContent = (s.market && s.market.real_data) ? "preços reais" : "simulação";
     mb.className = "badge " + ((s.market && s.market.real_data) ? "auto" : "manual");
   }
   renderExecBadge(s.execution || {});
@@ -583,22 +679,55 @@ function render(s) {
   const acctF = $("acctFooter");
   if (acctF) {
     const ex = s.execution || {}, ac = ex.account || {};
-    acctF.textContent = ac.login || "—";
+    // vista de lane (/segundaria → ?lane=tp2): o rodapé mostra a conta da
+    // lane, não a da principal
+    const laneQ = new URLSearchParams(location.search).get("lane");
+    const laneAcct = (laneQ === "tp2" || laneQ === "main")
+      ? ((s.lanes || []).find(l => l.lane_id === laneQ) || {}).account
+      : null;
+    const acShow = laneAcct || ac;
+    acctF.textContent = acShow.login || "—";
     const srv = $("acctServerFooter");
-    if (srv && ac.server) srv.textContent = ac.server;
+    if (srv && acShow.server) srv.textContent = acShow.server;
   }
-  renderPriceStrip(s.market || {});
   watchAutoTrading(s.execution || {});
   watchListener(s.listener);
   renderCodePrompt(s.listener);
 
   const risk = $("riskSlider");
   if (risk) {
-    if (risk.value !== String(c.risk_pct)) risk.value = c.risk_pct;
-    $("riskVal").textContent = fmt(c.risk_pct, 1) + "%";
-    $("limitsLbl").textContent = `perda diária ${fmt(c.daily_loss_limit_pct, 1)}% · máx ${c.max_positions} posições`;
+    /* slider por lane: a posição é a BASE da lane (risk_pct:main / risk_pct:tp2) */
+    const laneV = _laneViewId();
+    const baseByLane = c.risk_pct_by_lane || {};
+    const riskBase = laneV
+      ? (baseByLane[laneV] != null ? baseByLane[laneV] : c.risk_pct)
+      : c.risk_pct;
+    if (String(risk.value) !== String(riskBase)) risk.value = riskBase;
+    /* na vista de lane o LABEL mostra o risco EFETIVO (pós-drawdown da lane),
+       não a base global — o valor que a conta realmente usa */
+    const laneEff = laneV
+      ? ((s.lanes || []).find(l => l.lane_id === laneV) || {}).effective_risk_pct
+      : null;
+    if (laneEff != null) {
+      $("riskVal").textContent = fmt(laneEff, 1) + "% · efetivo";
+      risk.title = `Base da lane ${laneV}: ${fmt(riskBase, 1)}% · risco efetivo (pós-drawdown): ${fmt(laneEff, 1)}%`;
+    } else {
+      $("riskVal").textContent = fmt(riskBase, 1) + "%";
+      risk.title = "Risco por trade (base da conta principal)";
+    }
+    $("limitsLbl").textContent = `máx ${c.max_positions} posições`;
+    const dl = $("dailyLossSlider"), dv = $("dailyLossVal");
+    if (dl) {
+      dl.value = c.daily_loss_limit_pct;
+      if (dv) dv.textContent = Number(c.daily_loss_limit_pct) === 0 ? "off" : fmt(c.daily_loss_limit_pct, 1) + "%";
+    }
     const ew = $("editWinSlider"), ev = $("editWinVal");
     if (ew) { ew.value = c.edit_window_seconds; if (ev) ev.textContent = fmt(c.edit_window_seconds, 0) + "s"; }
+    const gt = $("entryGuardTolSlider"), gtv = $("entryGuardTolVal");
+    if (gt) {
+      gt.value = c.entry_guard_tolerance ?? 0.5;
+      if (gtv) gtv.textContent = fmt(c.entry_guard_tolerance ?? 0.5, 2);
+    }
   }
   const td = $("testeDays");
   if (td && document.activeElement !== td) td.value = String(c.teste_days ?? 30);
@@ -606,7 +735,7 @@ function render(s) {
   if (prh && document.activeElement !== prh) prh.value = String(c.paper_race_hours ?? 24);
   const tap = $("testeAllPeriod");
   if (tap) {
-    if (!tap.options.length) tap.innerHTML = _allPeriodOptions(_allPeriod); // 1ª vez
+    if (!tap.options.length) tap.innerHTML = _allPeriodOptions(_allPeriod);
     if (document.activeElement !== tap) {
       _allPeriod = String(c.all_period ?? _allPeriod ?? "0");
       tap.value = _allPeriod;
@@ -617,6 +746,8 @@ function render(s) {
   if (eb && document.activeElement !== eb) eb.value = String(c.edge_bal ?? "") || "1000";
 
   renderStatusBar(s);
+  renderHealthBanner(s);
+  if ($("pageUpdatedAt")) $("pageUpdatedAt").textContent = relativeAge(_lastSnapshotAt);
   $("btnLogout").style.display = (s.auth && s.auth.enabled) ? "" : "none";
 
   // cada página desenha o seu conteúdo no snapshot
@@ -624,13 +755,6 @@ function render(s) {
 }
 
 /* --------------------------------------------------- navegação (terminal) */
-/* ordem = ordem do DOM: PRINCIPAL, as 5 estratégias do dropdown, SISTEMA.
-   Consolidação 19/08: tp2/tp2_gestao/nova_gestao_3/auto_2 removidos (perdem),
-   nova/auto_5 ocultas do menu (contrafactual/comparação no backtest+paper). */
-const TERM_ORDER = ["principal",
-  "teste-nova_gestao", "teste-tp2_protect", "teste-auto_3",
-  "teste-auto_escada_3", "teste-auto_escada_3_hibrida", "teste-auto_escada_5",
-  "diagnostico", "help"];
 let termIndex = 0;
 
 function termItems() {
@@ -644,33 +768,31 @@ function setTermIndex(i, focus = false) {
     b.classList.toggle("active", k === termIndex);
     if (k === termIndex && focus) b.focus({ preventScroll: true });
   });
-  // se o item ativo viver dentro do dropdown de estratégias, abre-o (a
-  // navegação por teclado não fica "presa" em itens colapsados)
   const drop = $("dropEstrategias");
   const tgl = $("dropEstrategiasToggle");
   const items = termItems();
-  if (drop && tgl && items[termIndex] && drop.contains(items[termIndex])) {
+  if (focus && drop && tgl && items[termIndex] && drop.contains(items[termIndex])) {
     drop.classList.add("open");
     tgl.classList.add("open");
   }
 }
 
-/* dropdown ▚ ESTRATÉGIAS: toggle no clique, estado persistido em
-   localStorage (default ABERTO — o utilizador vê todas as estratégias),
-   fecha ao clicar fora. O painel é position:fixed posicionado a partir do
-   toggle (getBoundingClientRect) — o nav tem overflow-x:auto (zoom) e
-   cortava o dropdown; fixed escapa ao clipping e funciona no overlay móvel. */
+/* dropdown ▚ ESTRATÉGIAS: toggle explícito no clique/teclado, fechado por
+   defeito em cada página e fechado ao clicar fora. Painel position:fixed
+   posicionado a partir do toggle (getBoundingClientRect). */
 const dropToggle = $("dropEstrategiasToggle");
 if (dropToggle) {
   const drop = $("dropEstrategias");
   function positionDrop() {
     if (!dropToggle || !drop || !drop.classList.contains("open")) return;
     const tr = dropToggle.getBoundingClientRect();
-    const dw = drop.offsetWidth || 300;
+    const dw = drop.offsetWidth || 320;
     let left = tr.left;
     if (left + dw > window.innerWidth - 8) left = Math.max(8, window.innerWidth - dw - 8);
+    const dh = drop.offsetHeight || 320;
+    const top = Math.min(tr.bottom + 6, Math.max(8, window.innerHeight - dh - 12));
     drop.style.left = left + "px";
-    drop.style.top = (tr.bottom + 4) + "px";
+    drop.style.top = top + "px";
   }
   window._positionStrategyDrop = positionDrop;
   const setOpen = (open) => {
@@ -682,26 +804,24 @@ if (dropToggle) {
   dropToggle.onclick = (e) => {
     e.stopPropagation();
     setOpen(!drop.classList.contains("open"));
-    try { localStorage.setItem("dropEstrategiasOpen", drop.classList.contains("open") ? "1" : ""); } catch (err) { /* ignore */ }
   };
-  try {
-    const saved = localStorage.getItem("dropEstrategiasOpen");
-    setOpen(saved === null ? true : saved === "1");
-  } catch (err) { setOpen(true); }
+  dropToggle.onkeydown = (e) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    e.preventDefault();
+    e.stopPropagation();
+    setOpen(!drop.classList.contains("open"));
+  };
+  setOpen(false);
   document.addEventListener("click", (e) => {
     if (e.target !== dropToggle && !dropToggle.contains(e.target)
         && !drop.contains(e.target)) setOpen(false);
   });
   window.addEventListener("resize", () => positionDrop());
-  // re-posiciona ao abrir o menu móvel (☰) e ao navegar por teclado
   window.addEventListener("scroll", () => positionDrop(), true);
+  window._wireStrategyDrop = () => { if (drop.classList.contains("open")) positionDrop(); };
 }
 
-/* marca a estratégia vencedora (histórico completo) no menu de simulação.
-   O winner do /api/analysis/compare é um RÓTULO ("new"/"manage"/"tp2") —
-   não um id de estratégia: "manage" = TP1..TP5 + gestão = a principal
-   (nova_gestao), "new" = a antiga nova (fora do menu) e "tp2" = a tp2
-   (HIDDEN) — por isso só o "manage" tem página para marcar (o PRINCIPAL). */
+/* marca a estratégia vencedora (histórico completo) no menu de simulação. */
 const BEST_PAGE = { manage: "principal" };
 async function markBestStrategy() {
   try {
@@ -714,87 +834,58 @@ async function markBestStrategy() {
     const item = termItems().find(b => b.dataset.page === page);
     if (item) {
       item.classList.add("best-strategy");
-      item.querySelector(".best").textContent = "✓ melhor";
+      const best = item.querySelector(".best");
+      if (best) best.textContent = "✓ melhor";
     }
-  } catch (e) { /* silencioso: sem marcação se a API falhar */ }
+  } catch (e) { /* silencioso */ }
 }
 markBestStrategy();
+hydrateStrategyMenu();
 
-/* menu móvel: hambúrguers no header abrem/fecham; clicar fora fecha */
+/* menu móvel: hambúrguer abre/fecha a navegação; clicar fora fecha */
 const btnMenu = $("btnMenu");
 if (btnMenu) btnMenu.onclick = (e) => {
   e.stopPropagation();
-  $("termMenu").classList.toggle("open");
-  // o dropdown (fixed) precisa de re-posicionar quando o menu móvel abre
-  requestAnimationFrame(() => { if (window._positionStrategyDrop) window._positionStrategyDrop(); });
+  const nav = $("tbNav");
+  if (nav) nav.classList.toggle("open");
 };
-const btnMenuStatus = $("btnMenuStatus");
-if (btnMenuStatus) btnMenuStatus.onclick = (e) => { e.stopPropagation(); $("termRight").classList.toggle("open"); };
-/* colapsar o bloco STATE do menu (‹ ›) — persistido no localStorage */
-const btnTermCollapse = $("btnTermCollapse");
-if (btnTermCollapse) btnTermCollapse.onclick = (e) => {
-  e.stopPropagation();
-  const collapsed = $("termSide").classList.toggle("collapsed");
-  btnTermCollapse.textContent = collapsed ? "›" : "‹";
-  try { localStorage.setItem("termSideCollapsed", collapsed ? "1" : ""); } catch (err) { /* ignore */ }
-};
-(() => {
-  let collapsed = false;
-  try { collapsed = localStorage.getItem("termSideCollapsed") === "1"; } catch (err) { /* ignore */ }
-  if (collapsed && $("termSide")) {
-    $("termSide").classList.add("collapsed");
-    if (btnTermCollapse) btnTermCollapse.textContent = "›";
-  }
-})();
-/* colapsar o terminal direito (conta/sessão) — persistido no localStorage */
-const btnTermRightCollapse = $("btnTermRightCollapse");
-if (btnTermRightCollapse) btnTermRightCollapse.onclick = (e) => {
-  e.stopPropagation();
-  const collapsed = $("termRight").classList.toggle("collapsed");
-  document.body.classList.toggle("term-r-collapsed", collapsed);
-  btnTermRightCollapse.textContent = collapsed ? "›" : "‹";
-  try { localStorage.setItem("termRightCollapsed", collapsed ? "1" : ""); } catch (err) { /* ignore */ }
-};
-(() => {
-  let collapsed = false;
-  try { collapsed = localStorage.getItem("termRightCollapsed") === "1"; } catch (err) { /* ignore */ }
-  if (collapsed && $("termRight")) {
-    $("termRight").classList.add("collapsed");
-    document.body.classList.add("term-r-collapsed");
-    if (btnTermRightCollapse) btnTermRightCollapse.textContent = "›";
-  }
-})();
-document.addEventListener("click", (e) => {
-  const mm = $("termMenu");
-  if (mm && mm.classList.contains("open") && !mm.contains(e.target) && e.target !== btnMenu) {
-    mm.classList.remove("open");
-  }
-  const tr = $("termRight");
-  if (tr && tr.classList.contains("open") && !tr.contains(e.target) && e.target !== btnMenuStatus) {
-    tr.classList.remove("open");
-  }
-});
 
-// setas ↑↓ + Enter no menu; também funcionam em qualquer lado da página
-// quando o menu está visível
+/* alternar tema claro/escuro (persistido em localStorage) */
+const btnTheme = $("btnTheme");
+if (btnTheme) {
+  btnTheme.onclick = (e) => { e.stopPropagation(); toggleTheme(); };
+  // sem escolha explícita, garante o tema do SO no arranque (não grava);
+  // com escolha, só sincroniza o ícone com o que o <head> já aplicou
+  followSystemTheme();
+  _syncThemeButton(currentTheme());
+}
+
+// setas ↑↓ + Enter no menu
 window.addEventListener("keydown", (e) => {
-  const menu = document.getElementById("termMenu");
+  const nav = document.getElementById("tbNav");
   if (e.key === "Escape") {
-    if (menu) menu.classList.remove("open");
-    const tr = document.getElementById("termRight");
-    if (tr) tr.classList.remove("open");
+    if (nav) nav.classList.remove("open");
+    const drop = document.getElementById("dropEstrategias");
+    if (drop) drop.classList.remove("open");
     return;
   }
-  if (!menu || menu.offsetParent === null) return;
+  if (!nav || nav.offsetParent === null) return;
   if (e.key === "ArrowDown") { e.preventDefault(); setTermIndex(termIndex + 1, true); }
   else if (e.key === "ArrowUp") { e.preventDefault(); setTermIndex(termIndex - 1, true); }
   else if (e.key === "Enter") {
     const item = termItems()[termIndex];
-    if (item) { e.preventDefault(); location.href = item.getAttribute("href") || (item.dataset.page === "principal" ? "/" : "/" + item.dataset.page.replace("teste-", "teste?s=")); }
+    if (item) { e.preventDefault(); location.href = item.getAttribute("href") || (item.dataset.page === "principal" ? "/" : (item.dataset.page === "segundaria" ? "/segundaria" : "/" + item.dataset.page.replace("teste-", "teste?s="))); }
+  }
+});
+document.addEventListener("click", (e) => {
+  const nav = $("tbNav");
+  if (nav && nav.classList.contains("open") && !nav.contains(e.target) && e.target !== btnMenu) {
+    nav.classList.remove("open");
   }
 });
 
-setTermIndex(0);
+// a página atual começa marcada como ativa (derivada do URL)
+setTermIndex(Math.max(0, TERM_ORDER.indexOf(_currentPageId())));
 
 /* ------------------------------------------------------------------ misc */
 setInterval(() => { const cl = $("clock"); if (cl) cl.textContent = new Date().toLocaleTimeString("pt-PT"); }, 1000);
@@ -804,9 +895,28 @@ setInterval(() => {
   const n = parseInt(el.textContent, 10);
   if (n > 0) el.textContent = (n - 1) + "s";
 }, 1000);
-// arranque: só quando o DOM está pronto — o script inline de cada página já
-// definiu o `pageRender` (conteúdo específico) antes do primeiro snapshot
+
+function setDashboardView(view) {
+  const operator = view !== "analyst";
+  document.body.classList.toggle("dashboard-operator", operator);
+  const op = $("viewOperator"), an = $("viewAnalyst");
+  if (op) { op.classList.toggle("active", operator); op.setAttribute("aria-pressed", operator ? "true" : "false"); }
+  if (an) { an.classList.toggle("active", !operator); an.setAttribute("aria-pressed", !operator ? "true" : "false"); }
+  try { localStorage.setItem("nexgenDashboardView", operator ? "operator" : "analyst"); } catch (e) { /* ignore */ }
+}
+function initDashboardView() {
+  if (!$("viewOperator")) return;
+  let view = "operator";
+  try { view = localStorage.getItem("nexgenDashboardView") || "operator"; } catch (e) { /* ignore */ }
+  $("viewOperator").onclick = () => setDashboardView("operator");
+  $("viewAnalyst").onclick = () => setDashboardView("analyst");
+  setDashboardView(view);
+}
+setInterval(() => {
+  if (_lastSnapshotAt && $("pageUpdatedAt")) $("pageUpdatedAt").textContent = relativeAge(_lastSnapshotAt);
+}, 1000);
 window.addEventListener("DOMContentLoaded", () => {
-  runDashBoot();
+  initGlobalOriginFilter();
+  initDashboardView();
   connect();
 });

@@ -1,92 +1,28 @@
 <!DOCTYPE html>
-<html lang="pt" data-theme="cyberpunk">
+<html lang="pt">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Project NexGen — Teste de estratégias</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2307080f'/%3E%3Crect x='4' y='4' width='56' height='56' rx='11' fill='none' stroke='%2300f0ff' stroke-width='3'/%3E%3Ctext x='32' y='46' font-family='Arial Black, Arial' font-size='36' font-weight='900' fill='%2300f0ff' text-anchor='middle'%3EN%3C/text%3E%3C/svg%3E">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@600;800&family=Chakra+Petch:wght@400;600;700&display=swap" rel="stylesheet">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%232562eb'/%3E%3Ctext x='32' y='46' font-family='Arial Black, Arial' font-size='36' font-weight='900' fill='%23ffffff' text-anchor='middle'%3EN%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="style.css">
+<script>try{if(localStorage.getItem("nx_theme")==="dark"||(localStorage.getItem("nx_theme")==null&&matchMedia("(prefers-color-scheme: dark)").matches))document.documentElement.dataset.theme="dark"}catch(e){}</script>
 </head>
 <body class="no-chrome">
-<nav class="term-menu" id="termMenu" aria-label="Navegação">
-  <span class="term-menu-label">▚ NAV</span>
-  <a class="term-menu-item main" data-page="principal" href="/"><span class="cur">▸</span>PRINCIPAL<span class="sub">conta MT5 · estratégia ativa</span><span class="best"></span></a>
-  <span class="term-menu-label term-drop-toggle" id="dropEstrategiasToggle" role="button" tabindex="0" aria-expanded="true">▚ ESTRATÉGIAS <span class="drop-caret">▾</span></span>
-  <div class="term-drop" id="dropEstrategias">
-    <a class="term-menu-item" data-page="teste-nova_gestao" href="/teste?s=nova_gestao"><span class="cur">▸</span>TP1..TP5 + gestão<span class="sub">principal · referência</span><span class="best"></span></a>
-    <a class="term-menu-item" data-page="teste-tp2_protect" href="/teste?s=tp2_protect"><span class="cur">▸</span>Sair no TP2 + protect only<span class="sub">só protect do grupo</span><span class="best"></span></a>
-    <a class="term-menu-item" data-page="teste-auto_3" href="/teste?s=auto_3"><span class="cur">▸</span>Auto 3 TPs<span class="sub">3 pernas</span><span class="best"></span></a>
-    <a class="term-menu-item" data-page="teste-auto_escada_3" href="/teste?s=auto_escada_3"><span class="cur">▸</span>Auto 3 TPs + escada<span class="sub">Fase 2 · escada + trailing</span><span class="best"></span></a>
-    <a class="term-menu-item" data-page="teste-auto_escada_3_hibrida" href="/teste?s=auto_escada_3_hibrida"><span class="cur">▸</span>Auto 3 TPs + escada + protect híbrido<span class="sub">paper · proteção mecânica + grupo</span><span class="best"></span></a>
-    <a class="term-menu-item" data-page="teste-auto_escada_5" href="/teste?s=auto_escada_5"><span class="cur">▸</span>Auto 5 TPs + escada + confirmação<span class="sub">5 pernas + confirmação</span><span class="best"></span></a>
-  </div>
-  <span class="term-menu-label">▚ SISTEMA</span>
-  <a class="term-menu-item" data-page="diagnostico" href="/diagnostico"><span class="cur">▸</span>DIAGNÓSTICO<span class="sub">MT5 · listener · BD</span></a>
-  <a class="term-menu-item" data-page="help" href="/help"><span class="cur">▸</span>HELP<span class="sub">estratégias · conceitos</span></a>
-</nav>
-<aside class="term-right" id="termRight" aria-label="Conta e sessão">
-  <div class="ts-head">
-    <p class="term-menu-label">▚ STATE</p>
-    <button id="btnTermRightCollapse" class="ts-toggle" title="Colapsar/expandir terminal" aria-label="Colapsar terminal">‹</button>
-  </div>
-  <div class="hdr-badges" id="hdrBadges">
-    <span id="modeBadge" class="badge manual">manual</span>
-    <span id="strategyBadge" class="badge violet" style="display:none" title="Estratégia ativa da conta principal"></span>
-    <span id="execBadge" class="badge mt5-dry" style="display:none"></span>
-    <span id="marketBadge" class="badge manual">🎲 simulação</span>
-    <span id="killBadge" class="badge paused" style="display:none">PAUSADO</span>
-  </div>
-  <div class="term-side" id="termSide" aria-label="Estado do sistema">
-    <div class="ts-head">
-      <p class="term-menu-label">▚ MARKET</p>
-      <button id="btnTermCollapse" class="ts-toggle" title="Colapsar/expandir terminal" aria-label="Colapsar terminal">‹</button>
-    </div>
-    <span id="priceStrip" class="price-strip"></span>
-  </div>
-  <div class="ts-meta">
-    <span class="online-users" id="onlineUsers" title="Utilizadores com a dashboard aberta">👥 —</span>
-    <span class="clock" id="clock">—</span>
-  </div>
-  <span class="hdr-actions">
-    <button id="btnKill" class="danger">🛑 Kill switch</button>
-    <button id="btnLogout" class="ghost" style="display:none" title="Terminar sessão">Sair</button>
-  </span>
-</aside>
-<div class="bg-reticle" aria-hidden="true"></div>
-<div id="dashBoot"><div class="dash-boot-inner">
-  <div class="boot-title">PROJECT NEXGEN</div>
-  <pre id="dashBootText"></pre>
-</div></div>
-<div class="wrap">
-  <header>
-    <button id="btnMenu" class="ghost" title="Menu: testes · diagnóstico" aria-label="Abrir menu">☰</button>
-    <div class="brand">
-      <h1 data-text="🤖 Project NexGen">🤖 Project NexGen</h1>
-      <span class="sub" id="subTitle">copy-trading · execução real (demo MT5)</span>
-    </div>
-    <div class="hdr-badges" id="hdrBadges">
-      <span id="modeBadge" class="badge manual">manual</span>
-      <span id="strategyBadge" class="badge violet" style="display:none" title="Estratégia ativa da conta principal"></span>
-      <span id="execBadge" class="badge mt5-dry" style="display:none"></span>
-      <span id="marketBadge" class="badge manual">🎲 simulação</span>
-      <span id="killBadge" class="badge paused" style="display:none">PAUSADO</span>
-    </div>
-    <div class="spacer"></div>
-    <button id="btnMenuStatus" class="ghost" title="Estado do sistema" aria-label="Abrir estado">▦</button>
-  </header>
-
+<!-- chrome global (barra superior: navegação + estado + preços) renderizado
+     pelo common.js — a fonte única vive em common.js -->
+<div id="appChrome"></div>
+<main class="wrap">
   <div class="statusbar" id="statusBar">
     <span class="dot" id="stDot"></span>
     <span id="stText">A ligar…</span>
     <span class="st-sep"></span>
     <span id="stLast">—</span>
   </div>
+  <div class="context-toolbar"><span class="context-label">Simulação</span><select id="globalOriginFilter" aria-label="Filtrar origem dos dados"><option value="all">todas as origens</option><option value="live">live</option><option value="paper">paper</option><option value="shadow">shadow</option><option value="backtest">backtest</option></select><span id="pageUpdatedAt" class="muted">atualização pendente</span></div>
 
   <div id="tab-teste" class="card">
-    <h2>🧪 Teste de estratégia <span id="testeStratName" style="color:var(--violet)"></span>
+    <h2>Teste de estratégia <span id="testeStratName" style="color:var(--violet)"></span>
       <span style="display:inline-flex;gap:8px;align-items:center">
         <select id="testeDays">
           <option value="7">últimos 7 dias</option>
@@ -106,8 +42,9 @@
         <input id="testeBalance" type="number" min="100" step="any" value="1000"
           title="Saldo inicial do sim — default 1000 (o saldo próprio da conta paper desta estratégia)"
           style="width:100px;background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:7px 8px;font-size:12px;outline:none">
-        <button id="btnTesteRefresh" class="primary">🔄 Atualizar</button>
-        <button id="btnPromote" class="primary" style="border-color:var(--green);color:var(--green)" title="Passa a conta principal (MT5 real) a usar esta estratégia">⬆️ Promover a principal</button>
+        <button id="btnTesteRefresh" class="primary">Atualizar</button>
+        <button id="btnPromote" class="primary" style="border-color:var(--green);color:var(--green)" title="Passa a conta principal (MT5 real) a usar esta estratégia">Promover a principal</button>
+        <span id="promotionGateStatus" class="muted promotion-gate-status" style="font-size:11px"></span>
       </span>
     </h2>
     <p class="muted" id="testeIntro" style="margin:0 0 12px;font-size:13px">
@@ -132,7 +69,7 @@
     <div class="mini-stats" id="testeLive"></div>
 
     <div id="testeAllSection">
-      <div class="lbl" style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:16px 0 6px">📜 Desde o início do grupo (todo o histórico de sinais na BD)</div>
+      <div class="lbl" style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:16px 0 6px">Desde o início do grupo (todo o histórico de sinais na BD)</div>
       <div class="mini" style="margin-bottom:10px;font-size:14px;font-weight:600" id="testeAllVerdict">—</div>
       <div style="display:flex;gap:8px;margin:0 0 10px;align-items:center">
         <span class="lbl" style="font-size:11px;color:var(--muted)">Período:</span>
@@ -148,37 +85,60 @@
         <div class="mini"><div class="lbl">Trades resolvidas</div><div class="val" id="tsAllTrades">—</div></div>
       </div>
       <canvas id="testeAllChart" width="760" height="120" style="width:100%;height:120px;background:var(--panel2);border:1px solid var(--border);border-radius:10px;margin-bottom:6px"></canvas>
-      <div class="lbl" style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:8px 0 4px">📊 P&L por mês</div>
+      <div class="lbl" style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:8px 0 4px">P&L por mês</div>
       <canvas id="testeAllMonthly" width="760" height="110" style="width:100%;height:110px;background:var(--panel2);border:1px solid var(--border);border-radius:10px;margin-bottom:6px"></canvas>
-      <div class="lbl" style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:8px 0 4px">🧮 P&L por perna (trades resolvidas — onde o lucro vem)</div>
+      <div class="lbl" style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:8px 0 4px">P&L por perna (trades resolvidas — onde o lucro vem)</div>
       <div class="mini-stats" id="testeAllLegs"></div>
     </div>
 
     <div id="testeWalkforward" style="display:none;margin-bottom:12px">
-      <div class="lbl" style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:14px 0 6px">🧪 Walk-forward (gestão) — o edge mantém-se ao longo do tempo?</div>
+      <div class="lbl" style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:14px 0 6px">Walk-forward (gestão) — o edge mantém-se ao longo do tempo?</div>
       <div class="val" style="font-size:13px" id="wfSummaryText">—</div>
       <div class="mini-stats" id="wfBuckets"></div>
     </div>
 
     <div id="testeFlowSection" style="display:none">
-      <div class="lbl" style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:16px 0 6px">🧪 Exemplo real do fluxo — sinal resolvido mais recente desta estratégia</div>
+      <div class="lbl" style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:16px 0 6px">Exemplo real do fluxo — sinal resolvido mais recente desta estratégia</div>
       <div class="mini" style="margin-bottom:10px;font-size:13px;line-height:1.5" id="testeFlowTitle">—</div>
       <canvas id="testeFlowChart" width="760" height="150" style="width:100%;height:150px;background:var(--panel2);border:1px solid var(--border);border-radius:10px;margin-bottom:6px"></canvas>
       <div class="scroll" style="max-height:220px" id="testeFlowEvents"></div>
     </div>
 
     <div class="lbl" style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:14px 0 6px;display:flex;align-items:center;gap:8px">
-      <span>🧾 Histórico de trades de papel (corrida paralela — fechadas com P&amp;L)</span>
-      <button id="btnPaperCsv" class="ghost" style="display:none;margin-left:auto" title="Exportar as trades de papel (esta estratégia + a referência nova_gestao) em CSV para análise fora da dashboard">⬇️ CSV</button>
+      <span>Histórico de trades de papel (corrida paralela — fechadas com P&amp;L)</span>
+      <button id="btnPaperCsv" class="ghost" style="display:none;margin-left:auto" title="Exportar as trades de papel (esta estratégia + a referência nova_gestao) em CSV para análise fora da dashboard">CSV</button>
     </div>
     <div class="scroll" style="max-height:260px"><table id="paperTradesTable">
       <thead><tr><th>Aberta</th><th>Símbolo</th><th>Dir</th><th>Entrada</th><th>Lotes</th><th>Estado</th><th>Fechada</th><th>P&amp;L</th></tr></thead>
       <tbody></tbody>
     </table></div>
+
+    <div class="lbl" style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:18px 0 6px">Porquê sem trade — sinais rejeitados/falhados (replay com os parâmetros desta estratégia)</div>
+    <div class="mini" style="margin-bottom:10px;font-size:13px;line-height:1.5" id="testeRejectionsIntro">—</div>
+    <div id="testeRejectionsStats" class="mini-stats"></div>
+    <div id="testeRejFilters" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:4px 0 8px;font-size:12px">
+      <label class="muted">Símbolo
+        <select id="testeRejSym" onchange="applyTesteRejFilters()" style="margin-left:4px"><option value="">Todos os símbolos</option></select>
+      </label>
+      <label class="muted">Distância à zona — mín
+        <input id="testeRejDistMin" type="number" min="0" step="0.5" placeholder="0" oninput="applyTesteRejFilters()" style="width:60px;margin-left:4px">
+      </label>
+      <label class="muted">máx (pips)
+        <input id="testeRejDistMax" type="number" min="0" step="0.5" placeholder="∞" oninput="applyTesteRejFilters()" style="width:60px;margin-left:4px">
+      </label>
+      <button type="button" onclick="testeRejResetFilters()" style="font-size:11px">✕ limpar</button>
+      <span id="testeRejFilterCount" class="muted" style="font-size:11px"></span>
+    </div>
+    <div class="scroll" style="max-height:300px"><table id="testeRejectionsTable">
+      <thead><tr><th>Quando</th><th>Símbolo</th><th>Categoria</th><th>Zona vs preço real</th><th>Razão</th><th>Replay (o que teria acontecido)</th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+    <div id="testeRejFillsZone" style="margin-top:12px"></div>
+    <div id="testeRejectionsOrphans" style="margin-top:14px"></div>
   </div>
 
-  <div class="footer">🤖 <b>Project NexGen</b> · copy-trading · execução real (demo MT5) · conta <b id="acctFooter">—</b> · <span id="acctServerFooter">MetaQuotes-Demo</span></div>
-</div>
+  <footer class="footer">🤖 <b>Project NexGen</b> · copy-trading · execução real (demo MT5) · conta <b id="acctFooter">—</b> · <span id="acctServerFooter">MetaQuotes-Demo</span></footer>
+</main>
 
 <script src="common.js"></script>
 <script>
@@ -188,6 +148,7 @@
    ========================================================= */
 
 let testeTimer = null;
+let testeLoadVersion = 0;
 const testeStrategy = new URLSearchParams(location.search).get("s") || "nova";
 const _csvBtn = $("btnPaperCsv");
 if (_csvBtn) _csvBtn.onclick = exportPaperCsv;
@@ -195,9 +156,24 @@ if (_csvBtn) _csvBtn.onclick = exportPaperCsv;
 /* marca o item do menu da estratégia atual */
 termItems().forEach(b => b.classList.toggle("active", b.dataset.page === "teste-" + testeStrategy));
 
-async function loadTesteCompare(days) {
+function drawCanvasMessage(canvasId, message, kind = "empty") {
+  const canvas = $(canvasId);
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  const pal = chartPalette();
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = kind === "error" ? "#f23645" : kind === "loading" ? "#2962ff" : pal.axis;
+  ctx.font = "12px sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText(message, W / 2, H / 2);
+  ctx.textAlign = "left";
+}
+
+async function loadTesteCompare(days, version = testeLoadVersion) {
   const canvas = $("testeCompareChart");
   if (!canvas) return;
+  drawCanvasMessage("testeCompareChart", "A carregar comparação…", "loading");
   const lbl = $("testeCompareLbl");
   if (lbl) {
     lbl.textContent = Number(days) === 0
@@ -206,14 +182,16 @@ async function loadTesteCompare(days) {
   }
   try {
     // as estratégias de teste + a principal (gestão) na mesma curva — vês o
-    // P&L que cada uma teria dado nos mesmos sinais
-    const ids = ["nova", "nova_gestao", "tp2"];
-    const data = {};
-    for (const id of ids) {
-      const r = await fetch("/api/analysis/month?group=Golden%20Moves&days=" + days + "&strategy=" + id + testeSimQS()).then(res => res.json());
-      data[id] = r;
-    }
+    // P&L que cada uma teria dado nos mesmos sinais (o braço "tp2 puro" foi
+    // removido com a estratégia em 01/09)
+    const ids = ["nova", "nova_gestao"];
+    const responses = await Promise.all(ids.map(id =>
+      fetch("/api/analysis/month?group=Golden%20Moves&days=" + days + "&strategy=" + id + testeSimQS()).then(res => res.json())
+    ));
+    if (version !== testeLoadVersion) return;
+    const data = Object.fromEntries(ids.map((id, i) => [id, responses[i]]));
     const ctx = canvas.getContext("2d");
+    const pal = chartPalette();
     const W = canvas.width, H = canvas.height;
     ctx.clearRect(0, 0, W, H);
     const pad = 34;
@@ -227,13 +205,13 @@ async function loadTesteCompare(days) {
     if (max - min < 1) max = min + 1;
     const x = i => pad + (i / 99) * (W - pad * 2);
     const y = v => H - pad - ((v - min) / (max - min)) * (H - pad * 2);
-    ctx.strokeStyle = "#263040"; ctx.lineWidth = 1;
+    ctx.strokeStyle = pal.grid; ctx.lineWidth = 1;
     for (let g = 0; g <= 3; g++) {
       const gy = pad + (g / 3) * (H - pad * 2);
       ctx.beginPath(); ctx.moveTo(pad, gy); ctx.lineTo(W - pad, gy); ctx.stroke();
     }
-    const COLORS = { nova_gestao: "#9A4FE8", tp2_protect: "#10b981", auto_escada_3: "#a3e635", auto_escada_3_hibrida: "#c084fc" };
-    const NAMES = { nova_gestao: "TP1..TP5 + gestão", tp2_protect: "Sair no TP2 + protect only", auto_escada_3: "Auto escada 3", auto_escada_3_hibrida: "Auto escada 3 híbrida" };
+    const COLORS = { nova: "#38bdf8", nova_gestao: "#9A4FE8", tp2_protect: "#10b981", auto_escada_3: "#a3e635", auto_escada_3_hibrida: "#c084fc" };
+    const NAMES = { nova: "TP1..TP5 sem gestão", nova_gestao: "TP1..TP5 + gestão", tp2_protect: "Sair no TP2 + protect only", auto_escada_3: "Auto escada 3", auto_escada_3_hibrida: "Auto escada 3 híbrida" };
     for (const id of ids) {
       const pts = curves[id];
       if (pts.length < 2) continue;
@@ -242,7 +220,7 @@ async function loadTesteCompare(days) {
         const px = pad + (i / (pts.length - 1)) * (W - pad * 2);
         i === 0 ? ctx.moveTo(px, y(p.pnl)) : ctx.lineTo(px, y(p.pnl));
       });
-      ctx.strokeStyle = COLORS[id]; ctx.lineWidth = 2; ctx.stroke();
+      ctx.strokeStyle = COLORS[id] || pal.axis; ctx.lineWidth = 2; ctx.stroke();
     }
     // legenda com o P&L final de cada uma
     const leg = $("testeCompareLegend");
@@ -250,16 +228,24 @@ async function loadTesteCompare(days) {
       leg.innerHTML = ids.map(id => {
         const a = (data[id].aggregate || {});
         const pnl = Number(a.pnl || 0);
-        return `<div class="mini"><div class="lbl" style="color:${COLORS[id]}">${NAMES[id]}</div>` +
+        const nm = NAMES[id] || STRATEGY_NAMES[id] || id;
+        const cl = COLORS[id] || pal.axis;
+        return `<div class="mini"><div class="lbl" style="color:${cl}">${nm}</div>` +
           `<div class="val" style="color:${pnl >= 0 ? "var(--green)" : "var(--red)"}">${money(pnl)}</div></div>`;
       }).join("");
     }
-  } catch (e) { /* omite o comparativo se falhar */ }
+  } catch (e) {
+    if (version !== testeLoadVersion) return;
+    drawCanvasMessage("testeCompareChart", "Não foi possível carregar a comparação.", "error");
+    const leg = $("testeCompareLegend");
+    if (leg) leg.innerHTML = '<div class="empty">A comparação ficará disponível quando a API responder.</div>';
+  }
 }
 
 async function loadTeste() {
   const box = $("tab-teste");
   if (!box || box.style.display === "none") return;
+  const version = ++testeLoadVersion;
   const days = $("testeDays").value;
   const isAll = days === "0";  // "tudo" = histórico completo (days=0)
   const allSec = $("testeAllSection");
@@ -271,6 +257,12 @@ async function loadTeste() {
     intro.innerHTML = `Saldo <b>próprio e simulado</b>: começa ${whenTxt} com 1.000 € e reexecuta os ` +
       `<b>sinais reais</b> do grupo sobre os <b>preços históricos reais</b> com os parâmetros ` +
       `desta estratégia. Nunca abre trades na conta real.`;
+  }
+  drawCanvasMessage("testeChart", "A carregar simulação…", "loading");
+  drawCanvasMessage("testeCompareChart", "A carregar comparação…", "loading");
+  if (!isAll) {
+    drawCanvasMessage("testeAllChart", "A carregar histórico…", "loading");
+    drawCanvasMessage("testeAllMonthly", "A carregar P&L mensal…", "loading");
   }
   try {
     const r = await fetch("/api/analysis/month?group=Golden%20Moves&days=" + days + "&strategy=" + testeStrategy + testeSimQS()).then(res => res.json());
@@ -289,12 +281,16 @@ async function loadTeste() {
     $("tsWR").textContent = fmt(a.win_rate, 1) + "%";
     $("tsPF").textContent = a.profit_factor === null ? "—" : fmt(a.profit_factor);
     $("tsTrades").textContent = a.resolved;
+    if (version !== testeLoadVersion) return;
     drawMonthCurve(r.equity_curve || [], "testeChart");
-    loadTesteCompare(days);
+    loadTesteCompare(days, version);
     loadWalkforward(days);
+    // "porquê sem trade" com os parâmetros desta estratégia (Fase 2)
+    loadTesteRejections(Number(days) === 0 ? 30 : days);
     // corrida paralela ao vivo (paper trading forward)
     const st2 = await fetch("/api/status").then(res => res.json());
     const acct = ((st2.paper || {}).accounts || []).find(x => x.strategy_id === testeStrategy) || {};
+    refreshPromotionGate();
     const live = $("testeLive");
     const liveLbl = $("testeLiveLbl");
     const isMain = !!acct.is_main;
@@ -333,7 +329,11 @@ async function loadTeste() {
     }
     if (testeStrategy === "tp2_protect") loadTesteFlow(); else $("testeFlowSection").style.display = "none";
   } catch (e) {
+    if (version !== testeLoadVersion) return;
     $("testeVerdict").textContent = "Erro ao carregar a simulação.";
+    $("testeVerdict").style.color = "var(--red)";
+    drawCanvasMessage("testeChart", "Não foi possível carregar a simulação.", "error");
+    drawCanvasMessage("testeCompareChart", "A comparação não está disponível.", "error");
   }
 }
 
@@ -369,6 +369,7 @@ async function loadTesteFlow() {
 function drawTraceChart(canvas, path, s, events) {
   if (!canvas || !path || path.length < 2) return;
   const ctx = canvas.getContext("2d");
+  const pal = chartPalette();
   const W = canvas.width, H = canvas.height;
   ctx.clearRect(0, 0, W, H);
   const padL = 46, padR = 10, padT = 8, padB = 16;
@@ -379,7 +380,7 @@ function drawTraceChart(canvas, path, s, events) {
   const x = i => padL + (i / (path.length - 1)) * (W - padL - padR);
   const y = v => H - padB - ((v - min) / (max - min)) * (H - padT - padB);
   // níveis
-  const lvlColor = (l) => l === s.stop_loss ? "var(--red)" : l === s.entry ? "#fff" : "var(--green)";
+  const lvlColor = (l) => l === s.stop_loss ? "var(--red)" : l === s.entry ? pal.axis : "var(--green)";
   for (const l of levels) {
     ctx.strokeStyle = lvlColor(l); ctx.setLineDash([5, 4]); ctx.lineWidth = 1;
     ctx.beginPath(); ctx.moveTo(padL, y(l)); ctx.lineTo(W - padR, y(l)); ctx.stroke();
@@ -388,7 +389,7 @@ function drawTraceChart(canvas, path, s, events) {
     ctx.fillText(fmt(l), padL - 4, y(l) + 3);
   }
   // caminho (close)
-  ctx.strokeStyle = "#00f0ff"; ctx.lineWidth = 1.6; ctx.beginPath();
+  ctx.strokeStyle = "#2563eb"; ctx.lineWidth = 1.6; ctx.beginPath();
   path.forEach((p, i) => i === 0 ? ctx.moveTo(x(i), y(p.close)) : ctx.lineTo(x(i), y(p.close)));
   ctx.stroke();
   // eventos
@@ -397,13 +398,15 @@ function drawTraceChart(canvas, path, s, events) {
     const col = e.kind === "sl" ? "var(--red)" : (e.kind === "be" ? "var(--amber)" : "var(--green)");
     ctx.fillStyle = col; ctx.beginPath(); ctx.arc(x(i), y(e.price), 3.5, 0, 7); ctx.fill();
   }
-  ctx.fillStyle = "#8a94a6"; ctx.font = "10px sans-serif"; ctx.textAlign = "left";
+  ctx.fillStyle = pal.axis; ctx.font = "10px sans-serif"; ctx.textAlign = "left";
   ctx.fillText(new Date(path[0].ts * 1000).toLocaleString("pt", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }), padL, H - 4);
 }
 
 /* histórico completo: simulação da estratégia desde o início do grupo (days=0),
    com o seletor de período — todo o histórico vs só o formato atual (since) */
 async function loadTesteAllHistory() {
+  drawCanvasMessage("testeAllChart", "A carregar histórico…", "loading");
+  drawCanvasMessage("testeAllMonthly", "A carregar P&L mensal…", "loading");
   try {
     const rawSince = $("testeAllPeriod").value;
     const since = rawSince && rawSince !== "0" ? rawSince : ""; // "0" = todo o histórico
@@ -434,14 +437,22 @@ async function loadTesteAllHistory() {
         ? legs.map(l => `<div class="mini"><div class="lbl">Perna ${l.leg}</div><div class="val ${cls(l.pnl)}">${money(l.pnl)}</div></div>`).join("")
         : `<div class="mini"><div class="val" style="color:var(--muted)">Sem trades resolvidas no período</div></div>`;
     }
-  } catch (e) { /* mantém o bloco em silêncio se falhar */ }
+  } catch (e) {
+    drawCanvasMessage("testeAllChart", "Histórico indisponível.", "error");
+    drawCanvasMessage("testeAllMonthly", "P&L mensal indisponível.", "error");
+  }
 }
 
 /* gráfico de barras do P&L por mês (verde = lucro, vermelho = perda) */
 function drawMonthlyBars(byMonth, canvasId) {
   const cv = document.getElementById(canvasId);
-  if (!cv || !byMonth || !byMonth.length) return;
+  if (!cv) return;
+  if (!byMonth || !byMonth.length) {
+    drawCanvasMessage(canvasId, "Sem P&L mensal neste período.");
+    return;
+  }
   const ctx = cv.getContext("2d");
+  const pal = chartPalette();
   const W = cv.width, H = cv.height;
   ctx.clearRect(0, 0, W, H);
   const padL = 8, padR = 8, padT = 6, padB = 16;
@@ -454,14 +465,14 @@ function drawMonthlyBars(byMonth, canvasId) {
     const h = (Math.abs(m.pnl) / max) * (H - padT - padB) / 2;
     const x = padL + i * bw + bw * 0.15;
     const y = m.pnl >= 0 ? zero - h : zero;
-    ctx.fillStyle = m.pnl >= 0 ? "rgba(0,255,156,.85)" : "rgba(255,80,80,.85)";
+    ctx.fillStyle = m.pnl >= 0 ? "#089981" : "#f23645";
     ctx.fillRect(x, y, bw * 0.7, Math.max(h, 1));
-    ctx.fillStyle = "rgba(255,255,255,.7)";
+    ctx.fillStyle = pal.axis;
     ctx.font = "9px monospace";
     ctx.textAlign = "center";
     ctx.fillText(m.month.slice(2), x + bw * 0.35, H - 4);
   });
-  ctx.strokeStyle = "rgba(255,255,255,.3)";
+  ctx.strokeStyle = "#dce3ec";
   ctx.beginPath(); ctx.moveTo(padL, zero); ctx.lineTo(W - padR, zero); ctx.stroke();
 }
 
@@ -539,6 +550,201 @@ async function loadPaperTrades() {
   } catch (e) { /* tabela em silêncio se falhar */ }
 }
 
+async function loadTesteRejections(days) {
+  const panel = $("testeRejectionsTable");
+  const tb = document.querySelector("#testeRejectionsTable tbody");
+  if (!panel || !tb) return;
+  try {
+    const r = await fetch("/api/analysis/rejections?days=" + (days || 30) +
+      "&strategy_id=" + encodeURIComponent(testeStrategy)).then(res => res.json());
+    const intro = $("testeRejectionsIntro");
+    if (intro) {
+      const n = Number(days) === 0 ? "todo o histórico" : `os últimos ${Number(days)} dias`;
+      intro.innerHTML = `Sinais rejeitados/falhados em <b>${n}</b>, contados por categoria. ` +
+        `O replay usa os parâmetros <b>${esc(r.strategy_name || testeStrategy)}</b> (max_legs/gestão desta ` +
+        `estratégia) — o que cada sinal <b>teria</b> dado se tivesse executado (read-only).`;
+    }
+    const labels = {
+      zone: "Fora da zona / cap", min_lot: "Lote mínimo vs risco",
+      global_risk: "Kill switch / limite / max posições",
+      pending_expired: "Expirou sem confirmação", broker: "Ordem recusada pelo broker",
+      parse: "Sinal incompleto", llm: "Só registo (IA)",
+      execution_failed: "Nenhuma lane abriu", outro: "Outro",
+      ignored: "Conversa do grupo (ignorada)",
+    };
+    let stats = `<div class="mini"><div class="lbl">Sinais rejeitados</div><div class="val">${r.total || 0}</div></div>`;
+    for (const [k, v] of Object.entries(r.by_kind || {})) {
+      if (!v) continue;
+      stats += `<div class="mini"><div class="lbl">${esc(labels[k] || k)}</div><div class="val">${v}</div></div>`;
+    }
+    if (r.replayed) {
+      stats += `<div class="mini"><div class="lbl">Com replay</div><div class="val">${r.replayed}</div></div>`;
+    }
+    $("testeRejectionsStats").innerHTML = stats;
+    renderTesteRejFillsZone(r);
+    // símbolos para o filtro (rejeitados + órfãs)
+    const syms = [...new Set([...(r.items || []).map(i => i.symbol),
+      ...(r.orphans || []).map(o => o.symbol)].filter(Boolean))].sort();
+    const sel = $("testeRejSym");
+    sel.innerHTML = '<option value="">Todos os símbolos</option>' +
+      syms.map(s => `<option value="${esc(s)}">${esc(s)}</option>`).join("");
+    if (!syms.includes(testeRejFilterSym)) testeRejFilterSym = "";
+    sel.value = testeRejFilterSym;
+    applyTesteRejFilters();
+  } catch (e) { /* bloco fica vazio se a API falhar */ }
+}
+
+let testeRejData = null;
+let testeRejFilterSym = "";
+
+/* filtros do bloco 'porquê sem trade' (teste) — símbolo + distância à zona */
+function applyTesteRejFilters() {
+  testeRejData = testeRejData || {};
+  const sel = $("testeRejSym");
+  testeRejFilterSym = sel ? sel.value : "";
+  const dmin = parseFloat($("testeRejDistMin").value);
+  const dmax = parseFloat($("testeRejDistMax").value);
+  const hasDistFilter = $("testeRejDistMin").value !== "" || $("testeRejDistMax").value !== "";
+  const items = (testeRejData.items || []).filter(it => {
+    if (testeRejFilterSym && it.symbol !== testeRejFilterSym) return false;
+    const zp = it.zone_vs_price;
+    if (hasDistFilter) {
+      if (!zp) return false;
+      const d = zp.distance || 0;
+      if (!isNaN(dmin) && d < dmin) return false;
+      if (!isNaN(dmax) && d > dmax) return false;
+    }
+    return true;
+  });
+  renderTesteRejRows(items);
+  const total = (testeRejData.items || []).length;
+  $("testeRejFilterCount").textContent =
+    (testeRejFilterSym || hasDistFilter) ? `mostrando ${items.length} de ${total}` : "";
+  renderTesteRejectionOrphans(testeRejData, testeRejFilterSym || null);
+}
+
+function testeRejResetFilters() {
+  $("testeRejSym").value = "";
+  $("testeRejDistMin").value = "";
+  $("testeRejDistMax").value = "";
+  applyTesteRejFilters();
+}
+
+function renderTesteRejRows(items) {
+  const tb = document.querySelector("#testeRejectionsTable tbody");
+  if (!tb) return;
+  tb.innerHTML = "";
+  if (!items || !items.length) {
+    tb.innerHTML = '<tr><td colspan="6" class="empty">Sem rejeições com este filtro. 🎉</td></tr>';
+    return;
+  }
+  const outLbl = { win: "win", loss: "loss", be: "BE", open: "ficava aberta", no_data: "sem dados", erro: "erro replay" };
+  const labels = {
+    zone: "Fora da zona / cap", min_lot: "Lote mínimo vs risco",
+    global_risk: "Kill switch / limite / max posições",
+    pending_expired: "Expirou sem confirmação", broker: "Ordem recusada pelo broker",
+    parse: "Sinal incompleto", llm: "Só registo (IA)",
+    execution_failed: "Nenhuma lane abriu", outro: "Outro",
+    ignored: "Conversa do grupo (ignorada)",
+  };
+  for (const it of items) {
+    const rep = it.replay;
+    let repHtml = "—";
+    if (rep) {
+      repHtml = `<span class="tag ${rep.outcome === "win" ? "open" : rep.outcome === "loss" ? "closed" : ""}">${outLbl[rep.outcome] || esc(rep.outcome)}</span>` +
+        `<span class="${cls(rep.pnl)}" style="font-size:12px"> ${rep.outcome === "erro" ? "" : money(rep.pnl)}</span>` +
+        (rep.mgmt_applied ? `<span class="muted" style="font-size:11px"> · ${rep.mgmt_applied} gestão</span>` : "");
+    }
+    let zp = "—";
+    if (it.zone_vs_price) {
+      const z = it.zone_vs_price;
+      const inZone = z.in_zone ? `<span class="tag open">na zona</span>`
+        : `<span class="tag ${z.distance > 30 ? "closed" : "warn"}">${z.direction || "fora"}</span>`;
+      zp = `<div style="font-size:12px">${inZone}<div class="muted" style="font-size:11px;margin-top:2px">preço ${z.price} · zona ${z.zone_low ?? ""}–${z.zone_high ?? ""}${z.distance ? " · dist " + z.distance : ""}</div></div>`;
+    }
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td class="muted" style="font-size:12px">${when(it.received_at)}</td>` +
+      `<td>${esc(it.symbol || "—")} ${esc((it.direction || "").toUpperCase())}</td>` +
+      `<td><span class="tag">${esc(labels[it.kind] || it.kind)}</span></td>` +
+      `<td>${zp}</td>` +
+      `<td class="muted" style="font-size:12px;max-width:240px;overflow:hidden;text-overflow:ellipsis">${esc(it.error || (it.raw_text || "").slice(0, 80))}</td>` +
+      `<td style="font-size:12px">${repHtml}</td>`;
+    tb.appendChild(tr);
+  }
+}
+
+/* fills reais que entraram — zona vs preço na hora (teste) */
+function renderTesteRejFillsZone(r) {
+  const el = document.querySelector("#testeRejFillsZone");
+  if (!el) return;
+  const fz = r.fills_zone || {};
+  if (!fz.total_fills) { el.innerHTML = ""; return; }
+  let html = `<div style="font-size:13px;font-weight:600;margin-bottom:4px">Fills reais — dentro da zona vs persecuções fora dela</div>`;
+  html += `<div class="mini-stats">` +
+    `<div class="mini"><div class="lbl">Fills reais (janela)</div><div class="val">${fz.total_fills}</div></div>` +
+    `<div class="mini"><div class="lbl">Dentro da zona</div><div class="val win">${fz.in_zone || 0}</div></div>` +
+    `<div class="mini"><div class="lbl">Fora da zona (perseguição)</div><div class="val ${(fz.chases || 0) > 0 ? "warn" : ""}">${fz.chases || 0}</div></div>` +
+    `<div class="mini"><div class="lbl">% na zona</div><div class="val">${fz.pct_in_zone == null ? "—" : fmt(fz.pct_in_zone, 1) + "%"}</div></div>` +
+    (fz.max_distance != null ? `<div class="mini"><div class="lbl">Máx fora (pips)</div><div class="val warn">${fz.max_distance}</div></div>` : "") +
+    `</div>`;
+  if (fz.rows && fz.rows.length) {
+    html += `<div class="scroll" style="max-height:220px;overflow-y:auto"><table style="margin-top:8px"><thead><tr><th>Aberto</th><th>Símbolo</th><th>Entrada</th><th>Zona</th><th>Preço na hora</th><th>Distância</th><th>P&L</th></tr></thead><tbody>`;
+    for (const f of fz.rows.slice(0, 20)) {
+      const zone = Array.isArray(f.zone) ? `${f.zone[0]}–${f.zone[1]}` : (f.entry ?? "");
+      const badge = f.in_zone ? `<span class="tag open">na zona</span>`
+        : `<span class="tag ${(f.distance || 0) > 30 ? "closed" : "warn"}">${esc(f.distance_txt || "fora")}</span>`;
+      let px = f.price != null ? esc(f.price) : "—";
+      if (f.market_price != null) {
+        px = `${esc(f.market_price)} <span class="muted" style="font-size:11px">spot</span>`;
+        if (f.feed_divergence != null)
+          px += `<div class="muted" style="font-size:10px" title="preço GC=F (Yahoo) à hora do sinal — diverge do spot">GC=F ${esc(f.price ?? "")} · offset ${f.feed_divergence} pips</div>`;
+      }
+      html += `<tr><td class="muted" style="font-size:12px">${when(f.opened_at)}</td>` +
+        `<td>${esc(f.symbol)} ${esc((f.direction || "").toUpperCase())}</td>` +
+        `<td>${esc(f.entry ?? "")}</td><td>${esc(zone)}</td>` +
+        `<td>${px}</td>` +
+        `<td>${badge}</td>` +
+        `<td class="${cls(f.pnl)}" style="font-size:12px">${money(f.pnl)}</td></tr>`;
+    }
+    html += "</tbody></table></div>";
+  }
+  el.innerHTML = html;
+}
+
+/* órfãs — pendentes na zona que nunca preencheram e porque o preço não voltou */
+function renderTesteRejectionOrphans(r, sym) {
+  const el = document.querySelector("#testeRejectionsOrphans");
+  if (!el) return;
+  let rows = (r.orphans || []).slice(0, 25);
+  if (sym) rows = rows.filter(o => o.symbol === sym);
+  if (!r.orphans_total) {
+    el.innerHTML = "";
+    return;
+  }
+  const reasonLbl = { pending_expired: "expirada (TTL)", pending_orphan: "órfã (ticket perdido)", pending_cancelled: "cancelada pelo broker" };
+  let html = `<div style="font-size:13px;font-weight:600;margin-bottom:4px">${r.orphans_total} ordem(ns) pendente(s) que nunca preencheram</div>`;
+  html += `<div class="muted" style="font-size:12px;margin-bottom:8px">Ordens na zona enviadas ao broker que não entraram — e porquê o preço não voltou ao nível da entrada (range de preços durante a vida da ordem).</div>`;
+  html += `<table style="margin-top:6px"><thead><tr><th>Fecho</th><th>Perna</th><th>Zona</th><th>Porquê não entrou</th><th>Razão</th></tr></thead><tbody>`;
+  for (const o of rows) {
+    const w = o.why;
+    let whyHtml = "<span class=muted>sem candles</span>";
+    if (w) {
+      const range = (w.high != null && w.low != null) ? `${w.low} – ${w.high}` : "—";
+      let tag = "";
+      if (w.entry_in_range) tag = `<span class="tag warn">tocou a entrada</span>`;
+      else tag = `<span class="tag closed">nunca tocou</span>`;
+      whyHtml = `${tag}<div class="muted" style="font-size:11px;margin-top:2px">${esc(w.verdict)} · range ${range}${w.max_miss ? " · faltou " + w.max_miss + " (nível entrada " + o.entry + ")" : ""}</div>`;
+    }
+    const zone = Array.isArray(o.zone) ? `${o.zone[0]}–${o.zone[1]}` : (o.entry || "");
+    html += `<tr><td class="muted" style="font-size:12px">${when(o.closed_at)}</td>` +
+      `<td>${esc(o.symbol || "")} leg${o.leg} ${esc((o.direction || "").toUpperCase())}</td>` +
+      `<td>${esc(zone)}</td><td>${whyHtml}</td>` +
+      `<td><span class="tag warn">${esc(reasonLbl[o.exit_reason] || o.exit_reason)}</span></td></tr>`;
+  }
+  html += "</tbody></table>";
+  el.innerHTML = html;
+}
+
 $("testeDays").onchange = async () => {
   // persiste o período escolhido (7/30/90/tudo) para não se perder ao recarregar
   act("/api/config", { teste_days: parseInt($("testeDays").value, 10) });
@@ -552,9 +758,44 @@ $("testeAllPeriod").onchange = () => {
   loadTesteAllHistory();
 };
 $("btnTesteRefresh").onclick = loadTeste;
+async function refreshPromotionGate() {
+  const button = $("btnPromote");
+  const status = $("promotionGateStatus");
+  if (!button || !status) return;
+  const gated = ["auto_escada_3", "auto_escada_5"].includes(testeStrategy);
+  if (!gated) {
+    window._promotionGateEligible = true;
+    button.disabled = false;
+    status.textContent = "";
+    return;
+  }
+  window._promotionGateEligible = false;
+  button.disabled = true;
+  status.textContent = "⏳ a verificar gates forward…";
+  try {
+    const report = await fetch("/api/analysis/forward-gate?days=30").then(r => r.json());
+    const candidate = (report.strategies || []).find(x => x.strategy_id === testeStrategy);
+    const ok = !!(candidate && candidate.eligible);
+    window._promotionGateEligible = ok;
+    button.disabled = !ok;
+    status.textContent = ok
+      ? "✅ todos os gates objetivos passaram"
+      : "🔒 bloqueada: falta completar todos os gates forward";
+    button.title = ok
+      ? "Todos os gates forward passaram; promoção continua manual"
+      : "Bloqueada até N, PF, IC95%, DD e comparação com a referência passarem";
+  } catch (e) {
+    button.disabled = true;
+    status.textContent = "🔒 gate indisponível — promoção bloqueada";
+  }
+}
 $("btnPromote").onclick = async () => {
   const sid = testeStrategy;
   const name = STRATEGY_NAMES[sid] || sid;
+  if (["auto_escada_3", "auto_escada_5"].includes(sid) && window._promotionGateEligible !== true) {
+    toast("Promoção bloqueada: a janela forward ainda não passou todos os gates", "err");
+    return;
+  }
   if (!confirm(`Passar a conta principal (MT5 real) a usar a estratégia “${name}”? A execução passa a usar os parâmetros dela (max_legs/exit_at_tp).`)) return;
   const d = await act("/api/config", { strategy: sid });
   if (d && d.error) { toast("Erro: " + d.error, "err"); return; }
@@ -567,27 +808,31 @@ function drawMonthCurve(points, canvasId) {
   const canvas = $(canvasId || "testeChart");
   if (!canvas) return;
   const ctx = canvas.getContext("2d");
+  const pal = chartPalette();
   const W = canvas.width, H = canvas.height;
   ctx.clearRect(0, 0, W, H);
-  if (!points.length) return;
+  if (!points.length) {
+    drawCanvasMessage(canvasId || "testeChart", "Sem dados para este período.");
+    return;
+  }
   const pad = 30;
   const vals = points.map(p => p.pnl);
   let min = Math.min(0, ...vals), max = Math.max(0, ...vals);
   if (max - min < 1) max = min + 1;
   const x = i => pad + (i / (points.length - 1)) * (W - pad * 2);
   const y = v => H - pad - ((v - min) / (max - min)) * (H - pad * 2);
-  ctx.strokeStyle = "#263040"; ctx.lineWidth = 1;
+  ctx.strokeStyle = pal.grid; ctx.lineWidth = 1;
   for (let g = 0; g <= 3; g++) {
     const gy = pad + (g / 3) * (H - pad * 2);
     ctx.beginPath(); ctx.moveTo(pad, gy); ctx.lineTo(W - pad, gy); ctx.stroke();
   }
   if (min < 0 && max > 0) {
-    ctx.strokeStyle = "#8a94a6"; ctx.setLineDash([4, 4]);
+    ctx.strokeStyle = pal.axis; ctx.setLineDash([4, 4]);
     ctx.beginPath(); ctx.moveTo(pad, y(0)); ctx.lineTo(W - pad, y(0)); ctx.stroke();
     ctx.setLineDash([]);
   }
   const last = points[points.length - 1];
-  const col = last.pnl >= 0 ? "#22c55e" : "#ef4444";
+  const col = last.pnl >= 0 ? "#089981" : "#f23645";
   ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.beginPath();
   points.forEach((p, i) => i === 0 ? ctx.moveTo(x(i), y(p.pnl)) : ctx.lineTo(x(i), y(p.pnl)));
   ctx.stroke();
@@ -597,7 +842,7 @@ function drawMonthCurve(points, canvasId) {
   ctx.fillStyle = col; ctx.font = "bold 12px sans-serif";
   ctx.fillText((last.pnl > 0 ? "+" : "") + last.pnl.toFixed(0) + " €", x(points.length - 1) - 40, y(last.pnl) - 6);
   // eixo de datas: primeira e última
-  ctx.fillStyle = "#8a94a6"; ctx.font = "10px sans-serif";
+  ctx.fillStyle = pal.axis; ctx.font = "10px sans-serif";
   ctx.fillText(points[0].date || "", pad, H - 8);
   ctx.fillText(points[points.length - 1].date || "", W - pad - 56, H - 8);
 }

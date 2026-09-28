@@ -1,5 +1,6 @@
 import os
 import tempfile
+import pytest
 
 from app.db import DB
 from app.execution.engine import SimEngine, _contract, _pnl
@@ -257,30 +258,49 @@ def test_gold_trade_pnl_not_inflated():
         cleanup(db, tmp)
 
 
-def test_hidden_strategies_kept_in_registry_but_marked_hidden():
-    """Consolidação (19/08, spec): tp2/tp2_gestao/nova_gestao_3/auto_2 saem
-    do menu E do paper (HIDDEN — perdedoras); nova/auto_5 saem só do menu
-    (MENU_HIDDEN — continuam em papel: contrafactual/comparação). As 12
-    ficam no registo (backtest/compare) e o get_strategy não faz fallback
-    para a principal."""
+def test_removed_strategies_gone_from_registry_and_get_strategy_raises():
+    """Remoção completa (01/09): tp2/tp2_gestao/nova_gestao_3/auto_2/
+    auto_protect_5/auto_escada_3_struggle saíram do registo — o backtest
+    histórico dessas variantes deixou de ser reproduzível (CHANGELOG 01/09).
+    `nova`/`auto_5` ficam (contrafactual/comparação, MENU_HIDDEN); a máquina
+    de menu deriva do registo e o get_strategy levanta para ids mortos."""
     from app.strategies import (HIDDEN_STRATEGIES, MENU_HIDDEN_STRATEGIES,
                                 STRATEGIES, get_strategy)
-    assert "tp2" in STRATEGIES and "tp2_protect" in STRATEGIES
-    assert "nova" in STRATEGIES and "nova_gestao" in STRATEGIES
-    # consolidação (19/08): 4 fora de tudo, 2 ocultas do menu mas em papel
-    assert HIDDEN_STRATEGIES == {"tp2", "tp2_gestao", "nova_gestao_3", "auto_2"}
+    removed = {"tp2", "tp2_gestao", "nova_gestao_3", "auto_2",
+               "auto_protect_5", "auto_escada_3_struggle"}
+    for sid in removed:
+        assert sid not in STRATEGIES, f"{sid} devia ter sido removida a 01/09"
+    assert "tp2_protect" in STRATEGIES and "nova" in STRATEGIES
+    assert "nova_gestao" in STRATEGIES
+    # já não há estratégias "retired"/"backtest_only" no registo; as únicas
+    # ocultas do menu são as referências de backtest nova/auto_5
+    assert HIDDEN_STRATEGIES == set()
     assert MENU_HIDDEN_STRATEGIES == {"nova", "auto_5"}
-    for sid in STRATEGIES:
-        assert sid not in HIDDEN_STRATEGIES or sid in {"tp2", "tp2_gestao",
-                                                        "nova_gestao_3", "auto_2"}
-    # o get_strategy devolve-as (não fazem fallback para a principal)
-    assert get_strategy("tp2")["id"] == "tp2"
+    # id morto => ValueError ruidoso (sem fallback silencioso para a main)
+    for sid in removed:
+        try:
+            get_strategy(sid)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"get_strategy({sid}) devia levantar ValueError")
+    # um estudo típico (sim_params/backtest) também falha em voz alta
+    from app.strategies import sim_params
+    for sid in ("tp2", "auto_2"):
+        try:
+            sim_params(sid)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"sim_params({sid}) devia levantar ValueError")
+    # ids vivos continuam a devolver a estratégia certa + parâmetros
     assert get_strategy("tp2_protect")["id"] == "tp2_protect"
-    assert get_strategy("nova")["id"] == "nova"
-    # e as estratégias têm os parâmetros esperados
-    assert get_strategy("tp2")["exit_at_tp"] == 2
-    assert get_strategy("tp2_protect")["manage_kinds"] == {"protect"}
+    # 16/09: o grupo pediu para a tp2_protect honrar CLOSE ALL como a
+    # nova_gestao — as duas lanes saem ao mercado na mesma instrução.
+    assert get_strategy("tp2_protect")["manage_kinds"] == {"protect", "close_all"}
     assert get_strategy("nova")["manage"] is False
+    assert get_strategy("nova")["id"] == "nova"
+    assert get_strategy(None)["id"] == "nova_gestao"
 
 
 def test_hybrid_strategy_is_visible_and_configured():
@@ -442,14 +462,69 @@ def test_defensive_mode_params_in_registry():
         assert s["def_window"] == 10
         assert s["def_trail"] == 1.5
         assert s["def_time_stop"] == 60
+        assert s["def_risk_pct"] == 1.25
         p = sim_params(sid)
         assert p["def_window"] == 10 and p["def_trail"] == 1.5
         assert p["def_time_stop"] == 60
+        assert p["def_risk_pct"] == 1.25
     # a nova_gestao (principal) e as sem auto-gestão não definem modo defensivo
     for sid in ("nova_gestao", "auto_3", "tp2_protect"):
         assert not get_strategy(sid).get("def_window")
         assert not sim_params(sid).get("def_window")
     assert "def_window" in sim_params("auto_escada_3")
+
+
+def test_paper_defensive_risk_cap_is_applied_after_ten_losses():
+    from app.execution.paper import PaperRace
+
+    db, market, sim, tmp = setup()
+    try:
+        race = PaperRace(db, market)
+        for i in range(10):
+            signal = make_signal(id=f"def-loss-{i}")
+            race.open_for_signal(
+                signal, 2.5, strategy_ids=["auto_escada_3"], daily_stop_pct=0,
+            )
+            row = db.paper_trade_for_signal_any(signal.id, "auto_escada_3")
+            positions = db.paper_positions_for_trade(row["id"])
+            for pos in positions:
+                race._close(row, pos, signal.stop_loss, "sl")
+            race._finalize(row, {p.leg: p for p in positions})
+
+        next_trade = race.open_for_signal(
+            make_signal(id="def-next"), 2.5,
+            strategy_ids=["auto_escada_3"], daily_stop_pct=0,
+        )[0]
+        assert next_trade.risk_pct == 1.25
+    finally:
+        cleanup(db, tmp)
+
+
+def test_paper_protection_peak_survives_restart():
+    """A restart must preserve the peak used by trailing, not re-seed it from
+    the current price and silently give back already observed protection."""
+    from app.execution.paper import PaperRace
+
+    db, market, sim, tmp = setup()
+    try:
+        race = PaperRace(db, market)
+        signal = make_signal(id="persisted-peak", take_profit_3=1.0950)
+        trade = race.open_for_signal(
+            signal, 2.0, strategy_ids=["auto_escada_3"], daily_stop_pct=0,
+        )[0]
+        peak = signal.take_profit_1 + 0.0010
+        market.prices[signal.symbol] = peak
+        race.tick(2.0)
+        persisted = db.load_protection_state("paper", trade.id, origin="race")
+        assert persisted and persisted["peak"] == peak
+
+        restarted = PaperRace(db, market)
+        row = db.paper_trade_for_signal_any(signal.id, "auto_escada_3")
+        positions = {p.leg: p for p in db.paper_positions_for_trade(row["id"])}
+        state = restarted._auto_state(row, row["direction"], signal.entry, positions)
+        assert state["peak"] == peak
+    finally:
+        cleanup(db, tmp)
 
 
 def test_sim_engine_uses_shared_auto_policy():
@@ -478,5 +553,47 @@ def test_sim_engine_uses_shared_auto_policy():
         assert {event["leg"] for event in final if event["type"] == "close"} == {2, 3}
         assert db.get_trade(trade.id).status == "closed"
         assert db.get_trade(trade.id).pnl > 0
+    finally:
+        cleanup(db, tmp)
+
+
+def test_tp1_breakeven_plus_buffer_sim():
+    """BE+ (tp2_protect): SimEngine com `be_buffer_pips` move o SL da perna
+    2 para entrada+buffer após o TP1 — a reversão fecha com lucro, não a 0."""
+    db, market, sim, tmp = setup()
+    try:
+        signal = make_signal()
+        trade = sim.open_trade(signal, risk_pct=1.0, balance=10_000)
+        auto = {"be_buffer_pips": 4.0}  # 4 pips × 0.0001 = 0.0004
+
+        market.prices["EURUSD"] = 1.0890  # TP1
+        sim.update(auto=auto)
+        leg2 = [p for p in db.positions_for_trade(trade.id) if p.leg == 2][0]
+        assert leg2.status == "open"
+        assert leg2.stop_loss == pytest.approx(1.0854)  # entry + buffer
+
+        # reversão: o preço toca a entrada (1.0850), abaixo do BE+ → fecha
+        market.prices["EURUSD"] = 1.0850
+        sim.update(auto=auto)
+        leg2 = [p for p in db.positions_for_trade(trade.id) if p.leg == 2][0]
+        assert leg2.status == "closed"
+        assert leg2.exit_reason == "trail"  # SL acima da entrada = protegido
+        assert leg2.pnl > 0
+    finally:
+        cleanup(db, tmp)
+
+
+def test_tp1_breakeven_classic_without_buffer_sim():
+    """Sem `be_buffer_pips` (auto=None), o BE clássico mantém-se — a perna 2
+    fecha exatamente na entrada (regressão do comportamento anterior)."""
+    db, market, sim, tmp = setup()
+    try:
+        signal = make_signal()
+        trade = sim.open_trade(signal, risk_pct=1.0, balance=10_000)
+
+        market.prices["EURUSD"] = 1.0890  # TP1
+        sim.update()
+        leg2 = [p for p in db.positions_for_trade(trade.id) if p.leg == 2][0]
+        assert leg2.stop_loss == 1.0850  # BE clássico: entrada seca
     finally:
         cleanup(db, tmp)

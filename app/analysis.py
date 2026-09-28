@@ -20,7 +20,8 @@ from typing import Dict, List, Optional
 
 from app.backtest import (aggregate, apply_daily_stop, attribute_protect_events,
                           correlate_management, drawdown_from_results,
-                          simulate_signal, simulate_signal_managed)
+                          simulate_signal, simulate_signal_managed,
+                          _start_index)
 from app.config import DB_PATH
 from app.db import DB
 from app.execution.feed import YahooProvider
@@ -33,12 +34,645 @@ def _to_epoch(iso: str) -> int:
     from datetime import datetime
     return int(datetime.fromisoformat(iso).timestamp())
 
+
+# ---------------------------------------------------------------------------
+# "Porquê sem trade" — rejeições classificadas + replay hipotético
+# ---------------------------------------------------------------------------
+
+REJECTION_KIND_LABELS = {
+    "zone": "Fora da zona / cap",
+    "min_lot": "Lote mínimo vs risco",
+    "global_risk": "Kill switch / limite / max posições",
+    "pending_expired": "Expirou sem confirmação",
+    "broker": "Ordem recusada pelo broker",
+    "parse": "Sinal incompleto / não parseado",
+    "llm": "Só registo (IA)",
+    "execution_failed": "Nenhuma lane abriu",
+    "ignored": "Conversa do grupo (ignorada)",
+    "outro": "Outro",
+}
+
+
+def rejection_kind(status: str, error: str) -> str:
+    """Categoriza um sinal rejeitado/falhado pelo status + erro gravado.
+
+    Modo autónomo: nada fica pendente de humano — cada rejeição tem uma
+    razão registada. Os `rejected` de versões antigas (sem erro gravado)
+    caem em `outro`; os `failed` são, por construção, parses incompletos.
+    """
+    err = (error or "").lower()
+    if status == "rejected":
+        if any(k in err for k in (
+                "kill switch", "perda diária", "perda diaria",
+                "máximo de posições", "maximo de posicoes",
+                "posições abertas", "posicoes abertas")):
+            return "global_risk"
+        if "expirou" in err:
+            return "pending_expired"
+        if "lote mínimo" in err or "lote minimo" in err:
+            return "min_lot"
+        if "zona" in err or "cap autónomo" in err or "cap autonomo" in err:
+            return "zone"
+        return "outro"
+    if status == "failed":
+        if "parseado por ia" in err or "llm" in err:
+            return "llm"
+        if "retcode" in err or "broker" in err or "auto trading" in err \
+                or "autotrading" in err:
+            return "broker"
+        # Rejeições de risco por lane (ex.: limite de perda diária) chegam
+        # como `failed` com "nenhuma lane abriu a trade: <lane>: <razão>".
+        # Contam como global_risk, não como falha de execução.
+        if any(k in err for k in (
+                "kill switch", "perda diária", "perda diaria",
+                "limite de perda", "máximo de posições",
+                "maximo de posicoes", "posições abertas", "posicoes abertas")):
+            return "global_risk"
+        if "nenhuma lane" in err:
+            return "execution_failed"
+        # failed = entrada/SL/TP em falta (sinal incompleto ou conversa)
+        return "parse"
+    return "outro"
+
+
+def _candle_window(candles: List[dict], epoch: int, before: int = 0,
+                   after: int = 120) -> Optional[dict]:
+    """Retorna o contexto de preços no candle mais próximo de `epoch`
+    (OK, sem look-ahead para `after`): `open/high/low/close` da vela que
+    cobre `epoch`, mais o high/low das `before` velas anteriores — para o
+    relatório mostrar a zona do sinal vs o preço real na hora."""
+    idx = _start_index(candles, epoch)
+    if idx >= len(candles):
+        idx = len(candles) - 1
+    if idx < 0 or not candles:
+        return None
+    base = candles[idx]
+    lo_idx = max(0, idx - max(0, before))
+    hi_prev = max((c["high"] for c in candles[lo_idx:idx]), default=None)
+    lo_prev = min((c["low"] for c in candles[lo_idx:idx]), default=None)
+    return {
+        "open": base["open"], "high": base["high"], "low": base["low"],
+        "close": base["close"], "ts": base["ts"],
+        "recent_high": hi_prev, "recent_low": lo_prev,
+    }
+
+
+def _zone_vs_price(entry: Optional[float], zone_low: Optional[float],
+                   zone_high: Optional[float], ctx: Optional[dict]) -> Optional[dict]:
+    """Zona do sinal vs o preço real quando a mensagem chegou — quantificar
+    "quão longe estava a entrada". Sem candles não devolve comparação.
+
+    `ctx` é o resultado de `_candle_window`. A distância é em pips (preço ×
+    1 para gold/forex usar o mesmo sentido que os TPs do grupo).
+    """
+    if not ctx or not entry:
+        return None
+    price = ctx.get("close") or ctx.get("open")
+    if price is None:
+        return None
+    lo = zone_low if zone_low not in (None, 0) else entry
+    hi = zone_high if zone_high not in (None, 0) else entry
+    # entrada dentro da zona quando o preço real a toca (dentro do range da zona)
+    in_zone = (lo is not None and hi is not None and lo <= price <= hi)
+    # quão longe ficou: distância do preço ao ponto mais próximo da zona
+    dist = 0.0
+    if lo is not None and hi is not None:
+        if price < lo:
+            dist = lo - price
+        elif price > hi:
+            dist = price - hi
+    # colocaram-se em cima de um TP já batido (o preço passou a entrada)?
+    passed = (price > hi) if ctx.get("ts") else None
+    direction = ""
+    if in_zone:
+        direction = "na zona"
+    elif dist > 0:
+        direction = f"faltava {dist:.2f} para a zona"
+    else:
+        direction = "na fronteira"
+    return {
+        "price": round(price, 2),
+        "zone_low": round(lo, 2) if lo else None,
+        "zone_high": round(hi, 2) if hi else None,
+        "in_zone": bool(in_zone),
+        "distance": round(dist, 2),
+        "direction": direction,
+        "range_high_low": [round(ctx.get("recent_low"), 2)
+                            if ctx.get("recent_low") is not None else None,
+                            round(ctx.get("recent_high"), 2)
+                            if ctx.get("recent_high") is not None else None],
+    }
+
+
+def _orphan_why(entry: float, direction: str, opened_ts: int,
+                closed_ts: int, candles: List[dict]) -> dict:
+    """Porque é que o preço não voltou ao nível da entrada.
+
+    Para uma pendente órfã/expirada: o range de preços durante a vida da
+    ordem (abertura até fecho), o desvio máximo da entrada e o veredicto
+    simples.
+    """
+    if not candles:
+        return {"verdict": "sem candles", "max_deviation": None,
+                "entry_in_range": None, "high": None, "low": None}
+    start = _start_index(candles, opened_ts)
+    end = _start_index(candles, closed_ts)
+    end = max(end, start)
+    window = candles[start:end + 1]
+    if not window:
+        return {"verdict": "sem candles", "max_deviation": None,
+                "entry_in_range": None, "high": None, "low": None}
+    high = max(c["high"] for c in window)
+    low = min(c["low"] for c in window)
+    entry_in_range = low <= entry <= high
+    # distância mínima ao nível da entrada (quanto faltou para a entrar)
+    if direction == "buy":
+        nearest = low  # para comprar, o preço precisa de recuar até à entrada
+        missed = (entry - low) if entry > low else 0.0
+    else:
+        nearest = high  # para vender, precisa de subir até à entrada
+        missed = (high - entry) if high > entry else 0.0
+    if entry_in_range:
+        verdict = "o preço voltou ao nível da entrada (Fill/SL pode ter corrido contra nos volts)"
+    else:
+        verdict = ("o preço nunca voltou ao nível da entrada — perdeu-o ao tocar "
+                   "primeiro o destino oposto")
+    return {
+        "verdict": verdict,
+        "high": round(high, 2), "low": round(low, 2),
+        "entry_in_range": entry_in_range,
+        "max_miss": round(max(missed, 0.0), 2),
+        "nearest_price": round(nearest, 2),
+    }
+
+
+def _fills_zone_analysis(db: DB, all_sig: List, since: str,
+                         candles_by_symbol: Dict[str, List]) -> dict:
+    """Zona-vs-preço no histórico de trades REAIS (fills que entraram).
+
+    Para cada trade real (execution_mode mt5-real/mt5-dry) aberta na janela,
+    compara a zona do sinal com o preço real quando a mensagem chegou: quantos
+    fills entraram DENTRO da zona vs quantos foram persecuções fora dela
+    (preço longe da zona, ainda assim a ordem preencheu depois). Read-only.
+    """
+    sig_by_id = {s.id: s for s in all_sig}
+    never_filled = ("pending_expired", "pending_orphan", "pending_cancelled")
+    fills = [t for t in db.trades_opened_since(since)
+             if (t.execution_mode or "").startswith("mt5")
+             and (t.exit_reason or "") not in never_filled
+             and t.signal_id in sig_by_id]
+    rows: List[dict] = []
+    in_zone = chases = with_zone = 0
+    distances: List[float] = []
+    # divergência GC=F↔spot por fill (para o painel do /auditoria): só
+    # quando a trade tem AMBOS os preços — spot do guard e candle Yahoo
+    measured_div: List[dict] = []
+    for t in fills:
+        s = sig_by_id[t.signal_id]
+        candles = candles_by_symbol.get(t.symbol)
+        zp = None
+        if candles:
+            try:
+                ctx = _candle_window(candles, _to_epoch(s.received_at or ""),
+                                     before=6)
+                zp = _zone_vs_price(s.entry, s.entry_zone_low,
+                                    s.entry_zone_high, ctx)
+            except (ValueError, TypeError):
+                zp = None
+        # A distância AUTORITATIVA é a do guard: spot MT5 no momento da
+        # execução (trade.entry_distance). O candle Yahoo só serve de
+        # fallback — para metais o GC=F diverge do spot (offset conhecido,
+        # documentado no AGENTS.md) e INFLACIONA a distância: uma entrada na
+        # zona no spot pode aparecer a 60+ pips no GC=F.
+        dist = t.entry_distance
+        source = "guard"
+        if dist is None:
+            dist = zp["distance"] if zp else None
+            source = "candles"
+        if dist is None:
+            continue
+        dist = float(dist)
+        in_zone_spot = bool(source == "guard" and dist <= 0.0)
+        in_zone_candle = bool(zp and zp["in_zone"])
+        in_zone_flag = in_zone_spot or in_zone_candle
+        market_price = t.market_price_at_open
+        candle_price = zp["price"] if zp else None
+        feed_div = None
+        if market_price is not None and candle_price is not None:
+            feed_div = round(float(candle_price) - float(market_price), 2)
+            measured_div.append({
+                "day": (t.opened_at or "")[:10],
+                "offset": feed_div,
+                # falsa perseguição: na zona no SPOT (autoritativo) mas fora
+                # no GC=F — o feed de futuros fez parecer uma perseguição
+                "false_persecution": bool(in_zone_spot and not in_zone_candle),
+            })
+        with_zone += 1
+        if in_zone_flag:
+            in_zone += 1
+        else:
+            chases += 1
+            distances.append(dist)
+        rows.append({
+            "signal_id": s.id, "symbol": t.symbol,
+            "direction": t.direction, "entry": t.entry,
+            "zone": [s.entry_zone_low, s.entry_zone_high],
+            "price": candle_price if candle_price is not None else market_price,
+            "market_price": (round(float(market_price), 2)
+                             if market_price is not None else None),
+            "in_zone": in_zone_flag,
+            "in_zone_spot": in_zone_spot if source == "guard" else None,
+            "in_zone_candle": in_zone_candle or None,
+            "feed_divergence": feed_div,
+            "distance": round(dist, 2),
+            "distance_txt": ("na zona" if in_zone_flag
+                             else f"fora da zona por {dist:.2f}"),
+            "distance_source": source,
+            "opened_at": t.opened_at, "status": t.status,
+            "pnl": round(float(t.pnl or 0.0), 2),
+            "execution_mode": t.execution_mode,
+        })
+    rows.sort(key=lambda r: r["opened_at"] or "", reverse=True)
+    # histórico por dia: quando é que as entradas longe do mercado acontecem
+    # (dia de colocação = opened_at da trade)
+    by_day_map: Dict[str, dict] = {}
+    for r in rows:
+        day = (r["opened_at"] or "")[:10]
+        if not day:
+            continue
+        d = by_day_map.setdefault(day, {"date": day, "total": 0,
+                                        "in_zone": 0, "chases": 0,
+                                        "max_distance": None})
+        d["total"] += 1
+        if r["in_zone"]:
+            d["in_zone"] += 1
+        else:
+            d["chases"] += 1
+            dd = float(r["distance"] or 0.0)
+            if d["max_distance"] is None or dd > d["max_distance"]:
+                d["max_distance"] = round(dd, 2)
+    by_day = sorted(by_day_map.values(), key=lambda d: d["date"])
+    # divergência GC=F↔spot por dia: offset médio e quantas perseguições
+    # eram só do feed (spot na zona, GC=F fora)
+    div_by_day_map: Dict[str, dict] = {}
+    for m in measured_div:
+        d = div_by_day_map.setdefault(m["day"], {"date": m["day"], "fills": 0,
+                                                  "offsets": [],
+                                                  "false_persecutions": 0})
+        d["fills"] += 1
+        d["offsets"].append(m["offset"])
+        if m["false_persecution"]:
+            d["false_persecutions"] += 1
+    div_by_day = []
+    for d in div_by_day_map.values():
+        offs = d.pop("offsets")
+        d["offset_mean"] = round(sum(offs) / len(offs), 2)
+        d["offset_max"] = round(max(abs(o) for o in offs), 2)
+        div_by_day.append(d)
+    div_by_day.sort(key=lambda d: d["date"])
+    false_persecutions = sum(1 for m in measured_div if m["false_persecution"])
+    # perseguições REAIS: fora da zona no spot E no GC=F (guard rows apenas)
+    real_persecutions = sum(1 for r in rows
+                            if r.get("in_zone_spot") is False
+                            and not (r.get("in_zone_candle") or False))
+    mean_offset = None
+    if measured_div:
+        mean_offset = round(sum(m["offset"] for m in measured_div)
+                            / len(measured_div), 2)
+    feed_div = {
+        "measured": len(measured_div),
+        "mean_offset": mean_offset,
+        "max_offset_abs": (round(max(abs(m["offset"]) for m in measured_div), 2)
+                           if measured_div else None),
+        "false_persecutions": false_persecutions,
+        "real_persecutions": real_persecutions,
+        "by_day": div_by_day,
+        "note": ("divergência = preço GC=F (candle Yahoo) − preço spot (guard MT5) "
+                  "à hora do sinal; uma 'falsa perseguição' estava na zona no spot "
+                  "mas aparecia fora no GC=F — era o feed, não uma entrada arriscada."),
+    }
+    return {
+        "total_fills": len(fills),
+        "with_zone": with_zone,
+        "in_zone": in_zone,
+        "chases": chases,
+        "pct_in_zone": round(in_zone / with_zone * 100, 1) if with_zone else None,
+        "max_distance": round(max(distances), 2) if distances else None,
+        "source_guard": sum(1 for r in rows if r["distance_source"] == "guard"),
+        "source_candles": sum(1 for r in rows if r["distance_source"] == "candles"),
+        "by_day": by_day,
+        "feed_divergence": feed_div,
+        "note": ("distância medida pelo guard (spot MT5 no momento da execução); "
+                  "só fills sem entry_distance usam candles Yahoo — para metais o "
+                  "GC=F diverge do spot (offset conhecido) e inflaciona a distância."),
+        "rows": rows[:50],
+    }
+
+
+async def rejection_report(db: DB, days: int = 30,
+                           risk_pct: Optional[float] = None,
+                           balance: Optional[float] = None,
+                           strategy_id: Optional[str] = None,
+                           max_replay: int = 150) -> dict:
+    """"Porquê sem trade": sinais rejeitados/falhados nos últimos `days`
+    dias, contados por categoria, e para cada sinal parseável o que TERIA
+    acontecido (replay com candles reais + gestão — mesmo pipeline do
+    run_analysis). Read-only: nunca abre trades nem escreve na BD.
+    """
+    from app.strategies import MAIN_STRATEGY_ID, get_strategy, sim_params
+    sid = strategy_id or MAIN_STRATEGY_ID
+    strat = get_strategy(sid)
+    since = (date.today() - timedelta(days=max(1, int(days or 30)))).isoformat()
+    all_sig = db.signals_since(since)
+    # Include all historical rows for correlation: an order can expire after
+    # the signal's received_at was edited/backfilled outside the display
+    # window. The normal rejected/failed population remains window-scoped.
+    rejected = [s for s in all_sig if s.status in ("rejected", "failed")]
+    rejected_ids = {s.id for s in rejected}
+    all_known_signals = db.list_signals(200000)
+    # Pending orders are converted to a closed trade/position with
+    # `pending_expired`, so include those signals in the rejection audit even
+    # if the signal itself remained `executed`.
+    pending_expired_ids = {
+        t.signal_id for t in db.list_trades(200000)
+        if t.signal_id and any(
+            p.exit_reason in ("pending_expired", "pending_orphan", "pending_cancelled")
+            for p in db.positions_for_trade(t.id)
+        )
+    }
+    # The signal may have been moved outside the requested received_at window
+    # before its pending legs expired. Resolve those IDs directly so an
+    # autonomous expiry is never silently omitted from the report.
+    known_by_id = {s.id: s for s in all_known_signals}
+    expired_signals = [
+        known_by_id[sid] for sid in pending_expired_ids
+        if sid in known_by_id and sid not in rejected_ids
+    ]
+    rejected.extend(expired_signals)
+    rejected_ids.update(s.id for s in expired_signals)
+    # Expiry can be recorded on a position whose trade references a signal
+    # that is outside the received-date window; retain the signal in the
+    # response, but do not let it make the normal counters time-dependent.
+    rejected.sort(key=lambda signal: signal.received_at or "", reverse=True)
+    items: List[dict] = []
+    by_kind: Dict[str, int] = {k: 0 for k in REJECTION_KIND_LABELS}
+    for s in rejected:
+        kind = ("pending_expired" if s.id in pending_expired_ids
+                else rejection_kind(s.status, s.error or ""))
+        by_kind[kind] = by_kind.get(kind, 0) + 1
+        items.append({
+            "id": s.id, "status": s.status, "kind": kind,
+            "symbol": s.symbol, "direction": s.direction,
+            "entry": s.entry, "stop_loss": s.stop_loss,
+            "tps": [float(getattr(s, f"take_profit_{i}", 0.0) or 0.0)
+                     for i in range(1, 6)],
+            "zone": [s.entry_zone_low, s.entry_zone_high],
+            "received_at": s.received_at, "error": s.error,
+            "raw_text": (s.raw_text or "")[:300],
+            "replay": None,
+        })
+
+    # Conversa do grupo (tab 🚫 Ignoradas) vive no MESMO relatório: não é
+    # erro do bot — o grupo manda muito que não é sinal nem gestão. Contadas
+    # como `ignored` para o "porquê sem trade" distinguir "rejeitei" de
+    # "nem tentou" (conversa pura nunca entra na pipeline).
+    ignored = db.recent_ignored(limit=max(100, max_replay), days=int(days or 30))
+    by_kind["ignored"] = by_kind.get("ignored", 0) + len(ignored)
+    for m in ignored:
+        items.append({
+            "id": f"ignored-{m['id']}", "status": "ignored", "kind": "ignored",
+            "symbol": None, "direction": None, "entry": None, "stop_loss": None,
+            "tps": [], "zone": None,
+            "received_at": m.get("received_at"),
+            "error": m.get("reason") or "conversa do grupo — sem keywords de sinal/gestão",
+            "raw_text": (m.get("raw_text") or "")[:300],
+            "replay": None,
+        })
+
+    # replay hipotético: só para sinais com parse completo (entry+SL+TP1);
+    # candles uma vez por símbolo + gestão correlacionada à mensagem original
+    replayable = [s for s in rejected
+                  if s.symbol and s.direction and s.entry
+                  and s.stop_loss and float(s.take_profit_1 or 0.0) > 0]
+    mgmt_events = []
+    for s in all_sig:
+        try:
+            action = classify(s.raw_text or "")
+        except Exception:
+            action = None
+        if not action or action["kind"] not in (
+                "protect", "close_all", "close_tp1", "close_tp",
+                "move_sl", "tp_hit"):
+            continue
+        try:
+            epoch = _to_epoch(s.received_at)
+        except (ValueError, TypeError):
+            continue
+        mgmt_events.append((s.source or "", epoch, action["kind"],
+                            bool(action.get("be")), action.get("tp"),
+                            action.get("sl"), s.message_id, s.reply_to_msg_id))
+    mgmt_all = correlate_management(replayable, mgmt_events)
+
+    interval, range_ = ("15m", "1mo") if int(days or 30) <= 30 else ("1h", "3mo")
+    provider = YahooProvider()
+    # candles para todos os rejeitados com entrada (replay + zona-vs-preço);
+    # símbolos apenas nos rejeitados com parse completo para o replay
+    candle_symbols = {s.symbol for s in rejected
+                      if s.symbol and s.direction and s.entry}
+    candles_by_symbol: Dict[str, List] = {}
+    for symbol in candle_symbols:
+        try:
+            candles_by_symbol[symbol] = await provider.history(
+                symbol, interval=interval, range_=range_)
+        except Exception as exc:
+            print(f"[rejections] sem histórico para {symbol}: {exc}")
+
+    risk = float(risk_pct or DEFAULT_RISK_PCT)
+    bal = float(balance) if balance else float(
+        db.all_config().get("balance", 10000) or 10000)
+    params = sim_params(sid)
+    params.pop("manage", None)  # simulate_signal_managed filtra por manage_kinds
+    item_by_id = {it["id"]: it for it in items}
+    replayed = 0
+    for s in replayable[:max_replay]:
+        candles = candles_by_symbol.get(s.symbol)
+        if not candles:
+            continue
+        # zona vs preço real na hora (mesma vela do replay, sem look-ahead)
+        item = item_by_id.get(s.id)
+        if item is not None:
+            try:
+                ctx = _candle_window(candles, _to_epoch(s.received_at or ""),
+                                     before=6)
+                item["zone_vs_price"] = _zone_vs_price(
+                    s.entry, s.entry_zone_low, s.entry_zone_high, ctx)
+            except (ValueError, TypeError):
+                item["zone_vs_price"] = None
+        try:
+            res = simulate_signal_managed(
+                s, candles, mgmt_all.get(s.id, []),
+                risk, bal, DEFAULT_DELAY, DEFAULT_SPREAD, DEFAULT_SLIPPAGE,
+                DEFAULT_COMMISSION, **params)
+        except Exception as exc:
+            res = {"outcome": "erro", "pnl": 0.0, "leg1_pnl": 0.0,
+                   "mgmt_applied": [], "detail": str(exc)[:120]}
+        if item is not None:
+            item["replay"] = {
+                "outcome": res.get("outcome"),
+                "pnl": round(float(res.get("pnl") or 0.0), 2),
+                "leg1_pnl": round(float(res.get("leg1_pnl") or 0.0), 2),
+                "mgmt_applied": len(res.get("mgmt_applied") or []),
+                "detail": res.get("detail"),
+            }
+            replayed += 1
+
+    # ── 2ª fonte: pendentes órfãs/expiradas/canceladas (ordens na zona que
+    # nunca preencheram) — posições reais fechadas com a razão de pendente.
+    # Para cada perna, explica porque é que o preço não voltou ao nível da
+    # entrada (range de preços durante a vida da ordem).
+    orphans = []
+    try:
+        closed_pending = db.closed_pending_positions(since)
+    except Exception:
+        closed_pending = []
+    for pos in closed_pending:
+        symbol = pos.get("symbol")
+        candles = candles_by_symbol.get(symbol)
+        why = None
+        try:
+            if candles and pos.get("opened_at") and pos.get("closed_at"):
+                why = _orphan_why(
+                    float(pos["entry"] or 0), pos.get("direction") or "buy",
+                    _to_epoch(pos["opened_at"]), _to_epoch(pos["closed_at"]),
+                    candles,
+                )
+        except (ValueError, TypeError):
+            why = None
+        orphans.append({
+            "pos_id": pos.get("pos_id"),
+            "signal_id": pos.get("signal_id"),
+            "leg": pos.get("leg"),
+            "symbol": symbol,
+            "direction": pos.get("direction"),
+            "entry": pos.get("entry"),
+            "zone": [pos.get("entry_zone_low"), pos.get("entry_zone_high")],
+            "opened_at": pos.get("opened_at"),
+            "closed_at": pos.get("closed_at"),
+            "exit_reason": pos.get("exit_reason"),
+            "order_ticket": pos.get("order_ticket"),
+            "execution_mode": pos.get("execution_mode"),
+            "why": why,
+        })
+    # ── 3ª vista: fills REAIS que entraram — zona vs preço na hora, para
+    # ver quantos entraram dentro da zona vs quantos foram persecuções fora
+    # dela (o mesmo candle do replay, sem look-ahead).
+    fills_zone = _fills_zone_analysis(db, all_sig, since, candles_by_symbol)
+    return {
+        "days": int(days or 30), "strategy_id": sid,
+        "strategy_name": strat["nome"],
+        "total": len(items),
+        "by_kind": {k: by_kind.get(k, 0) for k in REJECTION_KIND_LABELS},
+        "replayed": replayed,
+        "orphans_total": len(orphans),
+        "orphans": orphans,
+        "fills_zone": fills_zone,
+        "items": items,
+    }
+
 # Same defaults as the dashboard simulator (SimulateIn).
 DEFAULT_RISK_PCT = 1.0
 DEFAULT_DELAY = 60
 DEFAULT_SPREAD = 1.0
 DEFAULT_SLIPPAGE = 0.5
 DEFAULT_COMMISSION = 3.5
+
+# Yahoo's intraday retention is asymmetric: 1m candles are available only
+# for roughly the last 7 days, while 5m/15m candles cover a longer window.
+# Keep the selection in one place so every report states whether it really
+# used the requested resolution or had to fall back (never silently compare a
+# 30-day M1 request against only one week of candles).
+_SUPPORTED_INTERVALS = {"1m", "5m", "15m", "1h"}
+
+
+def history_resolution(days: int, requested: str = "") -> dict:
+    """Choose a Yahoo candle interval/range and explain any fallback.
+
+    ``days`` is the requested replay horizon. A caller asking for ``1m`` over
+    more than seven days gets an explicit 15m/1h fallback instead of a partial
+    history, which would bias the strategy comparison toward recent trades.
+    The returned dictionary is API-safe telemetry and is also used by tests.
+    """
+    horizon = int(days or 0)
+    default_interval, default_range = (
+        ("15m", "1mo") if 0 < horizon <= 30 else
+        ("1h", "3mo") if horizon > 30 else
+        ("1h", "730d")
+    )
+    requested = (requested or "").strip().lower()
+    if not requested:
+        return {
+            "requested": default_interval, "effective": default_interval,
+            "range": default_range, "fallback": False,
+            "fallback_reason": "", "source": "yahoo",
+        }
+    if requested not in _SUPPORTED_INTERVALS:
+        return {
+            "requested": requested, "effective": default_interval,
+            "range": default_range, "fallback": True,
+            "fallback_reason": f"intervalo não suportado: {requested}",
+            "source": "yahoo",
+        }
+    if requested == "1m":
+        if 0 < horizon <= 7:
+            return {
+                "requested": requested, "effective": "1m", "range": "7d",
+                "fallback": False, "fallback_reason": "", "source": "yahoo",
+            }
+        reason = ("Yahoo conserva candles de 1m apenas por ~7 dias; "
+                  f"o horizonte pedido foi {horizon or 'completo'} dias")
+        return {
+            "requested": requested, "effective": default_interval,
+            "range": default_range, "fallback": True,
+            "fallback_reason": reason, "source": "yahoo",
+        }
+    if requested in ("5m", "15m"):
+        if 0 < horizon <= 60:
+            return {
+                "requested": requested, "effective": requested, "range": "60d",
+                "fallback": False, "fallback_reason": "", "source": "yahoo",
+            }
+        reason = (f"Yahoo não garante {requested} para o horizonte pedido "
+                  f"({horizon or 'completo'} dias)")
+        return {
+            "requested": requested, "effective": default_interval,
+            "range": default_range, "fallback": True,
+            "fallback_reason": reason, "source": "yahoo",
+        }
+    # 1h: Yahoo's longer range is the intended fallback for old history.
+    return {
+        "requested": requested, "effective": "1h",
+        "range": "730d" if horizon <= 0 else "3mo",
+        "fallback": False, "fallback_reason": "", "source": "yahoo",
+    }
+
+
+def _compact_analysis(payload: dict) -> dict:
+    """Small, stable summary for resolution/latency comparison endpoints."""
+    agg = payload.get("aggregate") or {}
+    dd = payload.get("drawdown") or {}
+    return {
+        "signals": payload.get("signals", 0),
+        "simulated": payload.get("simulated", 0),
+        "resolved": agg.get("resolved", 0),
+        "win_rate": agg.get("win_rate", 0.0),
+        "profit_factor": agg.get("profit_factor"),
+        "pnl": agg.get("pnl", 0.0),
+        "drawdown": dd,
+        "drawdown_amount": dd.get("amount"),
+        "drawdown_pct": dd.get("pct"),
+        "delay_seconds": payload.get("delay_seconds", DEFAULT_DELAY),
+        "resolution": payload.get("resolution"),
+    }
 
 
 def verdict_data(agg: dict) -> dict:
@@ -126,14 +760,21 @@ async def run_walk_forward(db: DB, group: str = "", days: int = 30,
             action = classify(s.raw_text or "")
         except Exception:
             action = None
-        if not action or action["kind"] not in ("protect", "close_all", "close_tp1", "close_tp", "tp_hit"):
+        if not action or action["kind"] not in (
+                "protect", "close_all", "close_tp1", "close_tp", "move_sl", "tp_hit"):
             continue
         try:
             epoch = _to_epoch(s.received_at)
         except (ValueError, TypeError):
             continue
-        mgmt_events.append((s.source or "", epoch, action["kind"],
-                            bool(action.get("be")), action.get("tp")))
+        # Keep the reply/message ids and explicit SL level in the replay
+        # event. `correlate_management` uses the reply first and only falls
+        # back to chronological source matching when no reply exists.
+        mgmt_events.append((
+            s.source or "", epoch, action["kind"], bool(action.get("be")),
+            action.get("tp"), action.get("sl"), s.message_id,
+            s.reply_to_msg_id,
+        ))
     mgmt_all = correlate_management(signals, mgmt_events)
 
     candles_by_symbol: Dict[str, List] = {}
@@ -207,10 +848,21 @@ async def run_analysis(db: DB, group: str = "", days: int = 30,
                        def_window: Optional[int] = None,
                        def_trail: Optional[float] = None,
                        def_time_stop: Optional[int] = None,
+                       def_risk_pct: Optional[float] = None,
                        atr_k: Optional[float] = None,
                        atr_period: int = 14,
+                       protect_trigger: Optional[float] = None,
+                       protect_buffer: Optional[float] = None,
+                       be_buffer_pips: Optional[float] = None,
+                       leg_weights: Optional[dict] = None,
+                       management_fallback_seconds: Optional[int] = None,
+                       fallback_buffer_fraction: float = 0.10,
                        strategy_id: str = "",
-                       include_causal: bool = False) -> dict:
+                       include_causal: bool = False,
+                       resolution: str = "",
+                       struggle_ae_pips: Optional[float] = None,
+                       struggle_fraction: float = 0.5,
+                       be_buffer_adaptive: bool = False) -> dict:
     """Backtest the group's real signals on real candles and return a payload.
 
     `group` is a substring filter on the source (e.g. "Golden Moves"); empty
@@ -222,7 +874,9 @@ async def run_analysis(db: DB, group: str = "", days: int = 30,
     out-of-sample antigo: since=2026-04-01, until=2026-07-28).
     `daily_stop_pct` modela o kill switch diário da produção (None = usa
     `daily_loss_limit_pct` da config; 0 = off). `risk_pct` None = usa
-    `risk_pct` da config (o slider).
+    `risk_pct` da config (o slider). `resolution` pede uma resolução de
+    candles (`1m`, `5m`, `15m` ou `1h`); o payload devolve a resolução efetiva
+    e a razão de fallback quando o Yahoo não conserva dados suficientes.
 
     Auto-gestão (spec): `trail_factor`/`time_stop_minutes`/`stair_levels`/
     `stair_from`/`confirm_filter` são os parâmetros adaptativos do
@@ -245,6 +899,7 @@ async def run_analysis(db: DB, group: str = "", days: int = 30,
     if balance is None:
         balance = float(db.all_config().get("balance", 10000) or 10000)
 
+    resolution_info = history_resolution(days, resolution)
     if not signals:
         return {
             "ok": True, "signals": 0, "group": group, "days": days,
@@ -252,7 +907,9 @@ async def run_analysis(db: DB, group: str = "", days: int = 30,
             "aggregate": aggregate([]), "results": [],
             "pnl_by_month": [], "pnl_by_leg": [], "since": since,
             "daily_stop_pct": daily_stop_pct, "daily_stop_skipped": 0,
+            "def_risk_pct": def_risk_pct,
             "strategy_id": strategy_id, "protect_latency": [],
+            "resolution": resolution_info, "delay_seconds": delay,
             "protect_causal": {
                 "signals": 0, "events": 0, "harmful_events": 0,
                 "delta_pnl": 0.0, "harmful_delta_pnl": 0.0, "rows": [],
@@ -260,13 +917,10 @@ async def run_analysis(db: DB, group: str = "", days: int = 30,
             "verdict": verdict_data(aggregate([])),
         }
 
-    # Yahoo only serves 15m candles for ~1 month; use 1h candles for longer
-    # windows so the whole signal period is covered. Histórico completo
-    # (days<=0) usa 1h/730d para cobrir o grupo desde o início.
-    if days and days > 0:
-        interval, range_ = ("15m", "1mo") if days <= 30 else ("1h", "3mo")
-    else:
-        interval, range_ = ("1h", "730d")
+    # Escolha centralizada: uma tentativa de M1 para 30 dias nunca é
+    # truncada aos últimos 7 dias, fica explicitamente marcada como fallback.
+    interval = resolution_info["effective"]
+    range_ = resolution_info["range"]
 
     provider = YahooProvider()
     by_symbol: Dict[str, List] = {}
@@ -290,14 +944,18 @@ async def run_analysis(db: DB, group: str = "", days: int = 30,
                 action = classify(s.raw_text or "")
             except Exception:
                 action = None
-            if not action or action["kind"] not in ("protect", "close_all", "close_tp1", "tp_hit"):
+            if not action or action["kind"] not in (
+                    "protect", "close_all", "close_tp1", "close_tp", "move_sl", "tp_hit"):
                 continue
             try:
                 epoch = _to_epoch(s.received_at)
             except (ValueError, TypeError):
                 continue
-            mgmt_events.append((s.source or "", epoch, action["kind"],
-                                bool(action.get("be")), action.get("tp")))
+            mgmt_events.append((
+                s.source or "", epoch, action["kind"], bool(action.get("be")),
+                action.get("tp"), action.get("sl"), s.message_id,
+                s.reply_to_msg_id,
+            ))
         mgmt_by_signal = correlate_management(signals, mgmt_events)
 
     # modo defensivo (estudo 19/08): estado PARTILHADO entre sinais — o PF
@@ -318,6 +976,25 @@ async def run_analysis(db: DB, group: str = "", days: int = 30,
             print(f"[análise] sem histórico para {symbol}: {exc}")
     causal_rows = []
     results = []
+    # BE+ adaptativo no estudo: buffer por símbolo = média do spread
+    # observado (7d) × 1.1, limitado a [10, 60] pips — mesma regra do tick
+    # vivo (`state._adaptive_be_buffer`), cache por símbolo (as observações
+    # não mudam durante o replay). Sem amostras → buffer estático/None.
+    _be_buffer_cache: Dict[str, Optional[float]] = {}
+
+    def _signal_be_buffer(sig) -> Optional[float]:
+        if not be_buffer_adaptive:
+            return be_buffer_pips
+        if sig.symbol not in _be_buffer_cache:
+            try:
+                avg = db.avg_spread_pips(sig.symbol, days=7)
+            except Exception:
+                avg = None
+            _be_buffer_cache[sig.symbol] = (
+                round(min(60.0, max(10.0, avg * 1.1)), 1)
+                if avg and avg > 0 else None)
+        return _be_buffer_cache[sig.symbol]
+
     ordered_signals = sorted(signals, key=lambda x: (x.received_at or "", x.id))
     for s in ordered_signals:
         candles = candles_by_symbol.get(s.symbol)
@@ -334,9 +1011,13 @@ async def run_analysis(db: DB, group: str = "", days: int = 30,
                 time_stop_minutes=time_stop_minutes,
                 stair_levels=stair_levels, stair_from=stair_from,
                 confirm_filter=confirm_filter, atr_k=atr_k,
-                atr_period=atr_period, def_window=def_window,
-                def_trail=def_trail, def_time_stop=def_time_stop,
+                atr_period=atr_period, protect_trigger=protect_trigger,
+                protect_buffer=protect_buffer, def_window=def_window,
+                def_trail=def_trail,
+                def_time_stop=def_time_stop,
+                def_risk_pct=def_risk_pct,
                 def_state=def_state,
+                be_buffer_pips=be_buffer_pips,
             )
             if causal.get("event_count"):
                 causal_rows.append({
@@ -354,9 +1035,19 @@ async def run_analysis(db: DB, group: str = "", days: int = 30,
                 time_stop_minutes=time_stop_minutes,
                 stair_levels=stair_levels, stair_from=stair_from,
                 confirm_filter=confirm_filter, atr_k=atr_k,
-                atr_period=atr_period, def_window=def_window,
-                def_trail=def_trail, def_time_stop=def_time_stop,
-                def_state=def_state, strategy_id=strategy_id)
+                atr_period=atr_period, protect_trigger=protect_trigger,
+                protect_buffer=protect_buffer, def_window=def_window,
+                def_trail=def_trail,
+                def_time_stop=def_time_stop,
+                def_risk_pct=def_risk_pct,
+                be_buffer_pips=_signal_be_buffer(s),
+                leg_weights=leg_weights,
+                management_fallback_seconds=management_fallback_seconds,
+                fallback_buffer_fraction=fallback_buffer_fraction,
+                def_state=def_state,
+                struggle_ae_pips=struggle_ae_pips,
+                struggle_fraction=struggle_fraction,
+                strategy_id=strategy_id)
         else:
             res = simulate_signal(s, candles, risk_pct, balance, delay,
                                   spread, slippage, commission,
@@ -367,11 +1058,18 @@ async def run_analysis(db: DB, group: str = "", days: int = 30,
                                   stair_levels=stair_levels,
                                   stair_from=stair_from,
                                   confirm_filter=confirm_filter,
+                                  protect_trigger=protect_trigger,
+                                  protect_buffer=protect_buffer,
                                   def_window=def_window,
                                   def_trail=def_trail,
                                   def_time_stop=def_time_stop,
+                                  def_risk_pct=def_risk_pct,
+                                  leg_weights=leg_weights,
                                   def_state=def_state,
-                                  atr_k=atr_k, atr_period=atr_period)
+                                  atr_k=atr_k, atr_period=atr_period,
+                                  struggle_ae_pips=struggle_ae_pips,
+                                  struggle_fraction=struggle_fraction,
+                                  be_buffer_pips=_signal_be_buffer(s))
         results.append({
             "id": s.id, "source": s.source, "symbol": s.symbol,
             "direction": s.direction, "entry": s.entry,
@@ -414,7 +1112,14 @@ async def run_analysis(db: DB, group: str = "", days: int = 30,
         "trail_factor": trail_factor, "time_stop_minutes": time_stop_minutes,
         "stair_levels": stair_levels, "stair_from": stair_from,
         "confirm_filter": confirm_filter,
-        "strategy_id": strategy_id,
+        "def_window": def_window, "def_trail": def_trail,
+        "def_time_stop": def_time_stop, "def_risk_pct": def_risk_pct,
+        "protect_trigger": protect_trigger,
+        "protect_buffer": protect_buffer,
+        "leg_weights": leg_weights,
+        "management_fallback_seconds": management_fallback_seconds,                "fallback_buffer_fraction": fallback_buffer_fraction,
+                "strategy_id": strategy_id,
+        "resolution": resolution_info,
         "daily_stop_pct": daily_stop_pct,
         "daily_stop_skipped": stop_info["skipped"],
         "pnl_by_month": [{"month": m, "pnl": round(v, 2)} for m, v in sorted(by_month.items())],
@@ -438,6 +1143,90 @@ async def run_analysis(db: DB, group: str = "", days: int = 30,
         applied = sum(1 for r in results if r.get("mgmt_applied"))
         payload["mgmt_applied"] = applied
     return payload
+
+
+async def run_resolution_analysis(db: DB, group: str = "", days: int = 7,
+                                  strategy_id: str = "",
+                                  resolution: str = "1m",
+                                  risk_pct: Optional[float] = None,
+                                  balance: Optional[float] = None,
+                                  delay: int = DEFAULT_DELAY,
+                                  spread: float = DEFAULT_SPREAD,
+                                  slippage: float = DEFAULT_SLIPPAGE,
+                                  commission: float = DEFAULT_COMMISSION,
+                                  since: str = "",
+                                  include_delays: bool = True) -> dict:
+    """Compare candle resolution and execution latency without look-ahead.
+
+    The requested run and a 15m reference use the exact same strategy, costs,
+    signals and risk. ``resolution`` is allowed to fall back according to
+    :func:`history_resolution`; the metadata is returned beside the metrics so
+    a 30-day "M1" result cannot be mistaken for native one-minute evidence.
+    Optional delay points quantify how much the result changes when execution
+    waits 0/8/60/300 seconds. This is read-only and never writes trades.
+    """
+    from app.strategies import MAIN_STRATEGY_ID, get_strategy, sim_params
+
+    sid = strategy_id or MAIN_STRATEGY_ID
+    strat = get_strategy(sid)
+    params = sim_params(sid)
+    common = dict(
+        db=db, group=group, days=days, risk_pct=risk_pct,
+        spread=spread, slippage=slippage, commission=commission,
+        balance=balance, since=since, daily_stop_pct=0,
+        strategy_id=sid, **params,
+    )
+    requested_payload = await run_analysis(
+        delay=delay, resolution=resolution, **common,
+    )
+    reference_payload = await run_analysis(
+        delay=delay, resolution="15m", **common,
+    )
+    requested_stats = _compact_analysis(requested_payload)
+    reference_stats = _compact_analysis(reference_payload)
+
+    def _delta(name: str):
+        left = requested_stats.get(name)
+        right = reference_stats.get(name)
+        if left is None or right is None:
+            return None
+        return round(float(left) - float(right), 2)
+
+    delay_rows = []
+    if include_delays:
+        values = (0, 8, 60, 300)
+        for delay_value in values:
+            if delay_value == delay:
+                candidate = requested_payload
+            else:
+                candidate = await run_analysis(
+                    delay=delay_value, resolution=resolution, **common,
+                )
+            delay_rows.append(_compact_analysis(candidate))
+
+    return {
+        "ok": True,
+        "strategy_id": sid,
+        "strategy_name": strat["nome"],
+        "days": days,
+        "requested": requested_stats,
+        "reference_15m": reference_stats,
+        "comparison": {
+            "pnl_delta": _delta("pnl"),
+            "profit_factor_delta": _delta("profit_factor"),
+            "drawdown_amount_delta": _delta("drawdown_amount"),
+            "same_effective_resolution": (
+                requested_stats.get("resolution", {}).get("effective")
+                == reference_stats.get("resolution", {}).get("effective")
+            ),
+        },
+        "delay_sensitivity": delay_rows,
+        "method": (
+            "M1 nativo quando o Yahoo conserva <=7 dias; caso contrário o "
+            "fallback fica explícito em resolution.fallback_reason. Todos os "
+            "fills continuam SL-first e sem usar o close futuro da vela."
+        ),
+    }
 
 
 def summarize_latency(rows: List[dict]) -> dict:
@@ -481,9 +1270,13 @@ async def protect_latency_report(db: DB,
     Backtest rows are deliberately kept out of SQLite; paper and MT5 rows are
     operational audit data and are read from ``protect_latency_log``.
     """
+    # Valida logo o id mesmo sem engine=backtest: um id removido não pode
+    # devolver 200 vazio — estudos com ids mortos falham em voz alta (regra
+    # pós-remoção de 01/09: `get_strategy` levanta ValueError).
+    from app.strategies import get_strategy, sim_params
+    get_strategy(strategy_id)
     safe_limit = max(1, min(int(limit), 500))
     if engine == "backtest":
-        from app.strategies import sim_params
         payload = await run_analysis(
             db, group="", days=days, since=since, daily_stop_pct=0,
             strategy_id=strategy_id, **sim_params(strategy_id),
@@ -1019,7 +1812,10 @@ async def paper_vs_real_auto(db: DB, strategy_id: Optional[str] = None) -> dict:
                 "timing_diff_min": timing_diff,
             })
     out.sort(key=lambda r: (r.get("real_closed_at") or ""), reverse=True)
-    return {"ok": True, "pairs": out[:50], "count": len(out)}
+    # `count` describes the rows returned by the same bounded query. Keeping
+    # 500 (rather than 50) matters for audit: an older real trade must not
+    # disappear merely because newer paper rows filled the first page.
+    return {"ok": True, "pairs": out[:500], "count": len(out)}
 
 
 def main() -> int:

@@ -32,6 +32,7 @@ from typing import Dict, List, Optional
 
 from app.config import CONTRACT_SIZE, MIN_LOTS, PIP_SIZE
 from app.db import DB
+from app.execution.clock import Clock, SystemClock
 from app.execution.engine import _legs, _new_id, _now_iso
 from app.execution.protection import (
     AutoProtectionPolicy,
@@ -39,10 +40,13 @@ from app.execution.protection import (
     decide_protect,
     hybrid_protect_eligible,
     monotonic_sl,
+    group_protect_sl,
+    reduce_auto_protect,
     sl_exit_reason,
     time_stop_due_iso,
 )
 from app.models import Position, Signal, Trade
+from app.risk.engine import effective_strategy_risk_pct
 
 MT5_DRY_RUN = os.getenv("MT5_DRY_RUN", "1") != "0"
 
@@ -117,12 +121,15 @@ class MT5Provider:
 
     def __init__(self, login: Optional[int] = None, server: str = "",
                  password: str = "", symbols: Optional[Dict[str, Dict]] = None,
-                 require_hedged: bool = True):
+                 require_hedged: bool = True, path: str = "",
+                 portable: bool = False):
         self._mt5 = None
         self._login = login
         self._server = server
         self._password = password
         self._require_hedged = bool(require_hedged)
+        self._path = (path or "").strip()
+        self._portable = bool(portable)
         self._symbols = symbols if symbols is not None else load_symbol_map()
         self._meta_cache: Dict[str, Dict] = {}
         self._account_cache: Optional[dict] = None
@@ -149,8 +156,15 @@ class MT5Provider:
         self._mt5 = mt5
         try:
             if self._login:
-                ok = mt5.initialize(login=self._login, password=self._password,
-                                    server=self._server)
+                kwargs = {"login": self._login, "password": self._password,
+                          "server": self._server}
+                # Uma instalação portable / segundo terminal pode ser endereçada
+                # pelo caminho do terminal64.exe. Sem path, liga ao terminal
+                # por omissão (comportamento atual).
+                if self._path:
+                    kwargs["path"] = self._path
+                    kwargs["portable"] = self._portable
+                ok = mt5.initialize(**kwargs)
             else:
                 ok = mt5.initialize()
         except Exception as exc:
@@ -325,20 +339,38 @@ class MT5Provider:
         try:
             # position 0 is the currently forming candle; use position 1 so
             # ATR decisions see completed bars only (no look-ahead).
-            rates = self._mt5.copy_rates_from_pos(meta["mt5"], timeframe, 1, count) or []
+            # NB: `or []` sobre o resultado rebentaria — o MT5 devolve uma
+            # numpy structured array e o truthiness de arrays >1 elemento
+            # é ambíguo (o download de velas falhava sempre em silêncio).
+            rates = self._mt5.copy_rates_from_pos(meta["mt5"], timeframe, 1, count)
+            if rates is None:
+                rates = []
         except Exception as exc:
             print(f"[mt5] copy_rates({app_symbol}) falhou: {exc}")
             return []
+        def _field(r, name, default):
+            # acesso por índice (structured arrays do numpy — o numpy 2.x
+            # removeu o acesso por atributo, que devolvia sempre 0) com
+            # fallback para atributo (fakes/API antiga nos testes)
+            try:
+                return r[name]
+            except (TypeError, KeyError, IndexError):
+                return getattr(r, name, default)
+
         out = []
         for r in rates:
-            out.append({
-                "time": int(getattr(r, "time", 0)),
-                "open": float(getattr(r, "open", 0.0)),
-                "high": float(getattr(r, "high", 0.0)),
-                "low": float(getattr(r, "low", 0.0)),
-                "close": float(getattr(r, "close", 0.0)),
-                "tick_volume": float(getattr(r, "tick_volume", 0.0)),
-            })
+            try:
+                out.append({
+                    "time": int(_field(r, "time", 0)),
+                    "open": float(_field(r, "open", 0.0)),
+                    "high": float(_field(r, "high", 0.0)),
+                    "low": float(_field(r, "low", 0.0)),
+                    "close": float(_field(r, "close", 0.0)),
+                    "tick_volume": float(_field(r, "tick_volume", 0.0)),
+                })
+            except (TypeError, ValueError):
+                # linha malformada: ignora em vez de rebentar o download
+                continue
         return out
 
     # ------------------------------------------------------- positions
@@ -428,6 +460,14 @@ def _compute_lots_sym(equity: float, risk_pct: float, entry: float, stop_loss: f
 
 
 class MT5Engine:
+    # watchdog das ordens pendentes: depois de N falhas CONSECUTIVAS de
+    # order_delete (ex.: worker da lane offline) o tick devolve o evento
+    # `pending_delete_stuck` para o feed/Telegram alertar — a perna deixa de
+    # ser cancelada em silêncio, sem nunca perder o rasto no MT5. Enquanto
+    # presa, o alerta repete a cada `PENDING_DELETE_REALERT_EVERY` segundos
+    # para uma falha prolongada do worker continuar visível.
+    PENDING_DELETE_ESCALATE_AFTER = 5
+    PENDING_DELETE_REALERT_EVERY = 1800.0  # 30 min entre re-alertas
     """Broker execution engine, same interface as SimEngine.
 
     dry_run=True (default) logs every order and simulates fills at the MT5
@@ -435,13 +475,16 @@ class MT5Engine:
     mt5.order_send and reads P&L from MT5 positions.
     """
 
-    def __init__(self, db: DB, provider: MT5Provider, market, dry_run: bool = MT5_DRY_RUN,
-                 logger=None):
+    def __init__(self, db: DB, provider: MT5Provider, market,
+                 dry_run: bool = MT5_DRY_RUN, logger=None,
+                 clock: Optional[Clock] = None, lane_id: str = "main"):
         self.db = db
         self.provider = provider
+        self.lane_id = lane_id
         self.market = market          # used for the fallback price in dry-run
         self.dry_run = dry_run
         self.logger = logger or print
+        self.clock = clock or SystemClock()
         # live MT5 position ticket -> app position id (real mode). Also
         # persisted in the DB config table (`mt5ticket:<ticket>`) so the
         # mapping survives a server restart (the broker keeps managing SL/TP
@@ -467,11 +510,94 @@ class MT5Engine:
         self._sl_warnings: List[dict] = []
         self._sl_warned: set = set()
         import time as _t
-        self._auto_clock = _t
+        self._auto_clock = self.clock
         # Spread is sampled once per minute per symbol; the raw quote remains
         # available on every tick, but the DB stores a bounded time series.
         self._last_spread_observation = 0.0
         self._spread_observation_interval = 60.0
+        # estado do retry de delete de pernas pendentes (watchdog
+        # `pending_delete_stuck`): falhas consecutivas por perna (com o
+        # contexto para o Diagnóstico), monotónico do último alerta
+        # (re-alerta periódico) e a INTENÇÃO do delete que ainda não
+        # conseguiu (TTL ou cancelamento de gestão) — o tick re-tenta assim
+        # que o worker voltar, sem esperar o TTL. Reset quando o delete
+        # consegue ou a perna deixa de estar pendente. PERSISTIDO na BD
+        # (`pending_delete_states`) para o Diagnóstico e o re-alerta
+        # sobreviverem a um restart do servidor: o estado real é a BD, a
+        # memória é só o cache da sessão.
+        self._pending_delete_failures: Dict[str, dict] = {}
+        self._pending_delete_alerted_at: Dict[str, float] = {}
+        self._pending_delete_intent: Dict[str, dict] = {}
+        # pernas que já gravaram a exceção do retry (rate-limit: enquanto
+        # presas, o tick falha todos os segundos mas só a PRIMEIRA falha do
+        # episódio vai para `operational_exceptions` — uma exceção concisa
+        # em vez de centenas de linhas idênticas)
+        self._pending_delete_exception_recorded: set = set()
+        try:
+            for pos_id, entry in self.db.load_pending_delete_states(
+                    self.lane_id).items():
+                self._pending_delete_failures[pos_id] = entry
+                intent = entry.get("intent")
+                if isinstance(intent, dict) and intent:
+                    self._pending_delete_intent[pos_id] = intent
+                # já escalonada antes do restart → o 1º retry pós-reboot
+                # volta a alertar (o monotónico não sobrevive ao restart)
+                if int(entry.get("attempts") or 0) \
+                        >= self.PENDING_DELETE_ESCALATE_AFTER:
+                    self._pending_delete_alerted_at[pos_id] = \
+                        self.clock.monotonic() - self.PENDING_DELETE_REALERT_EVERY
+        except Exception:
+            pass
+        # Broker evidence is opt-in with the same switch as quote/management
+        # journaling. These keys prevent a single update loop from writing the
+        # same close observation twice while the broker history settles.
+        self._journaled_close_events = set()
+
+    def _journal_enabled(self) -> bool:
+        """Read the opt-in evidence flag without coupling MT5 to BotState."""
+        try:
+            value = self.db.all_config().get("execution_journal_enabled", "false")
+            return str(value).strip().lower() in {"1", "true", "yes", "on"}
+        except Exception:
+            return False
+
+    def _journal_event(self, kind: str, *, at: str = "", trade: Optional[Trade] = None,
+                       pos: Optional[Position] = None, symbol: str = "",
+                       payload: Optional[dict] = None) -> None:
+        """Persist a broker observation in the common replay vocabulary.
+
+        This helper is deliberately best-effort: evidence must never block an
+        order or turn a broker response into a trading failure. The payload is
+        JSON-safe and includes the app identifiers needed to correlate a fill
+        after a restart.
+        """
+        if not self._journal_enabled():
+            return
+        try:
+            self.db.record_execution_event(
+                at or self.clock.iso(), kind, engine="mt5",
+                symbol=symbol or (trade.symbol if trade else (pos.symbol if pos else "")),
+                trade_id=trade.id if trade else (pos.trade_id if pos else ""),
+                signal_id=trade.signal_id if trade else "",
+                payload=payload or {},
+            )
+        except Exception as exc:
+            # Evidence is observability, never part of the order critical path.
+            self.logger(f"[mt5] journal event failed ({kind}): {exc}")
+
+    @staticmethod
+    def _retcode(result) -> Optional[int]:
+        try:
+            return int(getattr(result, "retcode"))
+        except (TypeError, ValueError, AttributeError):
+            return None
+
+    def _signal_received_at(self, trade: Trade) -> str:
+        try:
+            signal = self.db.get_signal(trade.signal_id)
+            return signal.received_at if signal else trade.opened_at
+        except Exception:
+            return trade.opened_at
 
     def _ticket_for(self, pos_id: str) -> Optional[int]:
         """MT5 position ticket for an app position id (memory or persisted)."""
@@ -525,7 +651,8 @@ class MT5Engine:
 
     def open_trade(self, signal: Signal, risk_pct: float, balance: float,
                    trade_id: str = "", now: str = "", lots_override: Optional[float] = None,
-                   max_legs: Optional[int] = None) -> Trade:
+                   max_legs: Optional[int] = None, auto: Optional[dict] = None,
+                   execution_meta: Optional[dict] = None) -> Trade:
         """Open a one-leg-per-TP trade for a signal, splitting the risk evenly.
 
         `lots_override` (when set) sizes every leg at that fixed volume
@@ -533,7 +660,13 @@ class MT5Engine:
         `max_legs` caps the number of legs (estratégias do registo central).
         """
         trade_id = trade_id or "t-" + _new_id()
-        now = now or _now_iso()
+        now = now or self.clock.iso()
+
+        if not self.dry_run and (
+                self.provider is None or not self.provider.connected
+        ):
+            reason = getattr(self.provider, "execution_block_reason", "") or "terminal MT5 offline"
+            raise RuntimeError(f"lane {self.lane_id} sem ligação MT5: {reason}")
 
         meta = self._sym_meta(signal.symbol) or self.provider._symbols.get(signal.symbol)
         if meta is None:
@@ -541,6 +674,13 @@ class MT5Engine:
                              f"(adiciona em MT5_SYMBOLS)")
         legs = _legs(signal, max_legs)
         n = len(legs)
+        if auto and auto.get("def_window"):
+            risk_pct = effective_strategy_risk_pct(
+                risk_pct,
+                def_window=auto.get("def_window"),
+                def_risk_pct=auto.get("def_risk_pct"),
+                prior_pnls=self.db.recent_closed_pnls(int(auto["def_window"])),
+            )
         per_leg = (risk_pct / n) if n else risk_pct
 
         if lots_override and lots_override > 0:
@@ -562,9 +702,18 @@ class MT5Engine:
             lots_1=lots.get(1, 0.0), lots_2=lots.get(2, 0.0),
             lots_3=lots.get(3, 0.0), lots_4=lots.get(4, 0.0),
             lots_5=lots.get(5, 0.0), status="open", opened_at=now,
+            entry_zone_low=(execution_meta or {}).get("zone_low"),
+            entry_zone_high=(execution_meta or {}).get("zone_high"),
+            market_price_at_open=(execution_meta or {}).get("market_price"),
+            entry_distance=(execution_meta or {}).get("distance"),
+            entry_guard=(execution_meta or {}).get("guard"),
+            execution_mode=(execution_meta or {}).get("execution_mode", "mt5-real"),
+            lane_id=(execution_meta or {}).get("lane_id"),
+            entry_style=(execution_meta or {}).get("entry_style"),
         )
         self.db.insert_trade(trade)
 
+        pending_style = (execution_meta or {}).get("entry_style") == "pending"
         positions = []
         for leg_num, tp in legs:
             pos = Position(
@@ -572,7 +721,9 @@ class MT5Engine:
                 symbol=signal.symbol, direction=signal.direction,
                 lots=lots[leg_num], entry=signal.entry,
                 stop_loss=signal.stop_loss, take_profit=tp,
-                status="open", opened_at=now,
+                status="pending_fill" if pending_style else "open",
+                opened_at=now,
+                lane_id=(execution_meta or {}).get("lane_id"),
             )
             self.db.insert_position(pos)
             positions.append(pos)
@@ -583,7 +734,12 @@ class MT5Engine:
         # (crash 'NoneType' .ask) e o sinal ficava em awaiting_edit a repetir
         self.provider.ensure_symbol(signal.symbol)
         if not self.dry_run:
-            sent, retcodes = self._send_open_orders(trade, positions, mt5_sym)
+            if pending_style:
+                sent, retcodes, failures = self._send_pending_orders(
+                    trade, positions, mt5_sym)
+            else:
+                sent, retcodes, failures = self._send_open_orders(
+                    trade, positions, mt5_sym)
             if sent == 0:
                 # nothing reached the broker: don't leave phantom positions
                 for pos in positions:
@@ -598,6 +754,16 @@ class MT5Engine:
                 else:
                     trade.error = f"ordem MT5 recusada pelo broker (retcodes {retcodes})"
                     trade.auto_trading_off = False
+                if failures:
+                    # a falha real (ex.: worker caiu no envio) nunca se perde
+                    trade.error += " — " + "; ".join(failures[:3])
+                # trace durável: error/retcodes/auto_trading_off ficam na trade
+                # (auditoria/replay — no passado só viviam em memória e o
+                # Diagnóstico/A-B não conseguia explicar o fecho phantom)
+                self.db.set_trade_refusal(
+                    trade.id, trade.error, retcodes,
+                    bool(trade.auto_trading_off),
+                )
         else:
             self._log_order("open", {
                 "trade": trade.id, "symbol": mt5_sym, "direction": signal.direction,
@@ -606,7 +772,124 @@ class MT5Engine:
                 "tps": {leg_num: tp for leg_num, tp in legs},
                 "note": "dry-run: ordem registada, não enviada ao broker",
             })
+            # Dry-run has no broker retcode, but it still has a deterministic
+            # simulated fill that must be visible in a forward evidence tape.
+            for pos in positions:
+                self._journal_event(
+                    "fill_open", at=now, trade=trade, pos=pos,
+                    payload={"source": "mt5_dry_run", "status": "simulated",
+                             "price": pos.entry, "volume": pos.lots,
+                             "leg": pos.leg, "stop_loss": pos.stop_loss,
+                             "take_profit": pos.take_profit,
+                             "signal_to_fill_seconds": _elapsed_seconds(
+                                 self._signal_received_at(trade), now)},
+                )
         return trade
+
+    def _send_pending_orders(self, trade: Trade, positions: List[Position],
+                             mt5_sym: str) -> tuple:
+        """Fase 1 — ordens pendentes na zona: uma ordem pendente por perna
+        no nível da entrada (BUY_LIMIT/SELL_LIMIT ou BUY_STOP/SELL_STOP,
+        consoante o preço atual vs o nível), SL/TP anexados, GTC. O ticket de
+        cada ordem fica na posição (order_ticket) para o tick reconhecer o
+        fill/cancelamento. Devolve (sent, retcodes, failures) — `failures`
+        carrega o texto real de exceções de envio (worker caiu, etc.)."""
+        mt5 = self.provider._mt5
+        entry = float(trade.entry)
+        tick = mt5.symbol_info_tick(mt5_sym)
+        if tick is None or not (tick.ask > 0 and tick.bid > 0):
+            # sem tick não há como escolher limit vs stop — falha a trade
+            for pos in positions:
+                self.db.close_position(pos.id, 0.0, 0.0, self.clock.iso(),
+                                       reason="order_rejected")
+                pos.status = "closed"
+            return 0, ["NO_TICK"], []
+        sent = 0
+        retcodes: List = []
+        failures: List = []
+        for pos in positions:
+            request_at = self.clock.iso()
+            self._journal_event(
+                "pending_order_request", at=request_at, trade=trade, pos=pos,
+                payload={"action": "open_pending", "leg": pos.leg,
+                         "volume": pos.lots, "price": entry,
+                         "stop_loss": pos.stop_loss,
+                         "take_profit": pos.take_profit,
+                         "signal_to_order_seconds": _elapsed_seconds(
+                             self._signal_received_at(trade), request_at)},
+            )
+            if trade.direction == "buy":
+                order_type = (mt5.ORDER_TYPE_BUY_LIMIT if tick.ask > entry
+                              else mt5.ORDER_TYPE_BUY_STOP)
+            else:
+                order_type = (mt5.ORDER_TYPE_SELL_LIMIT if tick.bid < entry
+                              else mt5.ORDER_TYPE_SELL_STOP)
+            request = {
+                "action": mt5.TRADE_ACTION_PENDING,
+                "symbol": mt5_sym,
+                "volume": float(pos.lots),
+                "type": order_type,
+                "price": entry,
+                "sl": float(pos.stop_loss),
+                "tp": float(pos.take_profit),
+                "deviation": 10,
+                "magic": 36450341,
+                "comment": f"{trade.id}:leg{pos.leg}",
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": mt5.ORDER_FILLING_RETURN,
+            }
+            try:
+                result = mt5.order_send(request)
+            except Exception as exc:
+                # ordem que NUNCA chegou ao broker (ex.: worker lane 2 caiu
+                # a meio do envio): grava a falha real, fecha só ESTA perna
+                # e segue para as outras — sem exceção a desenrolar o
+                # open_trade (que deixava a trade meia-aberta na BD)
+                self.db.record_exception(
+                    exc, context={"component": "mt5", "phase": "order_send",
+                                  "leg": pos.leg, "lane": self.lane_id,
+                                  "trade_id": trade.id},
+                    trade_id=trade.id,
+                )
+                self._log_order("open_failed", {
+                    "trade": trade.id, "leg": pos.leg,
+                    "retcode": "REMOTE_ERROR", "comment": str(exc)[:140],
+                })
+                self._journal_event(
+                    "pending_order_result", at=self.clock.iso(),
+                    trade=trade, pos=pos,
+                    payload={"action": "open_pending", "accepted": False,
+                             "retcode": "REMOTE_ERROR", "type": order_type,
+                             "comment": str(exc)[:140]},
+                )
+                failures.append(f"leg{pos.leg}: {exc}")
+                retcodes.append("REMOTE_ERROR")
+                self.db.close_position(pos.id, 0.0, 0.0, self.clock.iso(),
+                                       reason="order_rejected")
+                pos.status = "closed"
+                continue
+            retcode = self._retcode(result)
+            accepted = _order_ok(result, mt5)
+            self._journal_event(
+                "pending_order_result", at=self.clock.iso(), trade=trade, pos=pos,
+                payload={"action": "open_pending", "accepted": accepted,
+                         "retcode": retcode, "type": order_type,
+                         "order_ticket": getattr(result, "order", None),
+                         "comment": getattr(result, "comment", "") or ""},
+            )
+            if not accepted:
+                rc = retcode if retcode is not None else "?"
+                retcodes.append(rc)
+                self.db.close_position(pos.id, 0.0, 0.0, self.clock.iso(),
+                                       reason="order_rejected")
+                pos.status = "closed"
+                continue
+            sent += 1
+            order_ticket = getattr(result, "order", None)
+            if order_ticket:
+                self.db.set_position_order_ticket(pos.id, int(order_ticket))
+                pos.order_ticket = int(order_ticket)
+        return sent, retcodes, failures
 
     def _send_open_orders(self, trade: Trade, positions: List[Position],
                           mt5_sym: str) -> tuple:
@@ -615,14 +898,27 @@ class MT5Engine:
         After each fill we resolve the position ticket by the unique comment
         (`trade.id:legN`) — the deal ticket returned by order_send is an
         *order* ticket, useless for position lookups later. Returns
-        `(sent, retcodes)` — the number of orders accepted and the retcode of
-        every leg the broker refused (for a precise error/alert upstream).
+        `(sent, retcodes, failures)` — the number of orders accepted, the
+        retcode of every leg the broker refused (para o erro/alerta exato
+        upstream) e o texto real de exceções de envio perna a perna.
         """
         mt5 = self.provider._mt5
         order_type = mt5.ORDER_TYPE_BUY if trade.direction == "buy" else mt5.ORDER_TYPE_SELL
         sent = 0
         retcodes: List = []
+        failures: List = []
         for pos in positions:
+            request_started = self._auto_clock.monotonic()
+            request_at = self.clock.iso()
+            self._journal_event(
+                "order_request", at=request_at, trade=trade, pos=pos,
+                payload={"action": "open", "source": "broker",
+                         "leg": pos.leg, "volume": pos.lots,
+                         "requested_price": None, "stop_loss": pos.stop_loss,
+                         "take_profit": pos.take_profit,
+                         "signal_to_order_seconds": _elapsed_seconds(
+                             self._signal_received_at(trade), request_at)},
+            )
             tick = mt5.symbol_info_tick(mt5_sym)
             if tick is None or not (tick.ask > 0 and tick.bid > 0):
                 # símbolo ainda sem tick (fora do Market Watch / a carregar)
@@ -632,7 +928,17 @@ class MT5Engine:
                     "retcode": "NO_TICK",
                     "comment": "symbol_info_tick sem preço (símbolo fora do Market Watch?)",
                 })
+                self._journal_event(
+                    "order_result", at=self.clock.iso(), trade=trade, pos=pos,
+                    payload={"action": "open", "accepted": False,
+                             "retcode": "NO_TICK", "comment": "sem tick",
+                             "latency_ms": round((self._auto_clock.monotonic() - request_started) * 1000, 3)},
+                )
                 retcodes.append("NO_TICK")
+                self.db.close_position(
+                    pos.id, 0.0, 0.0, self.clock.iso(), reason="order_rejected",
+                )
+                pos.status = "closed"
                 continue
             request = {
                 "action": mt5.TRADE_ACTION_DEAL,
@@ -648,15 +954,64 @@ class MT5Engine:
                 "type_time": mt5.ORDER_TIME_GTC,
                 "type_filling": mt5.ORDER_FILLING_IOC,
             }
-            result = mt5.order_send(request)
-            if not _order_ok(result, mt5):
-                rc = getattr(result, "retcode", "?")
+            try:
+                result = mt5.order_send(request)
+            except Exception as exc:
+                # ordem que NUNCA chegou ao broker (ex.: worker lane 2 caiu a
+                # meio do envio): grava a falha REAL e fecha só esta perna —
+                # sem embrulhar o open_trade (deixava a trade meia-aberta).
+                self.db.record_exception(
+                    exc, context={"component": "mt5", "phase": "order_send",
+                                  "leg": pos.leg, "lane": self.lane_id,
+                                  "trade_id": trade.id},
+                    trade_id=trade.id,
+                )
+                self._log_order("open_failed", {
+                    "trade": trade.id, "leg": pos.leg,
+                    "retcode": "REMOTE_ERROR", "comment": str(exc)[:140],
+                })
+                self._journal_event(
+                    "order_result", at=self.clock.iso(), trade=trade, pos=pos,
+                    payload={"action": "open", "accepted": False,
+                             "retcode": "REMOTE_ERROR",
+                             "comment": str(exc)[:140],
+                             "signal_to_order_seconds": _elapsed_seconds(
+                                 self._signal_received_at(trade), request_at),
+                             "latency_ms": round((self._auto_clock.monotonic() - request_started) * 1000, 3)},
+                )
+                failures.append(f"leg{pos.leg}: {exc}")
+                retcodes.append("REMOTE_ERROR")
+                self.db.close_position(
+                    pos.id, 0.0, 0.0, self.clock.iso(), reason="order_rejected",
+                )
+                pos.status = "closed"
+                continue
+            retcode = self._retcode(result)
+            accepted = _order_ok(result, mt5)
+            self._journal_event(
+                "order_result", at=self.clock.iso(), trade=trade, pos=pos,
+                payload={"action": "open", "accepted": accepted,
+                         "retcode": retcode,
+                         "comment": getattr(result, "comment", "") or "",
+                         "order_ticket": getattr(result, "order", None),
+                         "deal_ticket": getattr(result, "deal", None),
+                         "broker_price": getattr(result, "price", None),
+                         "signal_to_order_seconds": _elapsed_seconds(
+                             self._signal_received_at(trade), request_at),
+                         "latency_ms": round((self._auto_clock.monotonic() - request_started) * 1000, 3)},
+            )
+            if not accepted:
+                rc = retcode if retcode is not None else "?"
                 self._log_order("open_failed", {
                     "trade": trade.id, "leg": pos.leg,
                     "retcode": rc,
                     "comment": getattr(result, "comment", ""),
                 })
                 retcodes.append(rc)
+                self.db.close_position(
+                    pos.id, 0.0, 0.0, self.clock.iso(), reason="order_rejected",
+                )
+                pos.status = "closed"
                 continue
             sent += 1  # the broker accepted the order — a real fill happened
             # resolve the position ticket from the just-filled order
@@ -685,13 +1040,32 @@ class MT5Engine:
                 "symbol": mt5_sym, "volume": pos.lots, "sl": pos.stop_loss,
                 "tp": pos.take_profit,
             })
-        return sent, retcodes
+            fill_price = pos.entry
+            if ticket:
+                try:
+                    live_pos = next((p for p in (mt5.positions_get(symbol=mt5_sym) or [])
+                                     if p.ticket == ticket), None)
+                    if live_pos is not None:
+                        fill_price = float(live_pos.price_open)
+                except Exception:
+                    pass
+            self._journal_event(
+                "fill_open", at=self.clock.iso(), trade=trade, pos=pos,
+                payload={"source": "broker", "status": "filled", "leg": pos.leg,
+                         "ticket": ticket, "price": fill_price, "volume": pos.lots,
+                         "stop_loss": pos.stop_loss, "take_profit": pos.take_profit,
+                         "order_to_fill_ms": round((self._auto_clock.monotonic() - request_started) * 1000, 3),
+                         "signal_to_fill_seconds": _elapsed_seconds(
+                             self._signal_received_at(trade), self.clock.iso())},
+            )
+        return sent, retcodes, failures
 
     # --------------------------------------------------------------- update
 
     def update(self, now: Optional[str] = None,
                exit_at_tp: Optional[int] = None,
-               auto: Optional[dict] = None) -> List[dict]:
+               auto: Optional[dict] = None,
+               entry_order_ttl: Optional[float] = None) -> List[dict]:
         """Evaluate every open trade against live prices / MT5 positions.
 
         `exit_at_tp` (estratégias do registo): quando o TP com esse número
@@ -706,29 +1080,61 @@ class MT5Engine:
         auto-gestão é a do `PaperRace` (corrida paper) — aqui só o modo real
         (broker) executa escada/trailing.
 
+        `entry_order_ttl` (segundos): expira ordens pendentes da zona (Fase 1)
+        que não preencheram.
+
         Same event contract as SimEngine: {"type": "close"|"be"|"trade_closed"}.
         """
-        now = now or _now_iso()
+        now = now or self.clock.iso()
         events: List[dict] = []
 
-        for trade in self.db.open_trades():
+        # SLs de gestão de grupo em fila (modify recusado antes): re-tenta
+        # ANTES da reconciliação — o nível pode ter ficado válido desde o
+        # último tick (o preço afastou-se do nível do protect)
+        if not self.dry_run:
+            events += self._retry_pending_sl_moves(now)
+
+        trades = self.db.open_trades()
+        for trade in trades:
+            if (getattr(trade, "lane_id", None) or "main") != self.lane_id:
+                continue
             if not self.dry_run:
-                events += self._update_real(trade, now, exit_at_tp, auto)
+                events += self._update_real(
+                    trade, now, exit_at_tp, auto, entry_order_ttl)
             else:
-                events += self._update_dry(trade, now, exit_at_tp)
+                events += self._update_dry(
+                    trade, now, exit_at_tp, auto, entry_order_ttl)
+        # o tick por trade só corre para trades abertas → limpa o estado
+        # persistido do watchdog de pernas de trades já encerradas (a BD
+        # nunca guarda linhas órfãs de episódios resolvidos)
+        if self._pending_delete_failures:
+            open_ids = {t.id for t in trades}
+            for pos_id in list(self._pending_delete_failures):
+                trade_id = self._pending_delete_failures[pos_id].get("trade_id")
+                if trade_id and trade_id not in open_ids:
+                    self._clear_pending_delete_retry(pos_id)
         # drena os avisos de SL recusado/clamped para os eventos do update
         events += self._sl_warnings
         self._sl_warnings = []
+        # pernas que fecharam NESTE tick limpam as suas intenções de SL em
+        # fila (a verificação do início do tick corre antes da reconciliação)
+        if not self.dry_run:
+            self._clear_stale_sl_moves()
         return events
 
     def _update_dry(self, trade: Trade, now: str,
-                    exit_at_tp: Optional[int] = None) -> List[dict]:
+                    exit_at_tp: Optional[int] = None,
+                    auto: Optional[dict] = None,
+                    entry_order_ttl: Optional[float] = None) -> List[dict]:
         """Dry-run: simulate fills at the current MT5 tick (or feed price)."""
         events: List[dict] = []
         trade_reason: Optional[str] = None
         price = self._price(trade.symbol)
         if price is None:
             return events
+
+        # Fase 1 — ordens pendentes na zona (dry-run simula o crossing)
+        events += self._process_pending_dry(trade, price, now, entry_order_ttl)
 
         positions = {p.leg: p for p in self.db.positions_for_trade(trade.id)}
         legs = [positions[n] for n in range(1, 6) if n in positions]
@@ -737,8 +1143,10 @@ class MT5Engine:
             return events
 
         leg1 = positions.get(1)
+        auto_state = self._restore_auto_state(trade, positions, now) if auto else {}
         if leg1 and leg1.status == "open":
             if self._hit(trade, price, trade.stop_loss, "sl"):
+
                 trade_reason = "sl"
                 for p in open_legs:
                     events.append(self._close_dry(
@@ -750,16 +1158,47 @@ class MT5Engine:
                     trade, leg1, trade.take_profit_1, now, reason="tp1",
                 ))
                 moved = False
+                be_buffer = float((auto or {}).get("be_buffer_pips") or 0.0)
                 for p in open_legs:
                     if p.leg != 1:
-                        self.db.move_position_sl(p.id, trade.entry)
-                        p.stop_loss = trade.entry
+                        be_level = self._be_level(
+                            trade, be_buffer, fill=p.entry)
+                        self.db.move_position_sl(p.id, be_level)
+                        p.stop_loss = be_level
                         moved = True
                 if moved:
                     events.append({
                         "type": "be", "trade_id": trade.id,
                         "symbol": trade.symbol, "price": trade.entry,
                     })
+
+        # Autonomous early protect (generic policy for future candidates;
+        # auto_protect_5 was removed from the registry on 01/09): the same
+        # pure reducer as the backtest and paper path. Dry-run applies
+        # accepted decisions to SQLite immediately because there is no broker
+        # modify to confirm.
+        if auto and leg1:
+            decision = reduce_auto_protect(
+                direction=trade.direction, price=price, entry=trade.entry,
+                stop_loss=trade.stop_loss, tp1=trade.take_profit_1,
+                leg1_open=leg1.status == "open",
+                remaining_sls={p.leg: p.stop_loss for p in open_legs if p.leg != 1},
+                trigger_fraction=auto.get("protect_trigger"),
+                buffer_fraction=auto.get("protect_buffer"),
+                already_triggered=bool(auto_state.get("auto_protected")),
+            )
+            if decision.triggered:
+                events.append(self._close_dry(
+                    trade, leg1, decision.trigger_level, now,
+                    reason="auto_protect",
+                ))
+                for leg, improved in decision.move_sls:
+                    pos = positions.get(leg)
+                    if pos and pos.status == "open":
+                        self.db.move_position_sl(pos.id, improved)
+                        pos.stop_loss = improved
+                auto_state["auto_protected"] = True
+                auto_state["auto_protection_at"] = now
 
         # exit_at_tp: quando o TP_N bater, fecha TUDO nesse preço
         if exit_at_tp is not None:
@@ -787,11 +1226,367 @@ class MT5Engine:
                 ))
 
         events += self._maybe_close_trade(trade, now, reason=trade_reason)
+        if auto and trade.status == "open":
+            self.db.save_protection_state("mt5", trade.id, auto_state, updated_at=now)
+        return events
+
+    def _process_pending_dry(self, trade: Trade, price: float, now: str,
+                             entry_order_ttl: Optional[float]) -> List[dict]:
+        """Fase 1 — ordens pendentes em dry-run: fill por crossing do preço
+        no nível da entrada (mesmo critério do SimEngine); expira por TTL."""
+        events: List[dict] = []
+        placement = float(trade.market_price_at_open or trade.entry)
+        entry = float(trade.entry)
+        for pos in self.db.positions_for_trade(trade.id):
+            if pos.status != "pending_fill":
+                continue
+            filled = False
+            if trade.direction == "buy":
+                filled = (price <= entry and placement > entry) \
+                    or (price >= entry and placement < entry)
+            else:
+                filled = (price >= entry and placement < entry) \
+                    or (price <= entry and placement > entry)
+            if filled:
+                self.db.fill_position(pos.id, now)
+                pos.status = "open"
+                pos.opened_at = now
+                self._journal_event(
+                    "fill_open", at=now, trade=trade, pos=pos,
+                    payload={"source": "mt5_dry_run_pending", "status": "simulated",
+                             "price": entry, "volume": pos.lots,
+                             "leg": pos.leg, "stop_loss": pos.stop_loss,
+                             "take_profit": pos.take_profit,
+                             "signal_to_fill_seconds": _elapsed_seconds(
+                                 self._signal_received_at(trade), now)},
+                )
+                events.append({
+                    "type": "pending_fill", "trade_id": trade.id,
+                    "symbol": trade.symbol, "leg": pos.leg, "price": entry,
+                    "lots": pos.lots,
+                })
+            elif entry_order_ttl and entry_order_ttl > 0:
+                age = _elapsed_seconds(pos.opened_at, now)
+                if age is not None and age > entry_order_ttl:
+                    self.db.close_position(pos.id, 0.0, 0.0, now,
+                                           reason="pending_expired")
+                    pos.status = "closed"
+                    events.append({
+                        "type": "pending_expired", "trade_id": trade.id,
+                        "symbol": trade.symbol, "leg": pos.leg,
+                    })
+        return events
+
+    # ------------------------------------------------- pending delete retry
+
+    def _bump_pending_delete_failure(self, pos: Position) -> int:
+        """Soma uma falha de `order_delete` à perna (watchdog
+        `pending_delete_stuck`). Guarda o contexto (leg/trade/símbolo/
+        ticket/open) para o Diagnóstico (`stuck_pending_legs`) e devolve o
+        total de falhas CONSECUTIVAS. Persiste na BD — o estado do watchdog
+        sobrevive a restart."""
+        entry = self._pending_delete_failures.get(pos.id) or {}
+        entry.update({
+            "leg": pos.leg, "trade_id": pos.trade_id, "symbol": pos.symbol,
+            "ticket": pos.order_ticket,
+            "opened_at": (pos.opened_at or ""),
+        })
+        entry["attempts"] = int(entry.get("attempts") or 0) + 1
+        self._pending_delete_failures[pos.id] = entry
+        self._persist_pending_delete_state(pos.id)
+        return int(entry["attempts"])
+
+    def _persist_pending_delete_state(self, pos_id: str) -> None:
+        """Serializa o estado do watchdog da perna para a BD
+        (tentativas/intenção/alertas). Best-effort: falhas de escrita nunca
+        bloqueiam o tick nem mudam o comportamento do retry."""
+        entry = self._pending_delete_failures.get(pos_id)
+        if not entry:
+            return
+        row = dict(entry)
+        row["intent"] = self._pending_delete_intent.get(pos_id) or None
+        try:
+            self.db.save_pending_delete_state(self.lane_id, pos_id, row)
+        except Exception:
+            pass
+
+    def _clear_pending_delete_retry(self, pos_id: str) -> None:
+        """Fim do retry da perna: o delete conseguiu ou a perna deixou de
+        estar pendente — esvazia o estado do watchdog (memória + BD)."""
+        self._pending_delete_failures.pop(pos_id, None)
+        self._pending_delete_alerted_at.pop(pos_id, None)
+        self._pending_delete_intent.pop(pos_id, None)
+        self._pending_delete_exception_recorded.discard(pos_id)
+        try:
+            self.db.delete_pending_delete_state(self.lane_id, pos_id)
+        except Exception:
+            pass
+
+    def stuck_pending_legs(self) -> List[dict]:
+        """Pernas `pending_fill` em retry de delete (worker offline?) —
+        read-only para o Diagnóstico: tentativas, escalonada?, ticket,
+        idade e trade. Vazio = nada preso."""
+        from datetime import datetime, timezone
+        now_utc = datetime.now(timezone.utc)
+        out: List[dict] = []
+        for pos_id, entry in self._pending_delete_failures.items():
+            attempts = int(entry.get("attempts") or 0)
+            age = None
+            try:
+                opened = datetime.fromisoformat(str(entry.get("opened_at") or ""))
+                if opened.tzinfo is None:
+                    opened = opened.replace(tzinfo=timezone.utc)
+                age = int((now_utc - opened).total_seconds())
+            except (ValueError, TypeError):
+                pass
+            out.append({
+                "position_id": pos_id,
+                "trade_id": entry.get("trade_id") or "",
+                "symbol": entry.get("symbol") or "",
+                "leg": entry.get("leg"),
+                "ticket": entry.get("ticket"),
+                "attempts": attempts,
+                "escalated": attempts >= self.PENDING_DELETE_ESCALATE_AFTER,
+                "age_seconds": age,
+                "lane": self.lane_id,
+                "intent_kind": (self._pending_delete_intent.get(pos_id) or {}).get("kind"),
+                "last_alert_utc": entry.get("last_alert_utc") or "",
+            })
+        out.sort(key=lambda d: -(d["attempts"] or 0))
+        return out
+
+    def _check_pending_real(self, trade: Trade, positions: dict, mt5, now: str,
+                            entry_order_ttl: Optional[float]) -> List[dict]:
+        """Fase 1 — reconcilia as ordens pendentes reais com o broker.
+
+        Por perna `pending_fill`: preenchida (ORDER_STATE_FILLED) → a posição
+        passa a `open` com o fill real; cancelada/expirada pelo broker →
+        fecha na BD; ainda ativa além do TTL → cancela (order_delete). Uma
+        ordem sem ticket (restart antes do envio) expira como órfã. Pernas
+        com delete FALHADO antes (intenção guardada) re-tentam o cancelamento
+        em cada tick — assim que o worker voltar, o delete é completado no
+        mesmo tick, sem esperar o TTL.
+        """
+        events: List[dict] = []
+        pending = [p for p in positions.values() if p.status == "pending_fill"]
+        # perna escalonada ANTES de um restart volta a alertar no 1º retry
+        # pós-reboot (o monotónico não sobrevive ao restart, e o limiar de
+        # escalada pode ter mudado entre sessões — a marca `escalated_at` é
+        # o veredicto durável)
+        if self._pending_delete_failures:
+            for pos_id in list(self._pending_delete_failures):
+                entry = self._pending_delete_failures[pos_id]
+                if (entry.get("escalated_at")
+                        and pos_id not in self._pending_delete_alerted_at
+                        and int(entry.get("attempts") or 0)
+                        > self.PENDING_DELETE_ESCALATE_AFTER):
+                    self._pending_delete_alerted_at[pos_id] = 0.0
+
+        # limpa o estado persistido do watchdog de pernas que já não estão
+        # pendentes (fill/fecho/cancelamento enquanto o servidor esteve em
+        # baixo) — nada fica órfão na BD nem no Diagnóstico
+        if self._pending_delete_failures:
+            by_id = {p.id: p for p in positions.values()}
+            for pos_id in list(self._pending_delete_failures):
+                pos = by_id.get(pos_id)
+                if pos is None or pos.status != "pending_fill":
+                    self._clear_pending_delete_retry(pos_id)
+        if not pending:
+            return events
+        mt5_sym = self.provider.meta(trade.symbol)["mt5"]
+        for pos in pending:
+            if not pos.order_ticket:
+                self._clear_pending_delete_retry(pos.id)
+                self.db.close_position(pos.id, 0.0, 0.0, now,
+                                       reason="pending_orphan")
+                pos.status = "closed"
+                events.append({"type": "pending_expired", "trade_id": trade.id,
+                                "symbol": trade.symbol, "leg": pos.leg,
+                                "reason": "orphan"})
+                continue
+            try:
+                orders = mt5.orders_get(ticket=pos.order_ticket) or []
+            except Exception as exc:
+                # rate-limit por perna: o worker caído faz falhar TODOS os
+                # ticks — só a primeira falha do episódio grava a exceção
+                if pos.id not in self._pending_delete_exception_recorded:
+                    self._pending_delete_exception_recorded.add(pos.id)
+                    self.db.record_exception(
+                        exc, context={"component": "mt5", "phase": "orders_get",
+                                      "trade_id": trade.id},
+                        trade_id=trade.id,
+                    )
+                orders = []
+            order = orders[0] if orders else None
+            state = getattr(order, "state", None) if order else None
+            retry_intent = self._pending_delete_intent.get(pos.id)
+            if state == getattr(mt5, "ORDER_STATE_FILLED", None):
+                # preencheu: sincroniza com a posição real do broker
+                live = mt5.positions_get(symbol=mt5_sym) or []
+                for lp in live:
+                    comment = getattr(lp, "comment", "") or ""
+                    if f"{trade.id}:leg{pos.leg}" == comment:
+                        self._clear_pending_delete_retry(pos.id)
+                        self.db.fill_position(pos.id, now)
+                        pos.status = "open"
+                        pos.opened_at = now
+                        events.append({"type": "pending_fill",
+                                        "trade_id": trade.id,
+                                        "symbol": trade.symbol, "leg": pos.leg,
+                                        "price": float(pos.entry),
+                                        "lots": pos.lots})
+                        break
+            elif state in (getattr(mt5, "ORDER_STATE_CANCELED", None),
+                           getattr(mt5, "ORDER_STATE_EXPIRED", None),
+                           getattr(mt5, "ORDER_STATE_REJECTED", None)):
+                self._clear_pending_delete_retry(pos.id)
+                self.db.close_position(pos.id, 0.0, 0.0, now,
+                                       reason="pending_cancelled")
+                pos.status = "closed"
+                events.append({"type": "pending_expired", "trade_id": trade.id,
+                                "symbol": trade.symbol, "leg": pos.leg,
+                                "reason": "cancelled"})
+            elif retry_intent is not None or (entry_order_ttl and entry_order_ttl > 0):
+                age = _elapsed_seconds(pos.opened_at, now)
+                over_ttl = bool(entry_order_ttl and entry_order_ttl > 0
+                                and age is not None and age > entry_order_ttl)
+                if over_ttl or retry_intent is not None:
+                    try:
+                        mt5.order_delete(ticket=pos.order_ticket)
+                    except Exception as exc:
+                        # delete sem sucesso (ex.: worker da lane caiu no
+                        # caminho): fechar aqui na BD deixaria a ordem
+                        # pendente ÓRFÃ no MT5 — mantém `pending_fill` e o
+                        # próximo tick repete o cancelamento (mesmo
+                        # tratamento por perna do envio em
+                        # `_send_pending_orders`). A intenção do delete fica
+                        # GUARDADA E PERSISTIDA — o tick re-tenta assim que
+                        # o worker voltar e a intenção sobrevive a restart
+                        # (a gestão falhada completa-se com a razão original,
+                        # não como expiração TTL).
+                        if not self._pending_delete_intent.get(pos.id):
+                            self._pending_delete_intent[pos.id] = {"kind": "ttl"}
+                        self._persist_pending_delete_state(pos.id)
+                        # rate-limit por perna: o tick falha a cada segundo
+                        # enquanto o worker estiver em baixo — só a PRIMEIRA
+                        # falha do episódio grava a exceção (concisa, com o
+                        # trace); as restantes ficam só no log/feed/journal
+                        if pos.id not in self._pending_delete_exception_recorded:
+                            self._pending_delete_exception_recorded.add(pos.id)
+                            self.db.record_exception(
+                                exc,
+                                context={"component": "mt5",
+                                         "phase": "order_delete",
+                                         "kind": "pending_ttl",
+                                         "leg": pos.leg, "lane": self.lane_id,
+                                         "trade_id": trade.id,
+                                         "ticket": pos.order_ticket,
+                                         "episode": True},
+                                trade_id=trade.id,
+                            )
+                        self._log_order("pending_delete_failed", {
+                            "trade": trade.id, "leg": pos.leg,
+                            "ticket": pos.order_ticket,
+                            "retcode": "REMOTE_ERROR",
+                            "comment": str(exc)[:140],
+                        })
+                        self._journal_event(
+                            "pending_order_result", at=self.clock.iso(),
+                            trade=trade, pos=pos,
+                            payload={"action": "delete", "accepted": False,
+                                     "retcode": "REMOTE_ERROR",
+                                     "ticket": pos.order_ticket,
+                                     "comment": str(exc)[:140]},
+                        )
+                        # watchdog: após N falhas seguidas o tick deixa de
+                        # tentar em silêncio — devolve o evento para o feed
+                        # alertar o operador (worker offline?); enquanto
+                        # presa, re-alerta a cada REALERT_EVERY segundos
+                        self._bump_pending_delete_failure(pos)
+                        n = int(self._pending_delete_failures[pos.id]["attempts"])
+                        now_mono = self.clock.monotonic()
+                        last_alert = self._pending_delete_alerted_at.get(pos.id)
+                        first_alert = n == self.PENDING_DELETE_ESCALATE_AFTER
+                        re_alert = (n > self.PENDING_DELETE_ESCALATE_AFTER
+                                    and last_alert is not None
+                                    and (now_mono - last_alert)
+                                    >= self.PENDING_DELETE_REALERT_EVERY)
+                        if first_alert or re_alert:
+                            self._pending_delete_alerted_at[pos.id] = now_mono
+                            entry = self._pending_delete_failures[pos.id]
+                            if not entry.get("escalated_at"):
+                                entry["escalated_at"] = now
+                            entry["last_alert_utc"] = now
+                            self._persist_pending_delete_state(pos.id)
+                            intent = self._pending_delete_intent.get(pos.id) or {}
+                            events.append({
+                                "type": "pending_delete_stuck",
+                                "trade_id": trade.id,
+                                "symbol": trade.symbol, "leg": pos.leg,
+                                "ticket": pos.order_ticket,
+                                "attempts": n,
+                            })
+                            # evidência completa no journal: a sequência de
+                            # `pending_order_result` (falhas do delete) + a
+                            # marca `pending_delete_stuck` com o contexto
+                            # da perna reproduzem uma falha prolongada do
+                            # worker de forma determinística no replay
+                            self._journal_event(
+                                "pending_delete_stuck", at=now,
+                                trade=trade, pos=pos,
+                                payload={"leg": pos.leg,
+                                         "position_id": pos.id,
+                                         "ticket": pos.order_ticket,
+                                         "lane": self.lane_id,
+                                         "attempts": n,
+                                         "intent_kind": intent.get("kind") or "ttl",
+                                         "reason": intent.get("reason"),
+                                         "escalated": True,
+                                         "re_alert": bool(re_alert),
+                                         "escalated_at": entry.get("escalated_at"),
+                                         "last_alert_utc": entry.get("last_alert_utc"),
+                                         "opened_at": pos.opened_at or "",
+                                         "comment": str(exc)[:200]},
+                            )
+                        continue
+                    self._journal_event(
+                        "pending_order_result", at=self.clock.iso(),
+                        trade=trade, pos=pos,
+                        payload={"action": "delete", "accepted": True,
+                                 "retcode": 10009,
+                                 "ticket": pos.order_ticket},
+                    )
+                    self._clear_pending_delete_retry(pos.id)
+                    if retry_intent is not None \
+                            and retry_intent.get("kind") == "cancel":
+                        # delete de GESTÃO que tinha falhado — completa-o
+                        # agora (mesmo evento do `_cancel_pending_pos`)
+                        reason = retry_intent.get("reason") or "close_all"
+                        self.db.close_position(pos.id, pos.entry, 0.0, now,
+                                               reason=reason,
+                                               msg_id=retry_intent.get("msg_id"))
+                        pos.status = "closed"
+                        pos.exit_reason = reason
+                        pos.exit_msg_id = retry_intent.get("msg_id")
+                        events.append({
+                            "type": "close", "trade_id": trade.id,
+                            "symbol": trade.symbol, "leg": pos.leg,
+                            "direction": pos.direction, "price": pos.entry,
+                            "pnl": 0.0, "reason": reason,
+                        })
+                        continue
+                    self.db.close_position(pos.id, 0.0, 0.0, now,
+                                           reason="pending_expired")
+                    pos.status = "closed"
+                    events.append({"type": "pending_expired", "trade_id": trade.id,
+                                    "symbol": trade.symbol, "leg": pos.leg,
+                                    "reason": "ttl"})
         return events
 
     def _update_real(self, trade: Trade, now: str,
                      exit_at_tp: Optional[int] = None,
-                     auto: Optional[dict] = None) -> List[dict]:
+                     auto: Optional[dict] = None,
+                     entry_order_ttl: Optional[float] = None) -> List[dict]:
         """Real mode: reconcile DB legs with live MT5 positions.
 
         Positions carry server-side SL/TP, so the broker manages the exits;
@@ -809,8 +1604,15 @@ class MT5Engine:
         positions = {p.leg: p for p in self.db.positions_for_trade(trade.id)}
         if not positions:
             return events
+
+        # Fase 1 — ordens pendentes na zona: fill/cancelamento/expiração
+        # ANTES da reconciliação das posições abertas.
+        events += self._check_pending_real(trade, positions, mt5, now,
+                                           entry_order_ttl)
+
         legs = [positions[n] for n in range(1, 6) if n in positions]
         open_legs = [p for p in legs if p.status == "open"]
+        leg1 = positions.get(1)
         auto_policy = None
         if auto:
             auto_policy = AutoProtectionPolicy(
@@ -820,6 +1622,8 @@ class MT5Engine:
                 trail_factor=auto.get("trail_factor"),
                 stair_levels=auto.get("stair_levels"),
                 stair_from=int(auto.get("stair_from") or 1),
+                be_buffer_pips=auto.get("be_buffer_pips"),
+                pip_size=float((self._sym_meta(trade.symbol) or {}).get("pip", 0.01)),
             )
 
         try:
@@ -852,8 +1656,62 @@ class MT5Engine:
                 if res is not None:
                     closed_legs[pos.leg] = res
 
-        self._restore_auto_state(trade, positions, now)
-        tp1_ts = self._auto_state.get(trade.id, {}).get("tp1_ts")
+        auto_state = self._restore_auto_state(trade, positions, now)
+        # BE autónomo (15/09): quando o PREÇO toca o TP1, as pernas restantes
+        # vão logo para BE+ — sem esperar pelo fill server-side do TP nem pela
+        # mensagem "TP1 Hit" do grupo (no sinal das 15:37 o grupo soube do
+        # TP1 43s antes do tick e o BE só aconteceu no fill). É monotónico:
+        # `_auto_move_sl` só aplica se melhorar o SL atual, portanto corre em
+        # todos os ticks sem repetir modifies. Requer `be_buffer_pips` na
+        # estratégia (tp2_protect) — estratégias sem BE+ ficam inalteradas.
+        if auto and auto.get("be_buffer_pips") and open_legs:
+            tp1_level = getattr(trade, "take_profit_1", 0.0) or 0.0
+            current_price = self._price(trade.symbol)
+            tp1_touched = (
+                tp1_level and current_price is not None
+                and ((trade.direction == "buy" and current_price >= tp1_level)
+                     or (trade.direction == "sell" and current_price <= tp1_level))
+            )
+            if tp1_touched:
+                be_buffer = float(auto.get("be_buffer_pips") or 0.0)
+                for pos in open_legs:
+                    if pos.leg == 1:
+                        continue
+                    be_level = self._be_level(trade, be_buffer, fill=pos.entry)
+                    self._auto_move_sl(trade, pos, mt5, be_level, kind="be")
+        # Early autonomous protect: close leg 1 at the current broker price,
+        # then apply the shared group-protect SL to the remaining legs. The
+        # broker confirmation path in `_auto_move_sl` is the source of truth;
+        # a refused modify never becomes an applied DB level.
+        if auto and leg1 and leg1.status == "open":
+            current_price = self._price(trade.symbol)
+            decision = reduce_auto_protect(
+                direction=trade.direction, price=current_price or trade.entry,
+                entry=trade.entry, stop_loss=trade.stop_loss,
+                tp1=trade.take_profit_1,
+                leg1_open=leg1.status == "open",
+                remaining_sls={p.leg: p.stop_loss for p in open_legs if p.leg != 1},
+                trigger_fraction=auto.get("protect_trigger"),
+                buffer_fraction=auto.get("protect_buffer"),
+                already_triggered=bool(auto_state.get("auto_protected")),
+            ) if current_price is not None else None
+            if (decision and decision.triggered
+                    and leg1.leg in ticket_to_leg.values()):
+                close_event = self.close_leg_at_market(
+                    trade.id, 1, now=now, reason="auto_protect",
+                )
+                if close_event:
+                    events.append(close_event)
+                    for leg, target in decision.move_sls:
+                        other = positions.get(leg)
+                        if other and other.status == "open":
+                            self._auto_move_sl(
+                                trade, other, mt5, target,
+                                kind="auto_protect",
+                            )
+                    auto_state["auto_protected"] = True
+                    auto_state["auto_protection_at"] = now
+        tp1_ts = auto_state.get("tp1_ts")
         for leg_num, (price, pnl) in closed_legs.items():
             pos = positions[leg_num]
             reason = "tp" if pnl >= 0 else "sl"
@@ -861,11 +1719,14 @@ class MT5Engine:
                                              reason=reason))
             if leg_num == 1 and pnl >= 0:
                 # leg 1 closed at TP1 (profit): protect every remaining leg
-                # at breakeven
+                # at breakeven+ (entry ± buffer quando a estratégia define
+                # `be_buffer_pips` — cobre o spread; entrada seca sem buffer)
                 moved = False
+                be_buffer = float((auto or {}).get("be_buffer_pips") or 0.0)
                 for other in open_legs:
                     if other.leg != 1:
-                        self._move_sl_breakeven(trade, other, mt5)
+                        self._move_sl_breakeven(trade, other, mt5,
+                                                buffer_pips=be_buffer)
                         moved = True
                 if moved:
                     events.append({
@@ -935,7 +1796,112 @@ class MT5Engine:
             self._auto_time_stop(trade, open_legs, mt5, auto_eff, tp1_ts, now)
 
         events += self._maybe_close_trade(trade, now)
+        if auto and trade.status == "open":
+            self.db.save_protection_state("mt5", trade.id, auto_state, updated_at=now)
         return events
+
+    def reconcile_live_state(self) -> dict:
+        """Read-only reconciliation of DB open legs against broker positions.
+
+        It never closes, opens or modifies an order. A missing broker position
+        is only reported as a discrepancy because an exit deal may still be
+        arriving; the normal `_update_real` path remains the authority that
+        records a close after it sees that deal.
+        """
+        if self.dry_run:
+            return {"ok": True, "mode": "dry-run", "safe": True,
+                    "checked": 0, "missing": [], "unknown": [],
+                    "sl_mismatches": []}
+        if not self.provider.connected:
+            return {"ok": False, "mode": "mt5-real", "safe": False,
+                    "reason": "MT5 desligado", "checked": 0,
+                    "missing": [], "unknown": [], "sl_mismatches": []}
+        missing, unknown, sl_mismatches = [], [], []
+        pending_ok, pending_orphans = [], []
+        checked = 0
+        for trade in self.db.open_trades():
+            try:
+                live = self.provider._mt5.positions_get(
+                    symbol=self.provider.meta(trade.symbol)["mt5"]
+                ) or []
+            except Exception as exc:
+                return {"ok": False, "mode": "mt5-real", "safe": False,
+                        "reason": f"positions_get falhou: {exc}",
+                        "checked": checked, "missing": missing,
+                        "unknown": unknown, "sl_mismatches": sl_mismatches}
+            app_legs = {p.leg: p for p in self.db.positions_for_trade(trade.id)
+                        if p.status == "open"}
+            live_legs = {}
+            for broker_pos in live:
+                comment = getattr(broker_pos, "comment", "") or ""
+                if trade.id in comment and ":leg" in comment:
+                    try:
+                        leg = int(comment.rsplit(":leg", 1)[1])
+                    except (TypeError, ValueError):
+                        continue
+                    live_legs[leg] = broker_pos
+            checked += len(app_legs)
+            for leg, app_pos in app_legs.items():
+                broker_pos = live_legs.get(leg)
+                if broker_pos is None:
+                    missing.append({"trade_id": trade.id, "leg": leg,
+                                    "position_id": app_pos.id})
+                    continue
+                broker_sl = float(getattr(broker_pos, "sl", 0.0) or 0.0)
+                if broker_sl and abs(broker_sl - float(app_pos.stop_loss)) > 1e-9:
+                    sl_mismatches.append({
+                        "trade_id": trade.id, "leg": leg,
+                        "position_id": app_pos.id,
+                        "db_sl": app_pos.stop_loss, "broker_sl": broker_sl,
+                    })
+            for leg, broker_pos in live_legs.items():
+                if leg not in app_legs:
+                    unknown.append({"trade_id": trade.id, "leg": leg,
+                                    "ticket": getattr(broker_pos, "ticket", None)})
+            # Fase 4 — ordens pendentes da zona (status `pending_fill`): a
+            # BD tem a ordem com ticket; o broker devolve-a em `orders_get`.
+            # Uma perna cujo ticket já não existe no broker é um óRFÃO
+            # (expirada/cancelada externamente ou perdida num restart) — o
+            # tick fecha-a por TTL, mas o diagnóstico tem de a expor. A ordem
+            # sem ticket é órfã imediata (restart antes do envio). Read-only.
+            for pos in self.db.positions_for_trade(trade.id):
+                if pos.status != "pending_fill":
+                    continue
+                if not pos.order_ticket:
+                    pending_orphans.append({
+                        "trade_id": trade.id, "leg": pos.leg,
+                        "position_id": pos.id, "ticket": None,
+                        "reason": "sem ticket (restart antes do envio)",
+                    })
+                    continue
+                try:
+                    orders = self.provider._mt5.orders_get(
+                        ticket=pos.order_ticket) or []
+                except Exception as exc:
+                    self.db.record_exception(
+                        exc, context={"component": "mt5",
+                                      "phase": "reconcile.orders_get"},
+                        trade_id=trade.id,
+                    )
+                    orders = []
+                if orders:
+                    pending_ok.append({
+                        "trade_id": trade.id, "leg": pos.leg,
+                        "ticket": pos.order_ticket,
+                        "state": getattr(orders[0], "state", None),
+                    })
+                else:
+                    pending_orphans.append({
+                        "trade_id": trade.id, "leg": pos.leg,
+                        "position_id": pos.id, "ticket": pos.order_ticket,
+                        "reason": "ordem já não existe no broker",
+                    })
+        safe = (not missing and not unknown and not sl_mismatches
+                and not pending_orphans)
+        return {"ok": True, "mode": "mt5-real", "safe": safe,
+                "checked": checked, "missing": missing, "unknown": unknown,
+                "sl_mismatches": sl_mismatches,
+                "pending": {"ok": pending_ok, "orphans": pending_orphans}}
 
     def _closed_by_broker(self, trade: Trade, pos: Position, mt5) -> tuple:
         """Find the close price + P&L the broker booked for a position."""
@@ -965,10 +1931,64 @@ class MT5Engine:
         # the opening deal, never a real exit.
         if int(getattr(last, "entry", 1)) == 0:
             return None
+        close_key = (pos.id, getattr(last, "ticket", None),
+                     float(getattr(last, "price", 0.0)),
+                     float(getattr(last, "profit", 0.0) or 0.0))
+        if close_key not in self._journaled_close_events:
+            self._journaled_close_events.add(close_key)
+            trade = self.db.get_trade(pos.trade_id)
+            self._journal_event(
+                "fill_close", at=self.clock.iso(), trade=trade, pos=pos,
+                payload={"source": "broker", "status": "filled",
+                         "leg": pos.leg, "ticket": ticket,
+                         "deal_ticket": getattr(last, "ticket", None),
+                         "price": float(last.price),
+                         "pnl": float(last.profit or 0.0),
+                         "entry": getattr(last, "entry", None)},
+            )
         return (float(last.price), float(last.profit or 0.0))
 
-    def _move_sl_breakeven(self, trade: Trade, pos: Position, mt5) -> None:
-        """Modify leg 2's SL to entry (breakeven) after TP1 hit."""
+    def _be_level(self, trade: Trade, buffer_pips: float = 0.0,
+                  fill: Optional[float] = None) -> float:
+        """Nível do SL pós-TP1: entrada seca, ou entrada ± buffer (BE+ —
+        cobre o spread) quando `buffer_pips` > 0. Nunca cruza o TP1
+        (fica limitado com 1 pip de folga).
+
+        ``fill`` é o preço REAL de fill da perna e só se aplica no BE+
+        (com buffer): o âncora é o PIOR custo entre a entrada do sinal e o
+        fill — um fill adversário nunca fica com SL abaixo do próprio preço
+        de entrada (BE+ tem de ser sem perda). Sem buffer (BE clássico) ou
+        sem ``fill``, comporta-se exatamente como antes.
+        """
+        entry = float(trade.entry)
+        buffer_pips = float(buffer_pips or 0.0)
+        base = entry
+        if buffer_pips > 0.0 and fill is not None:
+            try:
+                fill = float(fill)
+            except (TypeError, ValueError):
+                fill = None
+            if fill and fill > 0:
+                base = max(entry, fill) if trade.direction == "buy" \
+                    else min(entry, fill)
+        if buffer_pips <= 0.0:
+            return entry
+        pip = float((self._sym_meta(trade.symbol) or {}).get("pip", 0.01))
+        buffer = buffer_pips * pip
+        if trade.take_profit_1:
+            room = abs(float(trade.take_profit_1) - base) - pip
+            buffer = min(buffer, room) if room > 0 else 0.0
+        if buffer <= 0.0:
+            return base
+        return base + buffer if trade.direction == "buy" else base - buffer
+
+    def _move_sl_breakeven(self, trade: Trade, pos: Position, mt5,
+                           buffer_pips: float = 0.0) -> None:
+        """Modify leg 2's SL to breakeven (entry, or entry ± buffer when
+        ``buffer_pips`` is set — BE+ cobre o spread) after TP1 hit. O âncora
+        é o pior entre a entrada do sinal e o FILL REAL da perna — um fill
+        com slippage nunca fica com SL abaixo do próprio preço de entrada."""
+        be_level = self._be_level(trade, buffer_pips, fill=pos.entry)
         mt5_sym = self.provider.meta(trade.symbol)["mt5"]
         ticket = self._ticket_for(pos.id)
         if ticket is None:
@@ -987,37 +2007,52 @@ class MT5Engine:
                 "action": mt5.TRADE_ACTION_SLTP,
                 "symbol": mt5_sym,
                 "position": ticket,
-                "sl": float(trade.entry),
+                "sl": be_level,
                 "tp": float(pos.take_profit),
             }
+            started = self._auto_clock.monotonic()
+            self._journal_event(
+                "modify_request", at=self.clock.iso(), trade=trade, pos=pos,
+                payload={"kind": "breakeven", "ticket": ticket,
+                         "requested_sl": be_level,
+                         "take_profit": pos.take_profit},
+            )
             result = mt5.order_send(request)
             retcode = getattr(result, "retcode", "?")
             accepted = _order_ok(result, mt5)
+            self._journal_event(
+                "modify_result", at=self.clock.iso(), trade=trade, pos=pos,
+                payload={"kind": "breakeven", "ticket": ticket,
+                         "requested_sl": be_level, "retcode": self._retcode(result),
+                         "accepted": accepted,
+                         "comment": getattr(result, "comment", "") or "",
+                         "latency_ms": round((self._auto_clock.monotonic() - started) * 1000, 3)},
+            )
             self.db.insert_mt5_modify_event(
                 _now_iso(), trade_id=trade.id, position_id=pos.id,
                 symbol=trade.symbol, leg=pos.leg, kind="breakeven",
-                requested_sl=trade.entry, valid_sl=trade.entry,
+                requested_sl=be_level, valid_sl=be_level,
                 retcode=int(retcode) if str(retcode).lstrip("-").isdigit() else None,
                 accepted=accepted, error=getattr(result, "comment", "") or "",
             )
             self._log_order("modify_sl_be", {
                 "trade": trade.id, "leg": pos.leg, "ticket": ticket,
-                "sl": trade.entry, "retcode": retcode,
+                "sl": be_level, "retcode": retcode,
             })
             # A BD só pode refletir o BE depois de o broker confirmar o
             # modify. Sem isto, o caminho real continuava a mostrar o SL
             # original apesar de o MT5 já estar protegido, e o trailing
             # calculava o próximo nível a partir de um estado falso.
             if _order_ok(result, mt5):
-                self.db.move_position_sl(pos.id, trade.entry)
-                pos.stop_loss = trade.entry
+                self.db.move_position_sl(pos.id, be_level)
+                pos.stop_loss = be_level
         except Exception as exc:
             # A falha antes de receber um retcode continua a ser uma tentativa
             # operacional observável; não pode desaparecer apenas no log.
             self.db.insert_mt5_modify_event(
                 _now_iso(), trade_id=trade.id, position_id=pos.id,
                 symbol=trade.symbol, leg=pos.leg, kind="breakeven",
-                requested_sl=trade.entry, valid_sl=trade.entry,
+                requested_sl=be_level, valid_sl=be_level,
                 retcode=None, accepted=False, error=str(exc),
             )
             self.db.record_exception(
@@ -1035,13 +2070,29 @@ class MT5Engine:
         ``_auto_trailing``.  Without restoring ``tp1_ts`` the trailing and
         time-stop branches would remain disabled for the rest of the trade.
         """
-        state = self._auto_state.setdefault(trade.id, {
-            "tp1_ts": None, "peak": None, "last_mod": {},
-            "auto_sl_by_leg": {}, "auto_protection_at_by_leg": {},
-        })
+        if trade.id not in self._auto_state:
+            persisted = self.db.load_protection_state("mt5", trade.id) or {}
+            defaults = {
+                "tp1_ts": None, "peak": None, "trough": None,
+                "last_mod": {}, "auto_protected": False,
+                "auto_protection_at": None, "auto_sl_by_leg": {},
+                "auto_protection_at_by_leg": {},
+            }
+            defaults.update(persisted)
+            # monotonic timestamps cannot survive a process restart; reset
+            # only the throttle, preserving price/protection state.
+            defaults["last_mod"] = {}
+            self._auto_state[trade.id] = defaults
+        state = self._auto_state[trade.id]
+        self.db.save_protection_state("mt5", trade.id, state, updated_at=now)
         leg1 = positions.get(1)
-        if not leg1 or leg1.status != "closed" \
-                or leg1.exit_reason not in ("tp", "tp1"):
+        if not leg1 or leg1.status != "closed":
+            return state
+        if leg1.exit_reason == "auto_protect":
+            state["auto_protected"] = True
+            state.setdefault("auto_protection_at", leg1.closed_at or now)
+            return state
+        if leg1.exit_reason not in ("tp", "tp1"):
             return state
         if state.get("tp1_ts") is None:
             # MT5's time-stop adapter consumes an ISO string (unlike the
@@ -1086,6 +2137,12 @@ class MT5Engine:
             "price": price, "pnl": round(pnl, 2),
             "note": "dry-run: simulado no tick atual",
         })
+        self._journal_event(
+            "fill_close", at=now, trade=trade, pos=pos,
+            payload={"source": "mt5_dry_run", "status": "simulated",
+                     "leg": pos.leg, "price": price, "pnl": pnl,
+                     "reason": reason, "message_id": msg_id},
+        )
         return self._record_close(trade, pos, price, pnl, now, reason=reason,
                                   msg_id=msg_id)
 
@@ -1098,7 +2155,8 @@ class MT5Engine:
     def _maybe_close_trade(self, trade: Trade, now: str,
                            reason: Optional[str] = None) -> List[dict]:
         positions = self.db.positions_for_trade(trade.id)
-        remaining = [p for p in positions if p.status == "open"]
+        remaining = [p for p in positions
+                     if p.status in ("open", "pending_fill")]
         if not remaining and trade.status == "open":
             # Auto time-stop/confirmation closes legs through
             # ``close_leg_at_market`` before this reconciliation call. When
@@ -1113,6 +2171,9 @@ class MT5Engine:
                     ).exit_reason
             pnl = sum(p.pnl for p in positions)
             self.db.close_trade(trade.id, now, pnl, reason=reason)
+            # Remove the durable row; keep the in-process snapshot available
+            # for the validation panel and post-close audit.
+            self.db.delete_protection_state("mt5", trade.id)
             return [{
                 "type": "trade_closed", "trade_id": trade.id,
                 "symbol": trade.symbol, "pnl": pnl, "reason": reason,
@@ -1122,7 +2183,19 @@ class MT5Engine:
     # ------------------------------------------------------- manage (group)
 
     def move_leg_sl(self, trade_id: str, leg: int, new_sl: float) -> Optional[float]:
-        """Move a single leg's SL (group "move stop loss above best entries")."""
+        """Move a single leg's SL (group "move stop loss above best entries").
+
+        O nível vai pelos MESMOS três níveis (target → valid → applied) do
+        caminho híbrido/auto: o alvo teórico é limitado por `_valid_sl` às
+        regras do broker (stops_level/freeze + arredondamento ao tick) e o
+        SL só se torna *applied* quando o broker confirma (10009/0). Quando
+        o modify é recusado (ex.: 10016 "invalid stops" — incluindo o caso
+        em que o broker aplica um stops_level que o `symbol_info` não
+        reporta) ou ficou clamped abaixo do alvo, o ALVO original fica em
+        fila (`sl_move_pending`) e o tick volta a tentar nos próximos
+        ticks — o incidente de 07/09 (protect recusado na lane 2, a perna
+        rodou até ao SL completo) não se repete.
+        """
         trade = self.db.get_trade(trade_id)
         if not trade:
             return None
@@ -1130,32 +2203,179 @@ class MT5Engine:
                     if p.leg == leg and p.status == "open"), None)
         if pos is None:
             return None
-        if not self.dry_run:
-            retcode = self._modify_sl(trade, pos, new_sl, kind="group")
-            if retcode not in (10009, 0):
-                return None
-        else:
+        if self.dry_run:
             self._log_order("modify_sl", {
                 "trade": trade.id, "leg": pos.leg, "sl": new_sl,
                 "note": "dry-run: SL atualizado na BD apenas",
             })
-        self.db.move_position_sl(pos.id, new_sl)
-        pos.stop_loss = new_sl
-        return new_sl
+            self.db.move_position_sl(pos.id, new_sl)
+            pos.stop_loss = new_sl
+            return new_sl
+        # alvo pior/igual ao SL atual (movimento anti-monotónico) é no-op:
+        # nunca em fila — o grupo não pediu proteção nova
+        if monotonic_sl(trade.direction, pos.stop_loss, float(new_sl)) is None:
+            return None
+        return self._attempt_group_sl(trade, pos, float(new_sl))
+
+    def _market_clamped_sl(self, trade: Trade, target: float) -> float:
+        """Clamp do alvo de proteção ao LADO VÁLIDO do preço de mercado.
+
+        Um BE+ ancorado na entrada do sinal pode ficar do lado errado do
+        preço atual (incidente 15/09 11:49: entrada 4285, bid 4285.42 → alvo
+        4285.5 ACIMA do bid num buy — o broker recusou 280 modifies com
+        10016 'Invalid stops' durante 9 min e a perna morreu no SL original).
+        O clamp é restritivo: num buy o SL nunca passa do preço (fica
+        marketable-side); num sell nunca fica abaixo. Sem preço, devolve o
+        alvo tal como está.
+        """
+        tick = self._price(trade.symbol)
+        if tick is None or tick <= 0:
+            return target
+        meta = self._sym_meta(trade.symbol) or {}
+        digits = int(meta.get("digits", 2))
+        pip = float(meta.get("pip", 0.01))
+        # 1 pip de folga para o nível ficar aceitável pelo broker
+        if trade.direction == "buy":
+            ceiling = round(tick - pip, digits)
+            return min(target, ceiling)
+        floor = round(tick + pip, digits)
+        return max(target, floor)
+
+    def _attempt_group_sl(self, trade: Trade, pos: Position,
+                          target: float) -> Optional[float]:
+        """Um ciclo target → valid → applied para o SL de gestão de grupo.
+
+        O alvo é primeiro clampado ao lado válido do preço de mercado
+        (`_market_clamped_sl` — o BE+ nunca fica no lado proibido do preço,
+        causa real dos 10016 em série de 15/09). Depois envia o modify do
+        nível válido do momento; aceito → aplica na BD e, se ficou clamped
+        abaixo do alvo, mantém o alvo EM FILA para o tick completar o
+        movimento; recusado → mantém o SL anterior (nunca aplicado sem
+        confirmação do broker) e filaa o alvo. Devolve o nível aplicado
+        deste ciclo, ou None.
+        """
+        original_target = target
+        target = self._market_clamped_sl(trade, target)
+        valid = self._valid_sl(trade, target)
+        if monotonic_sl(trade.direction, pos.stop_loss, valid) is None:
+            # nem o melhor nível válido melhora o SL atual → fica só a
+            # intenção em fila (o retry volta a verificar no próximo tick)
+            self._stage_group_sl(trade, pos, target, None, "refused")
+            return None
+        retcode = self._modify_sl(trade, pos, valid, kind="group")
+        if int(retcode or -1) in (10009, 0):
+            self.db.clear_pending_sl_move(pos.id)
+            self.db.move_position_sl(pos.id, valid)
+            pos.stop_loss = valid
+            if abs(round(valid, 4) - round(original_target, 4)) > 1e-9:
+                # clamped: o broker aceitou um nível ainda longe do alvo —
+                # o ALVO ORIGINAL do grupo fica em fila e o tick completa o
+                # movimento quando o alvo ficar válido
+                self._stage_group_sl(trade, pos, original_target, retcode,
+                                     "clamped")
+            return valid
+        self._stage_group_sl(trade, pos, original_target, retcode,
+                             "refused" if retcode is not None else "not_sent")
+        return None
+
+    def _stage_group_sl(self, trade: Trade, pos: Position, target: float,
+                        retcode: Optional[int], reason: str) -> None:
+        self.db.save_pending_sl_move(self.lane_id or "main", pos.id, {
+            "trade_id": trade.id, "leg": pos.leg,
+            "target_sl": float(target),
+            "retcode": retcode,
+            "staged_at": _now_iso(),
+            "reason": reason,
+        })
+
+    def _retry_pending_sl_moves(self, now: str) -> List[dict]:
+        """Re-tenta SLs de gestão de grupo que o broker recusou/clampou.
+
+        Corre no update() (1×/tick, antes da reconciliação): carrega a fila
+        persistida, reverifica a validade do alvo com o preço ATUAL e envia
+        o modify quando o nível passar a caber. Limpa as entradas resolvidas
+        (aceites no alvo exato) e as órfãs (perna fechada / trade encerrada).
+        """
+        if self.dry_run:
+            return []
+        events: List[dict] = []
+        lane = self.lane_id or "main"
+        try:
+            staged = self.db.load_pending_sl_moves(lane)
+        except Exception:
+            return events
+        if not staged:
+            return events
+        open_trades = {t.id: t for t in self.db.open_trades()
+                       if (getattr(t, "lane_id", None) or "main") == lane}
+        for pos_id, entry in staged.items():
+            trade = open_trades.get(entry.get("trade_id") or "")
+            if trade is None:
+                # trade encerrada → intenção órfã
+                self.db.clear_pending_sl_move(pos_id)
+                continue
+            pos = next((p for p in self.db.positions_for_trade(trade.id)
+                        if p.id == pos_id and p.status == "open"), None)
+            if pos is None:
+                self.db.clear_pending_sl_move(pos_id)
+                continue
+            target = entry.get("target_sl")
+            if target is None:
+                self.db.clear_pending_sl_move(pos_id)
+                continue
+            target = float(target)
+            clamped = self._market_clamped_sl(trade, target)
+            valid = self._valid_sl(trade, clamped)
+            if monotonic_sl(trade.direction, pos.stop_loss, valid) is None:
+                # ainda não melhora / ainda inválido — fica em fila
+                continue
+            retcode = self._modify_sl(trade, pos, valid, kind="group_retry")
+            if int(retcode or -1) in (10009, 0):
+                self.db.clear_pending_sl_move(pos.id)
+                self.db.move_position_sl(pos.id, valid)
+                pos.stop_loss = valid
+                if abs(round(valid, 4) - round(target, 4)) > 1e-9:
+                    # ainda clamped: mantém o alvo para o próximo tick
+                    self._stage_group_sl(trade, pos, target, retcode, "clamped")
+                events.append({
+                    "type": "sl_move_applied", "trade_id": trade.id,
+                    "symbol": trade.symbol, "leg": pos.leg,
+                    "target": target, "applied": valid,
+                    "retcode": retcode,
+                })
+        return events
+
+    def _clear_stale_sl_moves(self) -> None:
+        """Fim do update(): limpa intenções cuja perna fechou NESTE tick (a
+        verificação do início do tick corre antes da reconciliação)."""
+        lane = self.lane_id or "main"
+        try:
+            staged = self.db.load_pending_sl_moves(lane)
+        except Exception:
+            return
+        for pos_id, entry in staged.items():
+            trade = self.db.get_trade(entry.get("trade_id") or "")
+            pos = next((p for p in self.db.positions_for_trade(trade.id)
+                        if p.id == pos_id), None) if trade else None
+            if pos is None or pos.status != "open" or trade.status != "open":
+                self.db.clear_pending_sl_move(pos_id)
 
     def close_leg_at_market(self, trade_id: str, leg: int,
                             now: Optional[str] = None,
                             reason: str = "close_leg",
                             msg_id: Optional[str] = None) -> Optional[dict]:
-        """Close a single leg at market (group "close first entries")."""
+        """Close a single leg at market (group "close first entries").
+        Uma perna `pending_fill` (ordem na zona) é cancelada sem P&L."""
         now = now or _now_iso()
         trade = self.db.get_trade(trade_id)
         if not trade or trade.status != "open":
             return None
         pos = next((p for p in self.db.positions_for_trade(trade_id)
-                    if p.leg == leg and p.status == "open"), None)
+                    if p.leg == leg and p.status in ("open", "pending_fill")), None)
         if pos is None:
             return None
+        if pos.status == "pending_fill":
+            return self._cancel_pending_pos(pos, now, reason=reason, msg_id=msg_id)
         if not self.dry_run:
             mt5 = self.provider._mt5
             if not self.provider.connected:
@@ -1181,12 +2401,38 @@ class MT5Engine:
                     "deviation": 10,
                     "type_filling": mt5.ORDER_FILLING_IOC,
                 }
+                started = self._auto_clock.monotonic()
+                self._journal_event(
+                    "order_request", at=self.clock.iso(), trade=trade, pos=pos,
+                    payload={"action": "close", "kind": reason,
+                             "ticket": p.ticket, "volume": p.volume,
+                             "requested_price": price},
+                )
                 result = mt5.order_send(request)
-                if _order_ok(result, mt5):
+                accepted = _order_ok(result, mt5)
+                self._journal_event(
+                    "order_result", at=self.clock.iso(), trade=trade, pos=pos,
+                    payload={"action": "close", "kind": reason,
+                             "ticket": p.ticket, "accepted": accepted,
+                             "retcode": self._retcode(result),
+                             "comment": getattr(result, "comment", "") or "",
+                             "deal_ticket": getattr(result, "deal", None),
+                             "latency_ms": round((self._auto_clock.monotonic() - started) * 1000, 3)},
+                )
+                if accepted:
                     close_pnl = self._close_pnl_from_deals(p.ticket, mt5)
                     if close_pnl == 0:
                         close_pnl = float(getattr(p, "profit", 0) or 0.0)
-                    return self._record_close(trade, pos, float(result.price),
+                    fill_price = float(getattr(result, "price", price) or price)
+                    self._journal_event(
+                        "fill_close", at=now, trade=trade, pos=pos,
+                        payload={"source": "broker", "status": "filled",
+                                 "leg": pos.leg, "ticket": p.ticket,
+                                 "deal_ticket": getattr(result, "deal", None),
+                                 "price": fill_price, "pnl": close_pnl,
+                                 "reason": reason, "message_id": msg_id},
+                    )
+                    return self._record_close(trade, pos, fill_price,
                                               close_pnl, now, reason=reason,
                                               msg_id=msg_id)
                 self._log_order("close_leg_failed", {
@@ -1361,9 +2607,23 @@ class MT5Engine:
                 "sl": float(new_sl),
                 "tp": float(pos.take_profit),
             }
+            started = self._auto_clock.monotonic()
+            self._journal_event(
+                "modify_request", at=self.clock.iso(), trade=trade, pos=pos,
+                payload={"kind": kind, "ticket": ticket,
+                         "requested_sl": new_sl, "take_profit": pos.take_profit},
+            )
             result = mt5.order_send(request)
             retcode = int(getattr(result, "retcode", -1))
             accepted = retcode in (10009, 0)
+            self._journal_event(
+                "modify_result", at=self.clock.iso(), trade=trade, pos=pos,
+                payload={"kind": kind, "ticket": ticket,
+                         "requested_sl": new_sl, "retcode": retcode,
+                         "accepted": accepted,
+                         "comment": getattr(result, "comment", "") or "",
+                         "latency_ms": round((self._auto_clock.monotonic() - started) * 1000, 3)},
+            )
             self.db.insert_mt5_modify_event(
                 _now_iso(), trade_id=trade.id, position_id=pos.id,
                 symbol=trade.symbol, leg=pos.leg, kind=kind,
@@ -1424,7 +2684,7 @@ class MT5Engine:
         return round(target_sl, int(meta.get("digits", 2)))
 
     def _auto_move_sl(self, trade: Trade, pos: Position, mt5, level: float,
-                      stair: bool = False) -> bool:
+                      stair: bool = False, kind: Optional[str] = None) -> bool:
         """Move o SL de uma perna para `level` (escada/trailing) com os três
         níveis (target→valid→applied) e throttling: só modifica se o novo SL
         melhorar ≥ 1 pip e ≤ 1×/min por perna — o trailing não spammeia
@@ -1433,7 +2693,7 @@ class MT5Engine:
         if pos.status != "open":
             return False
         current = pos.stop_loss or 0.0
-        kind = "stair" if stair else "trail"
+        kind = kind or ("stair" if stair else "trail")
         # decisão pura e comum aos três motores: só melhora
         candidate = monotonic_sl(trade.direction, current, level)
         if candidate is None:
@@ -1498,6 +2758,7 @@ class MT5Engine:
         state.setdefault("auto_sl_by_leg", {})[pos.leg] = valid
         state.setdefault("auto_protection_at_by_leg", {}).setdefault(pos.leg, _now_iso())
         state.setdefault("last_mod", {})[pos.id] = self._auto_clock.monotonic()
+        self.db.save_protection_state("mt5", trade.id, state)
         self._log_order("auto_move_sl", {
             "trade": trade.id, "leg": pos.leg, "sl": valid,
             "kind": kind,
@@ -1565,6 +2826,7 @@ class MT5Engine:
         for pos in open_legs:
             if pos.leg != 1 and target is not None:
                 self._auto_move_sl(trade, pos, mt5, target, stair=False)
+        self.db.save_protection_state("mt5", trade.id, state)
 
     @staticmethod
     def _pf_below(pnls: List[float], threshold: float) -> bool:
@@ -1624,16 +2886,85 @@ class MT5Engine:
 
     # -------------------------------------------------------- close at market
 
+    def _cancel_pending_pos(self, pos: Position, now: str, reason: str,
+                            msg_id: Optional[str] = None) -> Optional[dict]:
+        """Cancela uma perna pendente (ordem na zona): order_delete no real,
+        fecho na BD sem P&L em ambos os modos.
+
+        Devolve o evento de fecho; `None` quando o cancelamento no broker
+        falhou (worker caído) — a perna fica `pending_fill` e a próxima
+        tentativa repete o delete, em vez de fechar na BD e deixar a ordem
+        órfã no MT5."""
+        if not self.dry_run and pos.order_ticket:
+            try:
+                mt5 = self.provider._mt5
+                if self.provider.connected:
+                    mt5.order_delete(ticket=pos.order_ticket)
+            except Exception as exc:
+                # rate-limit por perna (mesmo watchdog do TTL): só a primeira
+                # falha do episódio grava a exceção — o retry do tick não
+                # enche `operational_exceptions` com linhas idênticas
+                if pos.id not in self._pending_delete_exception_recorded:
+                    self._pending_delete_exception_recorded.add(pos.id)
+                    self.db.record_exception(
+                        exc,
+                        context={"component": "mt5", "phase": "order_delete",
+                                 "kind": "cancel_pending", "leg": pos.leg,
+                                 "lane": self.lane_id, "trade_id": pos.trade_id,
+                                 "ticket": pos.order_ticket, "episode": True},
+                        trade_id=pos.trade_id,
+                    )
+                self._log_order("pending_delete_failed", {
+                    "trade": pos.trade_id, "leg": pos.leg,
+                    "ticket": pos.order_ticket,
+                    "retcode": "REMOTE_ERROR", "comment": str(exc)[:140],
+                })
+                self._journal_event(
+                    "pending_order_result", at=now, pos=pos,
+                    payload={"action": "delete", "accepted": False,
+                             "retcode": "REMOTE_ERROR",
+                             "ticket": pos.order_ticket,
+                             "comment": str(exc)[:140]},
+                )
+                # intenção de cancelamento guardada + mesma contagem do
+                # watchdog da expiração por TTL: o ciclo de retry do tick
+                # re-tenta o delete (sem esperar o TTL) e escalona
+                self._pending_delete_intent[pos.id] = {
+                    "kind": "cancel", "reason": reason or "close_all",
+                    "msg_id": msg_id,
+                }
+                self._bump_pending_delete_failure(pos)
+                return None
+        self._clear_pending_delete_retry(pos.id)
+        self.db.close_position(pos.id, pos.entry, 0.0, now, reason=reason,
+                               msg_id=msg_id)
+        pos.status = "closed"
+        pos.exit_reason = reason
+        pos.exit_msg_id = msg_id
+        return {
+            "type": "close", "trade_id": pos.trade_id,
+            "symbol": pos.symbol, "leg": pos.leg,
+            "direction": pos.direction, "price": pos.entry,
+            "pnl": 0.0, "reason": reason,
+        }
+
     def close_trade_at_market(self, trade_id: str, now: Optional[str] = None,
                               reason: str = "close_all",
                               msg_id: Optional[str] = None) -> List[dict]:
-        """Close every open leg at the current market price (signal deleted)."""
+        """Close every open leg at the current market price (signal deleted).
+        Pernas `pending_fill` são canceladas (ordem pendente na zona)."""
         now = now or _now_iso()
         trade = self.db.get_trade(trade_id)
         if not trade or trade.status != "open":
             return []
 
         events: List[dict] = []
+        for pos in self.db.positions_for_trade(trade_id):
+            if pos.status == "pending_fill":
+                ev = self._cancel_pending_pos(pos, now, reason=reason,
+                                              msg_id=msg_id)
+                if ev:
+                    events.append(ev)
         if self.dry_run:
             price = self._price(trade.symbol)
             if price is None:
@@ -1668,15 +2999,41 @@ class MT5Engine:
                     "deviation": 10,
                     "type_filling": mt5.ORDER_FILLING_IOC,
                 }
+                started = self._auto_clock.monotonic()
+                self._journal_event(
+                    "order_request", at=self.clock.iso(), trade=trade, pos=pos,
+                    payload={"action": "close", "kind": reason,
+                             "ticket": p.ticket, "volume": p.volume,
+                             "requested_price": price},
+                )
                 result = mt5.order_send(request)
-                if _order_ok(result, mt5) and pos:
+                accepted = _order_ok(result, mt5)
+                self._journal_event(
+                    "order_result", at=self.clock.iso(), trade=trade, pos=pos,
+                    payload={"action": "close", "kind": reason,
+                             "ticket": p.ticket, "accepted": accepted,
+                             "retcode": self._retcode(result),
+                             "comment": getattr(result, "comment", "") or "",
+                             "deal_ticket": getattr(result, "deal", None),
+                             "latency_ms": round((self._auto_clock.monotonic() - started) * 1000, 3)},
+                )
+                if accepted and pos:
                     # prefer the broker's booked P&L from the exit deal; fall
                     # back to the position's floating profit at close time
                     close_pnl = self._close_pnl_from_deals(p.ticket, mt5)
                     if close_pnl == 0:
                         close_pnl = float(getattr(p, "profit", 0) or 0.0)
+                    fill_price = float(getattr(result, "price", price) or price)
+                    self._journal_event(
+                        "fill_close", at=now, trade=trade, pos=pos,
+                        payload={"source": "broker", "status": "filled",
+                                 "leg": pos.leg, "ticket": p.ticket,
+                                 "deal_ticket": getattr(result, "deal", None),
+                                 "price": fill_price, "pnl": close_pnl,
+                                 "reason": reason, "message_id": msg_id},
+                    )
                     events.append(self._record_close(
-                        trade, pos, float(result.price), close_pnl, now,
+                        trade, pos, fill_price, close_pnl, now,
                         reason=reason, msg_id=msg_id))
                 else:
                     self._log_order("close_failed", {
@@ -1708,6 +3065,21 @@ class MT5Engine:
         if trade.direction == "buy":
             return price <= level if kind == "sl" else price >= level
         return price >= level if kind == "sl" else price <= level
+
+
+def _elapsed_seconds(start: str, end: str) -> Optional[float]:
+    """Return UTC ISO latency in seconds, or None for incomplete timestamps."""
+    from datetime import datetime, timezone
+    try:
+        left = datetime.fromisoformat(str(start).replace("Z", "+00:00"))
+        right = datetime.fromisoformat(str(end).replace("Z", "+00:00"))
+        if left.tzinfo is None:
+            left = left.replace(tzinfo=timezone.utc)
+        if right.tzinfo is None:
+            right = right.replace(tzinfo=timezone.utc)
+        return round(max(0.0, (right - left).total_seconds()), 6)
+    except (TypeError, ValueError, OverflowError):
+        return None
 
 
 def _order_ok(result, mt5) -> bool:

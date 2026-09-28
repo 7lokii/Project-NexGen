@@ -2,20 +2,28 @@
 
 > Contexto e regras comuns: consultar [00-contexto-e-regras.md](00-contexto-e-regras.md).
 
-## Estado atual (2026-08-19)
+## Estado atual (2026-09-01)
 
 **Encerrados e aceites**: Itens 1, 2, 3, 7, 8, 9, 14 e 15. Os respetivos
 specs foram apagados depois dos testes e da verificação operacional. A conta
-principal continua demo, `auto_escada_5` persistida com kill switch ligado e
-não há amostra forward nova criada artificialmente.
+principal continua demo, mas agora está persistida como `tp2_protect` (2 pernas,
+saída no TP2), com saldo observado de €1.003,89; `MT5_DRY_RUN=0` está ativo para
+enviar ordens broker na demo. Não há autorização para operar uma conta real nem
+promoção automática.
 
 **Implementados, mas ainda em observação/evidência**: o Item 10 já tem
 instrumentação persistente, endpoint e painel, mas o critério de tendência
 continua pendente até haver pelo menos duas semanas de dados reais. O Item 17
 já tem workflow push/PR, validação documental e failure-probe manual; a
-execução remota no GitHub ainda precisa de um primeiro run no repositório
-publicado (este checkout local não tem metadata Git/remote). Por isso os dois
-specs permanecem até a evidência final, conforme as regras comuns.
+execução remota no GitHub foi confirmada neste ciclo, mas a branch protection
+fica dependente do plano GitHub e não é necessária para o runtime local.
+Os dois specs permanecem até a evidência final, conforme as regras comuns.
+
+**Shadow-paper forward**: implementação operacional concluída fora da ordem dos
+Itens 10/17. A `auto_escada_3` pode acumular sinais live numa conta virtual
+`origin="shadow"` sem depender da execução principal e sem abrir ordens demo;
+histórico/LLM ficam excluídos e a gestão mantém marcadores separados para
+real (`applied`), corrida paper (`paper_applied`) e shadow (`shadow_applied`). A evidência continua a exigir N≥20 sinais resolvidos.
 
 **Próxima ordem recomendada**: confirmar o primeiro run do Item 17, deixar o
 Item 10 acumular duas semanas, e só depois iniciar Item 11 (relatório
@@ -31,8 +39,9 @@ decididos com denominador real.
    os veredictos aceites.
 2. Itens 7–9, 14 e 15 estão encerrados: a infraestrutura operacional deve
    agora acumular histórico em vez de ser recalibrada sem necessidade.
-3. Item 17 está implementado; falta apenas confirmar o primeiro run remoto
-   no GitHub para o aceitar e apagar o spec.
+3. Item 17 está implementado; o primeiro run normal e o failure-probe foram
+   confirmados no GitHub. A branch protection privada continua bloqueada pelo
+   plano Free, por isso o spec permanece para decisão/aceitação documental.
 4. Item 10 está instrumentado: deixa acumular exceções, spread, reconexões e
    modifies recusados; o critério final exige duas semanas de dados, portanto
    implementação não equivale ainda a conclusão.

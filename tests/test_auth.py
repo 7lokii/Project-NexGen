@@ -129,3 +129,74 @@ def test_websocket_requires_login(client, monkeypatch):
             assert msg["type"] == "snapshot"
     finally:
         monkeypatch.delenv("SIGNALBOT_DASHBOARD_PASSWORD")
+
+
+def test_login_rate_limit_lockout(client, monkeypatch):
+    """Lockout por IP: após LOGIN_MAX_ATTEMPTS falhas na janela, /api/login
+    devolve 429 mesmo com a password certa; o sucesso limpa o histórico."""
+    from app import auth
+    monkeypatch.setenv("SIGNALBOT_DASHBOARD_PASSWORD", "segredo-123")
+    auth.reset_login_limit_state()
+    try:
+        for i in range(auth.LOGIN_MAX_ATTEMPTS):
+            r = client.post("/api/login", json={"password": "errada"})
+            assert r.status_code == 401
+        # bloqueado: mesmo a password certa dá 429
+        r = client.post("/api/login", json={"password": "segredo-123"})
+        assert r.status_code == 429, r.text
+        assert r.json()["retry_after"] > 0
+        # e a password errada continua 429 (não vaza informação)
+        assert client.post("/api/login", json={"password": "x"}).status_code == 429
+    finally:
+        auth.reset_login_limit_state()
+        monkeypatch.delenv("SIGNALBOT_DASHBOARD_PASSWORD")
+
+
+def test_login_rate_limit_success_clears(client, monkeypatch):
+    """Um login com sucesso limpa as falhas do IP (não pune o dono)."""
+    from app import auth
+    monkeypatch.setenv("SIGNALBOT_DASHBOARD_PASSWORD", "segredo-123")
+    auth.reset_login_limit_state()
+    try:
+        client.post("/api/login", json={"password": "errada"})
+        client.post("/api/login", json={"password": "errada"})
+        r = client.post("/api/login", json={"password": "segredo-123"})
+        assert r.status_code == 200
+        assert auth.login_locked("testclient") == 0
+        assert not auth._failed_logins
+    finally:
+        auth.reset_login_limit_state()
+        monkeypatch.delenv("SIGNALBOT_DASHBOARD_PASSWORD")
+
+
+def test_login_rate_limit_window_expiry(client, monkeypatch):
+    """Falhas saem da janela deslizante: passado o cutoff, o IP desbloqueia."""
+    from app import auth
+    monkeypatch.setenv("SIGNALBOT_DASHBOARD_PASSWORD", "segredo-123")
+    auth.reset_login_limit_state()
+    try:
+        for _ in range(auth.LOGIN_MAX_ATTEMPTS):
+            client.post("/api/login", json={"password": "errada"})
+        assert client.post("/api/login", json={"password": "segredo-123"}).status_code == 429
+        # simula a expiração da janela
+        old = 0.0 - auth.LOGIN_WINDOW_SECONDS - 1
+        for ip, dq in auth._failed_logins.items():
+            dq.clear()
+            dq.append(old)
+        assert auth.login_locked(next(iter(auth._failed_logins), "x")) == 0
+        r = client.post("/api/login", json={"password": "segredo-123"})
+        assert r.status_code == 200
+    finally:
+        auth.reset_login_limit_state()
+        monkeypatch.delenv("SIGNALBOT_DASHBOARD_PASSWORD")
+
+
+def test_client_ip_forwarded_header(client):
+    """Atrás do túnel/Caddy o IP vem do X-Forwarded-For."""
+    from app.auth import client_ip
+
+    class _Req:
+        headers = {"x-forwarded-for": "203.0.113.7, 10.0.0.1"}
+        client = None
+
+    assert client_ip(_Req()) == "203.0.113.7"

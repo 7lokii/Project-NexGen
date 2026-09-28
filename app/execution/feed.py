@@ -16,6 +16,14 @@ Design:
     (never fabricated); with no provider at all, the random walk runs.
   * Each symbol tracks its source ("real" vs "sim") so the dashboard can show
     whether prices are real or simulated.
+  * MT5 spot priority for metals: Yahoo only serves XAUUSD/XAGUSD as the
+    FUTURES contracts (GC=F/SI=F), which carry a basis offset vs the broker
+    spot (~$35 on gold, observed 14/09/2026). That offset made the paper race
+    resolve a buy "instantly in profit" the moment real execution opened at
+    spot — a phantom close. When an MT5 provider is connected, metals are
+    priced from the terminal (spot, the price real trades execute at) and
+    override the web provider; without a terminal the feed falls back to the
+    web provider as before (failsafe — the simulation never loses prices).
 """
 
 import os
@@ -32,6 +40,12 @@ DEFAULT_REFRESH_SECONDS = 10.0
 # dashboard badge shows "preços reais"). XAUUSD/XAGUSD map to the futures.
 DEFAULT_SYMBOLS = ("XAUUSD", "XAGUSD", "EURUSD", "GBPUSD", "USDJPY",
                    "AUDUSD", "USDCAD", "NZDUSD")
+
+# Symbols where the web provider serves FUTURES, not spot: Yahoo has no
+# XAUUSD=X/XAGUSD=X and maps them to GC=F/SI=F, whose price carries a basis
+# offset vs the broker spot the real account trades at. Forex pairs (EURUSD=X,
+# ...) are genuine spot on Yahoo — no offset, no need to spend MT5 calls.
+MT5_PRIORITY_SYMBOLS = ("XAUUSD", "XAGUSD")
 
 _HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 
@@ -154,8 +168,21 @@ class MarketFeed:
         self.refresh_seconds = refresh_seconds
         self._sim = MarketSimulator(seed)
         self.prices: dict = {}
-        self._meta: dict = {}  # symbol -> {"source": "real"|"sim", "updated": ts}
+        self._meta: dict = {}  # symbol -> {"source": "real"|"mt5"|"sim", "updated": ts}
         self._last_refresh = 0.0
+        # MT5 spot sources (set via set_mt5_sources): a main provider and/or
+        # the lane 2 worker client. quote(sym) returns bid/ask from the
+        # terminal; tick(sym) the mid price. Sync calls are cheap (the main
+        # provider keeps no HTTP hop; the worker client talks to localhost).
+        self._mt5_sources: list = []
+
+    def set_mt5_sources(self, sources) -> None:
+        """Register MT5 providers as the priority spot price source.
+
+        Called once at wiring time (main.py). Sources are tried in order on
+        every refresh; the first connected source with a fresh tick wins.
+        """
+        self._mt5_sources = [s for s in (sources or []) if s is not None]
 
     # ------------------------------------------------------------- interface
 
@@ -177,26 +204,71 @@ class MarketFeed:
         """True when at least one symbol has a fresh real quote (< 5 min)."""
         now = _now_ts()
         return any(
-            m.get("source") == "real" and (now - m.get("updated", 0)) < 300
+            m.get("source") in ("real", "mt5")
+            and (now - m.get("updated", 0)) < 300
             for m in self._meta.values()
         )
 
     # -------------------------------------------------------------- refresh
 
+    def _mt5_spot_quotes(self, symbols) -> dict:
+        """Spot quotes straight from a connected MT5 terminal.
+
+        Only the symbols where the web provider serves futures (metals) are
+        fetched — forex spot on Yahoo matches the broker, so there is nothing
+        to correct and each MT5 call is worth saving. Tries the main provider
+        first, then the lane 2 worker; first connected source with a tick
+        wins. Returns {} when no terminal is up (web provider continues as
+        fallback).
+        """
+        wanted = [s for s in symbols if s in MT5_PRIORITY_SYMBOLS]
+        if not wanted or not self._mt5_sources:
+            return {}
+        out: dict = {}
+        for source in self._mt5_sources:
+            try:
+                if not getattr(source, "connected", False):
+                    continue
+                for sym in wanted:
+                    if sym in out:
+                        continue
+                    tick = source.tick(sym)
+                    if tick is not None and tick > 0:
+                        out[sym] = float(tick)
+            except Exception as exc:
+                # Failsafe: a dead terminal must never take the feed down —
+                # the web provider simply keeps serving those symbols.
+                print(f"[market] MT5 spot indisponível ({type(exc).__name__}: {exc}); "
+                      f"fallback para o web provider")
+        return out
+
     async def refresh(self, speed: float = 1) -> None:
         """Update prices: real quotes when available, otherwise hold or walk."""
         now = time.monotonic()
         if self.provider:
+            mt5_updated: list = []
             if now - self._last_refresh >= self.refresh_seconds:
                 self._last_refresh = now
                 # With no symbols priced yet (fresh start, no open trade), fetch
                 # the default watchlist so real quotes activate immediately.
                 targets = list(self.prices.keys()) or list(DEFAULT_SYMBOLS)
+                # MT5 spot wins for the futures-served metals (GC=F/SI=F basis
+                # offset): apply before the web fetch so the web provider can
+                # never overwrite a spot price with the futures price.
+                spot = self._mt5_spot_quotes(targets)
+                if spot:
+                    for sym, price in spot.items():
+                        self.prices[sym] = price
+                        self._sim.prices[sym] = price  # keep fallback aligned
+                        self._meta[sym] = {"source": "mt5", "updated": _now_ts()}
+                        mt5_updated.append(sym)
                 try:
                     quotes = await self.provider.fetch(targets)
                     if quotes:
                         changes = getattr(self.provider, "changes", {}) or {}
                         for sym, price in quotes.items():
+                            if sym in mt5_updated:
+                                continue  # MT5 spot already priced this symbol
                             self.prices[sym] = price
                             self._sim.prices[sym] = price  # keep fallback aligned
                             self._meta[sym] = {"source": "real", "updated": _now_ts(),

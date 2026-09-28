@@ -1,0 +1,589 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Project NexGen — Auditoria</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%232562eb'/%3E%3Ctext x='32' y='46' font-family='Arial Black, Arial' font-size='36' font-weight='900' fill='%23ffffff' text-anchor='middle'%3EN%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+<script>try{if(localStorage.getItem("nx_theme")==="dark"||(localStorage.getItem("nx_theme")==null&&matchMedia("(prefers-color-scheme: dark)").matches))document.documentElement.dataset.theme="dark"}catch(e){}</script>
+</head>
+<body class="no-chrome">
+<!-- chrome global (barra superior: navegação + estado + preços) renderizado
+     pelo common.js — a fonte única vive em common.js -->
+<div id="appChrome"></div>
+<main class="wrap">
+  <div class="statusbar" id="statusBar"><span class="dot" id="stDot"></span><span id="stText">A ligar…</span><span class="st-sep"></span><span id="stLast">—</span></div>
+  <div class="context-toolbar"><span class="context-label">Dados</span><select id="globalOriginFilter" aria-label="Filtrar origem dos dados"><option value="all">todas as origens</option><option value="live">live</option><option value="paper">paper</option><option value="shadow">shadow</option><option value="backtest">backtest</option></select><span id="pageUpdatedAt" class="muted">atualização pendente</span></div>
+  <main>
+    <section class="card" id="preRealCard">
+      <h2>Pré-conta-real · go/no-go ao vivo</h2>
+      <p class="muted">Checklist consolidado. Qualquer dado ausente ou gate vermelho mantém NO-GO; a decisão humana nunca é automatizada.</p>
+      <div id="preRealVerdict" class="mini-stats"></div>
+      <div class="scroll"><table><thead><tr><th>Gate</th><th>Estado</th><th>Evidência</th></tr></thead><tbody id="preRealGates"></tbody></table></div>
+      <div id="preRealParams" class="muted" style="font-size:12px;margin-top:8px"></div>
+      <div id="preRealDecisionBox" class="decision-box">
+        <div class="decision-title">Registo da decisão humana</div>
+        <div class="muted" style="font-size:12px">Só fica disponível quando todos os gates estiverem em GO. O registo não muda a conta nem ativa execução.</div>
+        <div class="decision-row"><input id="preRealConfirmation" type="text" maxlength="1000" placeholder="Escreve a confirmação explícita para registar o GO…"><button id="preRealDecisionBtn" class="primary">Registar GO</button></div>
+        <div id="preRealDecisionStatus" class="muted" style="font-size:12px;margin-top:6px"></div>
+      </div>
+    </section>
+    <section class="card">
+      <h2>Qualidade diária do journal <span style="float:right;display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end"><a id="exportAuditJson" class="primary" href="/api/analysis/audit-export?format=json&days=30" download>JSON</a><a id="exportAuditCsv" class="primary" href="/api/analysis/audit-export?format=csv&days=30" download>CSV</a><button id="toggleJournal" class="primary">Journal</button><button id="archiveForward" class="primary">Arquivar janela</button><button id="refreshAudit" class="primary">Atualizar</button></span></h2>
+      <p class="muted">Cobertura UTC de sinais, gestão, fills, retcodes, latências e trades sem fita completa. O relatório é read-only.</p>
+      <div id="journalPeriod" class="muted" style="font-size:12px"></div>
+      <div id="journalStats" class="mini-stats"></div>
+      <div class="scroll"><table><thead><tr><th>Tipo</th><th>Contagem</th></tr></thead><tbody id="journalKinds"></tbody></table></div>
+      <details style="margin-top:10px"><summary>Trades sem fita completa · <span id="incompleteCount">0</span></summary><div class="scroll"><table><thead><tr><th>Trade</th><th>Sinal</th><th>Estado</th><th>Faltam aberturas</th><th>Faltam fechos</th></tr></thead><tbody id="incompleteTable"></tbody></table></div></details>
+    </section>
+    <section class="card">
+      <h2>⏳ Worker outages · delete de ordens pendentes</h2>
+      <p class="muted">Linha temporal das falhas do worker da lane (journal opt-in): uma ordem pendente que o bot tentou cancelar (TTL ou gestão) e não conseguiu falha a cada tick — após 5 falhas consecutivas o watchdog grava a marca <code>pending_delete_stuck</code> e re-alerta a cada 30 min enquanto presa. Read-only: derivado dos eventos <code>pending_order_result</code>/<code>pending_delete_stuck</code>, nunca altera a execução.</p>
+      <div id="outageStats" class="mini-stats"></div>
+      <div id="outageTip" class="muted" style="font-size:11px;margin:4px 0 8px"></div>
+      <div class="scroll" style="max-height:260px;overflow-y:auto"><table><thead><tr><th>Quando (UTC)</th><th>Evento</th><th>Lane</th><th>Trade</th><th>Perna</th><th>Ticket</th><th>Tentativas</th><th>Intenção</th><th>Nota</th></tr></thead><tbody id="outageTable"></tbody></table></div>
+      <details style="margin-top:8px"><summary>Episódios por ordem · <span id="outageEpisodeCount">0</span></summary><p class="muted" style="font-size:11px;margin:4px 0 6px">Episódio = uma ordem pendente (trade + ticket) que falhou o delete. Estado derivado do journal: resolvida quando um delete é aceite ou a perna preenche depois da 1ª falha; sem isso fica aberta (ou a resolução não foi journaled).</p><div class="scroll"><table><thead><tr><th>Início</th><th>Último evento</th><th>Lane</th><th>Trade</th><th>Perna/Ticket</th><th>Falhas</th><th>Escaladas</th><th>Re-alertas</th><th>Estado</th></tr></thead><tbody id="outageEpisodes"></tbody></table></div></details>
+    </section>
+    <section class="card">
+      <h2>Fill real MT5 vs replay</h2>
+      <p class="muted">Compara cada fill journaled com a mesma fita reproduzida em BDs temporárias. O primeiro desvio é mostrado por trade.</p>
+      <div id="fillAuditSummary" class="mini-stats"></div>
+      <div class="scroll"><table><thead><tr><th>Trade</th><th>Símbolo</th><th>Resultado</th><th>Primeira divergência</th><th>Fonte</th></tr></thead><tbody id="fillAuditTable"></tbody></table></div>
+      <details style="margin-top:10px"><summary>Recounts implausíveis no journal · <span id="recountEvidenceCount">0</span></summary><p class="muted">Relatos do grupo (Signal #N) que o candle-check não conseguiu encaixar nos candles reais — evidência externa cruzada com a fita do bot (quem divergiu: o grupo ou a execução).</p><div class="scroll"><table><thead><tr><th>Quando</th><th>Signal</th><th>Relato</th><th>Veredicto</th><th>Bot negociou</th></tr></thead><tbody id="recountEvidenceTable"></tbody></table></div></details>
+    </section>
+    <section class="card" id="bePlusCard">
+      <h2>🛡️ BE+ · saídas protegidas e contrafactual TP2</h2>
+      <p class="muted">Saídas protegidas do <code>tp2_protect</code> (stop além da entrada após TP1) no dia UTC, com o contrafactual honesto "o BE clássico teria corrido até TP2?" — calculado com velas (spot MT5 → GC=F Yahoo). <code>checked=0</code> = sem velas: a auditoria nunca inventa plausibilidade.</p>
+      <div id="bePlusStats" class="mini-stats"></div>
+      <div id="bePlusTip" class="muted" style="font-size:11px;margin:4px 0 8px"></div>
+      <details><summary>Saídas protegidas · <span id="bePlusCount">0</span></summary><div class="scroll" style="max-height:240px;overflow-y:auto"><table><thead><tr><th>Quando (UTC)</th><th>Trade</th><th>Símbolo</th><th>Perna</th><th>Entrada</th><th>Stop</th><th>P&amp;L</th></tr></thead><tbody id="bePlusTable"></tbody></table></div></details>
+    </section>
+    <section class="card">
+      <h2>Entradas longe da zona · perseguições <span class="muted" style="font-weight:400;font-size:12px">fills reais, último mês</span></h2>
+      <div class="muted" style="font-size:12px;margin-bottom:8px">Quantos fills entraram <b>dentro</b> da zona vs quantos foram <b>perseguições</b> (preço longe da zona quando a ordem foi colocada). A distância é a do guard (spot MT5 na execução) — os candles Yahoo só são usados como fallback: para metais o GC=F diverge do spot e inflaciona a distância (divergência de feed conhecida).</div>
+      <div id="fillsZoneStats" class="mini-stats"></div>
+      <div class="scroll"><table><thead><tr><th>Dia (UTC)</th><th>Fills</th><th>Na zona</th><th>Perseguições</th><th>Máx fora (pips)</th></tr></thead><tbody id="fillsZoneDayTable"></tbody></table></div>
+      <details style="margin-top:10px"><summary>Divergência GC=F↔spot por dia · <span id="fillsDivCount">0</span></summary>
+        <p class="muted" style="font-size:12px;margin:4px 0 8px">Offset = preço GC=F (candle Yahoo) − preço spot (guard MT5) à hora do sinal. Uma <b>falsa perseguição</b> estava na zona no spot (autoritativo) mas aparecia fora no GC=F — era o feed de futuros, não uma entrada arriscada.</p>
+        <div id="fillsDivStats" class="mini-stats"></div>
+        <div class="scroll"><table><thead><tr><th>Dia (UTC)</th><th>Fills medidos</th><th>Offset médio</th><th>Máx |offset|</th><th>Falsas perseguições</th></tr></thead><tbody id="fillsDivDayTable"></tbody></table></div>
+        <div style="margin-top:10px"><canvas id="fillsDivChart" width="760" height="150" style="width:100%;height:150px"></canvas><div class="muted" style="font-size:11px;margin-top:4px">Dia → falsas perseguições (barras) vs offset médio GC=F−spot em pips (linha) — a evolução da divergência do feed de futuros.</div></div>
+      </details>
+      <details style="margin-top:10px"><summary>Por trade · <span id="fillsZoneRowsCount">0</span></summary><div class="scroll" style="max-height:240px;overflow-y:auto"><table><thead><tr><th>Aberto</th><th>Símbolo</th><th>Entrada</th><th>Zona</th><th>Preço na hora</th><th>Distância</th><th>Fonte</th><th>P&L</th></tr></thead><tbody id="fillsZoneTable"></tbody></table></div></details>
+    </section>
+
+    <section class="card">
+      <h2>Gate forward controlado · shadow-paper</h2>
+      <p class="muted">Período fixo, mínimo de 20 trades fechadas, PF ≥ 1.5, IC95% médio positivo, DD ≤ 125% do saldo inicial e comparação com a referência. <b>Nunca promove automaticamente.</b></p>
+      <div id="gatePeriod" class="muted" style="font-size:12px"></div>
+      <div id="gateCards" class="mini-stats"></div>
+      <div class="scroll"><table><thead><tr><th>Estratégia</th><th>N</th><th>P&L</th><th>PF</th><th>DD</th><th>Referência comum</th><th>Gates</th><th>Veredicto</th></tr></thead><tbody id="gateTable"></tbody></table></div>
+      <div id="archiveStatus" class="muted" style="font-size:12px;margin-top:8px"></div>
+      <details style="margin-top:8px"><summary>Janelas forward arquivadas · <span id="archiveCount">0</span></summary><div class="scroll"><table><thead><tr><th>Janela</th><th>Arquivado</th><th>Ação</th></tr></thead><tbody id="archiveTable"></tbody></table></div></details>
+    </section>
+    <section class="card">
+      <h2>Qualidade dos recounts do grupo</h2>
+      <p class="muted">Recaps "Signal #N" vs fills reais do dia e candles (R2): coerentes, divergentes, sem trade e implausíveis (excursão/reversão fora do range real). Read-only.</p>
+      <div id="recountQualityStats" class="mini-stats"></div>
+      <div id="recountBaselineTip" class="muted" style="font-size:11px;margin:4px 0 8px"></div>
+      <div class="scroll"><table><thead><tr><th>Quando</th><th>Signal</th><th>Relato</th><th>Fill do bot</th><th>Candle-check</th><th>Estado</th><th><button class="ghost" onclick="recheckAllRecounts(this)" title="Re-correr o candle-check de TODOS os recounts com candles frescos e o offset mais recente; grava o veredicto em lote na BD">re-check todos</button></th></tr></thead><tbody id="recountQualityTable"></tbody></table></div>
+      <div style="margin-top:10px"><canvas id="recountsWeeklyChart" width="760" height="150" style="width:100%;height:150px"></canvas><div class="muted" style="font-size:11px;margin-top:4px">Semana → % de recounts plausíveis vs implausíveis (verde/vermelho) — taxa de divergência do relato do grupo.</div></div>
+      <details style="margin-top:10px"><summary>Estado semanal · <span id="recountWeeklyCount">0</span></summary><div class="scroll"><table><thead><tr><th>Semana</th><th>Total</th><th>Coerentes</th><th>Divergentes</th><th>Sem trade</th></tr></thead><tbody id="recountWeeklyTable"></tbody></table></div></details>
+      <div style="margin-top:12px;border-top:1px dashed var(--border,#444);padding-top:10px">
+        <div class="mini-stats" id="batchStats"></div>
+        <div id="batchTip" class="muted" style="font-size:11px;margin:4px 0 8px"></div>
+        <details><summary>Histórico de flips dos lotes · <span id="batchFlipCount">0</span></summary><div class="scroll" style="max-height:240px;overflow-y:auto"><table><thead><tr><th>Corrida</th><th>Janela</th><th>Resolvidos</th><th>Flips (de → para)</th></tr></thead><tbody id="batchTable"></tbody></table></div></details>
+      </div>
+    </section>
+  </main>
+  <footer class="footer"><b>Project NexGen</b> · auditoria read-only · conta demo MT5</footer>
+</main>
+<script src="common.js"></script>
+<script>
+termItems().forEach(b => b.classList.toggle("active", b.dataset.page === "auditoria"));
+const color = (ok) => ok ? "var(--green)" : "var(--red)";
+const gateText = (g) => Object.entries(g || {}).map(([k, v]) => `${k}: ${v ? "OK" : "falhou"}`).join(" · ");
+function renderPreReal(d) {
+  const ok = d.verdict === "GO";
+  $("preRealVerdict").innerHTML = [["Veredicto", `<span style="color:${ok ? "var(--green)" : "var(--red)"};font-weight:700">${esc(d.verdict || "NO-GO")}</span>`], ["Atualizado", when(d.generated_at)], ["Gates", `${(d.gates || []).filter(x => x.ok).length}/${(d.gates || []).length}`]].map(x => `<div class="mini"><div class="lbl">${x[0]}</div><div class="val">${x[1]}</div></div>`).join("");
+  $("preRealGates").innerHTML = (d.gates || []).map(g => `<tr><td>${esc(g.label)}</td><td style="color:${g.ok ? "var(--green)" : "var(--red)"};font-weight:700">${g.ok ? "✓ OK" : "✗ NO-GO"}</td><td><code>${esc(typeof g.evidence === "object" ? JSON.stringify(g.evidence) : String(g.evidence || "—"))}</code></td></tr>`).join("") || `<tr><td colspan="3">sem dados</td></tr>`;
+  const p = d.parameters || {};
+  $("preRealParams").textContent = `Parâmetros congelados: saldo €${p.balance ?? "—"} · risco ${p.risk_pct ?? "—"}% · kill diário ${p.daily_loss_limit_pct ?? "—"}% · max posições ${p.max_positions ?? "—"} · auto-kill ${p.auto_kill ? "ON" : "OFF"} · kill switch ${p.kill_switch ? "ON" : "OFF"}`;
+  const decision = d.decision;
+  const status = $("preRealDecisionStatus");
+  const btn = $("preRealDecisionBtn");
+  if (decision) { status.textContent = `✅ GO registado em ${when(decision.at)} por ${decision.actor || "utilizador"}.`; btn.disabled = true; }
+  else { status.textContent = ok ? "Todos os gates passaram. Escreve a confirmação para registar." : "Bloqueado enquanto o checklist estiver NO-GO."; btn.disabled = !ok; }
+}
+async function registerPreRealDecision() {
+  const input = $("preRealConfirmation");
+  const text = (input.value || "").trim();
+  if (text.length < 12) { toast("Escreve uma confirmação explícita (mínimo 12 caracteres)", "err"); input.focus(); return; }
+  if (!confirm("Registar GO humano para a decisão pré-conta-real? Isto não ativa qualquer conta.")) return;
+  try {
+    const r = await fetch("/api/analysis/pre-real-decision", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({decision:"GO", confirmation:text}) }).then(x => x.json());
+    if (!r.ok) throw new Error(r.error || "não foi possível registar");
+    toast("✅ Decisão GO registada", "ok"); await loadAudit();
+  } catch (e) { toast(e.message || "Não foi possível registar a decisão", "err"); }
+}
+$("preRealDecisionBtn").onclick = registerPreRealDecision;
+function renderJournal(d) {
+  $("journalPeriod").textContent = `${d.period.start} → ${d.period.end} · journal ${d.enabled ? "ATIVO" : "desligado"}`;
+  const tj = $("toggleJournal");
+  if (tj) {
+    tj.textContent = d.enabled ? "Journal ON" : "Journal OFF";
+    tj.className = d.enabled ? "danger" : "primary";
+  }
+  const e = d.events || {}, f = d.fills || {}, o = d.orders || {}, t = d.trades || {};
+  $("journalStats").innerHTML = [
+    ["Sinais recebidos", d.signals?.received || 0], ["Gestão", d.management || 0], ["Eventos", e.total || 0], ["Fills abertura", f.open || 0], ["Fills fecho", f.close || 0],
+    ["Ordens aceites", o.accepted || 0], ["Ordens recusadas", o.rejected || 0],
+    ["Fitas completas", `${t.complete_tape || 0}/${t.observed || 0}`],
+    ["Latência fill p90", d.latency?.signal_to_fill_seconds?.p90 == null ? "—" : `${fmt(d.latency.signal_to_fill_seconds.p90, 2)}s`]
+  ].map(x => `<div class="mini"><div class="lbl">${x[0]}</div><div class="val">${x[1]}</div></div>`).join("");
+  $("journalKinds").innerHTML = Object.entries(e.by_kind || {}).map(([k, v]) => `<tr><td>${esc(k)}</td><td>${v}</td></tr>`).join("") || `<tr><td colspan="2">sem eventos</td></tr>`;
+  const missing = t.incomplete || [];
+  $("incompleteCount").textContent = missing.length;
+  $("incompleteTable").innerHTML = missing.map(x => `<tr><td>${esc(x.trade_id)}</td><td>${esc(x.signal_id)}</td><td>${esc(x.status)}</td><td>${esc((x.missing_open_legs || []).join(", ") || "—")}</td><td>${esc((x.missing_close_legs || []).join(", ") || "—")}</td></tr>`).join("") || `<tr><td colspan="5">nenhuma</td></tr>`;
+}
+function renderFills(d) {
+  $("fillAuditSummary").innerHTML = [["Trades auditadas", d.count || 0], ["Iguais", d.equal || 0], ["Divergentes", d.divergent || 0], ["Primeiro desvio", d.first_divergence ? `${d.first_divergence.trade_id} · perna ${d.first_divergence.leg}` : "nenhum"]].map(x => `<div class="mini"><div class="lbl">${x[0]}</div><div class="val" style="color:${x[0] === "Divergentes" && x[1] ? "var(--red)" : "inherit"}">${esc(String(x[1]))}</div></div>`).join("");
+  $("fillAuditTable").innerHTML = (d.trades || []).map(x => { const f = x.first_divergence; return `<tr><td>${esc(x.trade_id)}</td><td>${esc(x.symbol)}</td><td style="color:${color(x.equal)}">${x.equal ? "OK" : "DIVERGE"}</td><td>${f ? `${esc(f.field)} · real ${esc(String(f.actual))} · replay ${esc(String(f.replay))}` : "—"}</td><td>${esc((x.source || []).join(", ") || "—")}</td></tr>`; }).join("") || `<tr><td colspan="5">sem fills reais no período</td></tr>`;
+  // evidência externa: recounts implausíveis do journal (real = relato do
+  // grupo, replay = range dos candles) — cruza quem divergiu
+  const rev = d.recount_evidence || [];
+  $("recountEvidenceCount").textContent = rev.length;
+  $("recountEvidenceTable").innerHTML = rev.map(x => {
+    const relato = `${x.direction === "sell" ? "▼ SELL" : "▲ BUY"} @ ${fmt(x.entry, 2)} · exc ${x.excursion_price} → ${x.reversal_price} · ${fmt(x.pips, 0)} pips`;
+    const verdict = `fora do ${x.scope || "range"} ${x.hi}/${x.lo} (exc ${x.excursion_ok} · rev ${x.reversal_ok})`;
+    const bot = x.bot_traded
+      ? `<span class="tag">${esc(x.bot_trade.trade_id)} @ ${fmt(x.bot_trade.entry, 2)}</span>`
+      : `<span class="tag closed">não negociou</span>`;
+    return `<tr><td class="muted">${when(x.at)}</td><td>#${x.signal_number} <span class="muted">${esc(x.signal_id || "")}</span></td><td>${esc(relato)}</td><td>${esc(verdict)}</td><td>${bot}</td></tr>`;
+  }).join("") || `<tr><td colspan="5">sem recounts implausíveis journaled no período</td></tr>`;
+}
+function renderBePlus(d) {
+  const stats = $("bePlusStats"), tip = $("bePlusTip");
+  if (!d || !d.be_plus) { stats.innerHTML = ""; tip.textContent = "sem dados do daily-audit"; return; }
+  const bp = d.be_plus;
+  const cf = bp.kept_running_to_tp2;
+  const checked = bp.checked || 0;
+  const cfText = cf == null ? "—" : `${cf}/${checked} teriam corrido até TP2`;
+  stats.innerHTML = [
+    ["Saídas protegidas", bp.exits_total ?? 0],
+    ["Com lucro", `<span style="color:var(--green);font-weight:700">${bp.exits_with_profit ?? 0}</span>`],
+    ["Com perda", `<span style="color:var(--red);font-weight:700">${bp.exits_with_loss ?? 0}</span>`],
+    ["BE clássico → TP2", cfText],
+  ].map(x => `<div class="mini"><div class="lbl">${x[0]}</div><div class="val">${x[1]}</div></div>`).join("");
+  tip.textContent = cf == null
+    ? (checked === 0 && (bp.stop_events || []).length ? "Contrafactual não verificado: sem velas disponíveis para a janela (spot MT5 desligado e GC=F sem dados)." : `Dia ${d.period?.day || d.period?.start || ""} (UTC) · tp2_protect apenas · velas verificadas: ${checked}.`)
+    : `${checked} saída(s) verificada(s) com velas — o BE clássico (na entrada) teria sobrevivido até ao TP2 em ${cf}.`;
+  const evs = bp.stop_events || [];
+  $("bePlusCount").textContent = evs.length;
+  $("bePlusTable").innerHTML = evs.map(e => `
+    <tr><td>${esc(String(e.closed_at || ""))}</td><td><code>${esc(String(e.trade_id || ""))}</code></td><td>${esc(String(e.symbol || ""))}</td><td>${esc(String(e.leg ?? ""))}</td><td>${e.entry ?? "—"}</td><td>${e.stop_loss ?? "—"}</td><td style="color:${(e.pnl || 0) > 0 ? "var(--green)" : (e.pnl || 0) < 0 ? "var(--red)" : "inherit"}">${e.pnl ?? "—"}</td></tr>`).join("")
+    || `<tr><td colspan="7">sem saídas protegidas no período</td></tr>`;
+}
+function renderOutages(o) {
+  const s = o.summary || {};
+  const tip = $("outageTip");
+  if (tip) tip.textContent = `Período ${esc(o.period?.start || "")} → ${esc(o.period?.end || "")} UTC · journal ${o.enabled ? "ATIVO" : "desligado"}${!s.episodes ? " — sem falhas de delete no período (ou o journal está desligado)." : ""}`;
+  $("outageStats").innerHTML = [
+    ["Episódios", s.episodes || 0], ["Falhas de delete", s.delete_failures || 0], ["Escaladas", s.stuck_marks || 0], ["Re-alertas", s.re_alerts || 0], ["Deletes ok", s.delete_success || 0], ["Episódios abertos", s.open_episodes || 0]
+  ].map(x => `<div class="mini"><div class="lbl">${x[0]}</div><div class="val" style="color:${x[0] === "Episódios abertos" && x[1] ? "var(--red)" : x[0] === "Falhas de delete" && x[1] ? "var(--amber)" : x[0] === "Deletes ok" && x[1] ? "var(--green)" : "inherit"}">${x[1]}</div></div>`).join("");
+  const kinds = { pending_delete_stuck: ["⛔ delete preso (escalada)", "loss"], delete_failed: ["✗ delete falhou", "warn"], delete_ok: ["✓ delete ok", "win"] };
+  $("outageTable").innerHTML = (o.timeline || []).map(r => {
+    const k = kinds[r.kind] || [r.kind, ""];
+    const nota = r.kind === "pending_delete_stuck"
+      ? `${r.escalated ? "escalada" : ""}${r.re_alert ? " re-alerta" : ""}${r.escalated_at ? ` · 1º alerta ${esc(String(r.escalated_at).slice(5, 19))}` : ""}`
+      : (r.kind === "delete_failed" ? "retcode REMOTE_ERROR" : "");
+    const intent = r.intent_kind ? (r.intent_kind === "cancel" ? "gestão" : r.intent_kind) : "—";
+    return `<tr><td class="muted" style="font-size:12px">${when(r.at)}</td>` +
+      `<td><span class="tag ${k[1]}">${esc(k[0])}</span></td>` +
+      `<td>${esc(r.lane || "—")}</td><td>${esc(r.trade_id || "—")}</td>` +
+      `<td>${r.leg != null ? esc(String(r.leg)) : "—"}</td><td>${esc(String(r.ticket ?? "—"))}</td>` +
+      `<td>${r.attempts != null ? r.attempts : "—"}</td><td>${esc(intent)}</td>` +
+      `<td class="muted" style="font-size:11px">${esc(nota || (r.comment ? String(r.comment).slice(0, 60) : ""))}</td></tr>`;
+  }).join("") || `<tr><td colspan="9">sem falhas de delete no período</td></tr>`;
+  const eps = o.episodes || [];
+  $("outageEpisodeCount").textContent = `${eps.length}`;
+  $("outageEpisodes").innerHTML = eps.map(e => {
+    const state = e.resolved
+      ? `<span class="tag win">✓ ${esc(e.resolution || "resolvida")}</span>`
+      : `<span class="tag loss">⏳ aberto</span>`;
+    return `<tr><td class="muted" style="font-size:12px">${when(e.started_at)}</td>` +
+      `<td class="muted" style="font-size:12px">${when(e.last_event_at)}</td>` +
+      `<td>${esc(e.lane || "—")}</td><td>${esc(e.trade_id || "—")}</td>` +
+      `<td>${e.leg != null ? esc(String(e.leg)) : "—"} / ${esc(String(e.ticket ?? "—"))}</td>` +
+      `<td>${e.failed_deletes}</td><td>${e.marks}</td><td>${e.re_alerts}</td><td>${state}</td></tr>`;
+  }).join("") || `<tr><td colspan="9">sem episódios no período</td></tr>`;
+}
+function renderGate(d) {
+  window._forwardGateReport = d;
+  const query = `days=30&start=${encodeURIComponent(d.period.start)}&end=${encodeURIComponent(d.period.end)}`;
+  $("exportAuditJson").href = `/api/analysis/audit-export?format=json&${query}`;
+  $("exportAuditCsv").href = `/api/analysis/audit-export?format=csv&${query}`;
+  $("gatePeriod").textContent = `${d.period.start} → ${d.period.end}${d.period.target_end ? ` · alvo ${d.period.target_end}` : ""} · estado: ${d.period.status || "rolling"} · referência: ${d.reference?.closed || 0} trades · veredicto global: ${d.verdict}`;
+  const eligible = (d.strategies || []).filter(x => x.eligible).length;
+  $("gateCards").innerHTML = [["Estratégias avaliadas", (d.strategies || []).length], ["Elegíveis", eligible], ["Promoção automática", "NUNCA"], ["Mínimo N", d.policy?.min_trades || 20]].map(x => `<div class="mini"><div class="lbl">${x[0]}</div><div class="val">${x[1]}</div></div>`).join("");
+  $("gateTable").innerHTML = (d.strategies || []).map(x => `<tr><td>${esc(x.strategy_id)}</td><td>${x.closed}</td><td class="${cls(x.pnl)}">${money(x.pnl)}</td><td>${x.profit_factor ?? "—"}</td><td>${x.drawdown?.pct_start ?? "—"}%</td><td>${x.reference?.closed_common || 0}</td><td style="font-size:11px">${esc(gateText(x.gates))}</td><td style="color:${x.eligible ? "var(--green)" : "var(--amber)"}">${esc(x.verdict)}</td></tr>`).join("") || `<tr><td colspan="8">sem dados shadow</td></tr>`;
+}
+function renderArchives(d) {
+  const rows = d.archives || [];
+  $("archiveCount").textContent = rows.length;
+  $("archiveTable").innerHTML = rows.map(x =>
+    `<tr><td>${esc(x.period_start)} → ${esc(x.period_end)}</td><td>${esc(x.created_at)}</td>` +
+    `<td><a class="primary" href="/api/analysis/forward-gate/archives/${x.id}" target="_blank">JSON</a></td></tr>`
+  ).join("") || `<tr><td colspan="3">nenhuma janela arquivada</td></tr>`;
+}
+async function loadArchives() {
+  try { renderArchives(await fetch("/api/analysis/forward-gate/archives?limit=50").then(r => r.json())); }
+  catch (e) { /* a lista é apenas informativa */ }
+}
+async function archiveForward() {
+  const gate = window._forwardGateReport;
+  const status = $("archiveStatus");
+  if (!gate || !gate.period) { toast("Atualiza a auditoria antes de arquivar", "err"); return; }
+  const q = `days=30&start=${encodeURIComponent(gate.period.start)}&end=${encodeURIComponent(gate.period.end)}`;
+  try {
+    const r = await fetch(`/api/analysis/forward-gate/archive?${q}`, { method: "POST" }).then(x => x.json());
+    if (!r.ok) throw new Error(r.error || "arquivo falhou");
+    status.textContent = `✅ Janela arquivada: ${r.archive.period_start} → ${r.archive.period_end} · snapshot read-only guardado.`;
+    await loadArchives();
+  } catch (e) { toast("Não foi possível arquivar a janela", "err"); }
+}
+function renderRecounts(d) {
+  const items = d.recounts || [];
+  let total = 0, coherent = 0, divergent = 0, noTrade = 0, plausible = 0, implausible = 0, noData = 0, feedDiv = 0, confirmed = 0;
+  const rows = [];
+  for (const it of items) {
+    const rc = it.recount || {}, au = it.audit || {}, cc = au.candle_check || {};
+    total++;
+    if (au.matched) { au.alert ? divergent++ : coherent++; }
+    else noTrade++;
+    if (cc.checked) { cc.plausible ? plausible++ : implausible++; }
+    else noData++;
+    // veredicto combinado: implausível no GC=F mas plausível no spot MT5 é
+    // divergência do feed (não relato suspeito); implausível no spot É o
+    // relato suspeito (o spot é a verdade — o grupo negocia spot)
+    if (cc.verdict_kind === "feed_divergence") feedDiv++;
+    if (cc.checked && cc.plausible === false
+        && (cc.futures_plausible === false || cc.futures_plausible === null || cc.futures_plausible === undefined)) confirmed++;
+    let estado;
+    if (au.alert) estado = `<span class="tag loss" title="${esc(au.reason || "")}">✗ ${esc(au.reason || "divergente")}</span>`;
+    else if (au.matched) estado = '<span class="tag win">✓ coerente</span>';
+    else estado = `<span class="tag closed" title="${esc(au.probable_cause || "")}">sem trade · ${esc(au.probable_cause || "")}</span>`;
+    let candle = "—";
+    if (cc.checked) {
+      const shift = cc.futures_shift;
+      const tip = `dia ${cc.day_high}/${cc.day_low} · exc ${cc.excursion_ok} · rev ${cc.reversal_ok}` +
+        (cc.window_plausible !== undefined ? ` · janela ±${cc.window_hours ?? 3}h ${cc.window_high}/${cc.window_low} (${cc.window_plausible})` : "") +
+        (cc.spot_plausible !== undefined ? ` · spot MT5 ${cc.spot_plausible} · GC=F ${cc.futures_plausible}` : "") +
+        (shift != null ? ` · offset GC=F−spot ${shift} pips` : "");
+      // veredicto combinado: implausível no GC=F mas plausível no spot MT5 é
+      // divergência do feed de futuros, não relato suspeito (o grupo negocia spot)
+      if (cc.verdict_kind === "feed_divergence")
+        candle = `<span class="tag pending" title="${esc(tip)}">⚠️ provável divergência de feed</span>`;
+      else if (cc.plausible) candle = `<span class="tag win" title="${esc(tip)}">✓ plausível</span>`;
+      else candle = `<span class="tag loss" title="${esc(tip)}">✗ implausível</span>`;
+      // offset aplicado ao GC=F (0 = sem amostras do dia — sem correção)
+      if (shift != null)
+        candle += ` <span class="muted-tag" title="offset diário GC=F−spot aplicado ao candle-check do GC=F (0 sem amostras)">offset ${shift} pips</span>`;
+    }
+    // veredicto persistido pelo re-check em lote (se já foi corrido)
+    let stored = "";
+    if (rc.candle_check) {
+      let sc = {};
+      try { sc = JSON.parse(rc.candle_check); } catch (e) { /* coluna nova: tolera formato antigo */ }
+      const v = sc.checked ? (sc.plausible ? "✓" : "✗") : "—";
+      stored = `<span class="tag muted-tag" title="Veredicto gravado pelo re-check em lote (${esc(rc.checked_at || "")}): ${esc(sc.plausible === undefined ? "sem dados" : (sc.plausible ? "plausível" : "implausível"))}">🗂 ${v} lote</span>`;
+    }
+    rows.push(`<tr><td class="muted">${when(rc.received_at)}</td><td>#${rc.signal_number}</td>` +
+      `<td>${rc.direction === "sell" ? "▼ SELL" : "▲ BUY"} @ ${fmt(rc.entry, 2)} · ${fmt(rc.pips, 0)} pips</td>` +
+      `<td>${au.matched ? `${esc(au.trade_id || "")} @ ${fmt(au.bot_entry, 2)} · ${fmt(au.bot_pips, 0)} pips` : "—"}</td>` +
+      `<td>${candle} ${stored}</td><td>${estado}</td>` +
+      `<td><button class="ghost" onclick="recheckRecount(${rc.id}, this)" title="Re-correr o candle-check com candles frescos (Yahoo pode ter corrigido o histórico)">re-check</button></td></tr>`);
+  }
+  // taxa de implausibilidade vs baseline do FEED CERTO: com o spot MT5 como
+  // fonte primária, o baseline de falsos positivos é 0% (verificado 20/08
+  // com o app/study_recount_mt5_feed.py --signals: 0/101 entradas fora da
+  // janela no spot vs 66% no GC=F) — qualquer implausível é suspeito real
+  const checkedN = plausible + implausible + noData;
+  const implRate = checkedN ? Math.round(implausible / checkedN * 100) : 0;
+  const baselineRate = 0;  // spot MT5 (fonte primária) — 20/08
+  const rateColor = implRate >= baselineRate ? "var(--amber)" : "var(--green)";
+  $("recountQualityStats").innerHTML = [
+    ["Recounts", total], ["Coerentes", coherent], ["Divergentes", divergent], ["Sem trade", noTrade],
+    ["Plausíveis", plausible], ["Implausíveis", implausible], ["Sem candles", noData],
+    ["Implaus. confirmados", confirmed], ["Divergência de feed", feedDiv],
+    ["Implausibilidade", `${implRate}% (baseline ${baselineRate}%)`]
+  ].map(x => `<div class="mini"><div class="lbl">${x[0]}</div><div class="val" style="color:${x[0] === "Implausibilidade" ? rateColor : x[0] === "Implausíveis" && x[1] ? "var(--red)" : x[0] === "Implaus. confirmados" && x[1] ? "var(--red)" : x[0] === "Divergência de feed" && x[1] ? "var(--amber)" : x[0] === "Divergentes" && x[1] ? "var(--red)" : "inherit"}">${x[1]}</div></div>`).join("");
+  const tip = $("recountBaselineTip");
+  if (tip) tip.textContent = `Baseline com o spot MT5 (fonte primária do candle-check): 0% de falsos positivos em 30d (app/study_recount_mt5_feed.py --signals) — o baseline de 66% do GC=F era inteiramente divergência do feed de futuros. Um implausível agora é relato suspeito real (spot E GC=F a discordar); "divergência de feed" = GC=F implausível mas spot plausível (não é suspeito).`;
+  $("recountQualityTable").innerHTML = rows.join("") || `<tr><td colspan="7">sem recounts no período</td></tr>`;
+  const weekly = d.weekly || [];
+  $("recountWeeklyCount").textContent = weekly.length;
+  $("recountWeeklyTable").innerHTML = weekly.map(w =>
+    `<tr><td>${esc(w.week)}</td><td>${w.total}</td><td>${w.coherent}</td><td>${w.divergent}</td><td>${w.no_trade}</td></tr>`
+  ).join("") || `<tr><td colspan="5">sem semanas</td></tr>`;
+  // mini-gráfico: % de plausíveis vs implausíveis por semana (candle-check)
+  drawAuditRecountsWeekly(items);
+}
+function renderRecountBatches(batches) {
+  const list = Array.isArray(batches) ? batches : [];
+  const last = list[0] || {};
+  const lastResolved = last.resolved || 0;
+  $("batchStats").innerHTML = [
+    ["Último lote", last.ran_at ? when(last.ran_at) : "—"],
+    ["Janela", last.window === "weekly" ? "📅 semanal (hist. completo)" : "📆 diário"],
+    ["Re-corridos", `${last.rechecked || 0}/${last.total || 0}`],
+    ["Alterados", last.changed || 0],
+    ["Resolvidos", lastResolved],
+    ["Erros", last.errors || 0]
+  ].map(x => `<div class="mini"><div class="lbl">${x[0]}</div><div class="val" style="color:${x[0] === "Resolvidos" && x[1] ? "var(--green)" : x[0] === "Erros" && x[1] ? "var(--red)" : x[0] === "Alterados" && x[1] ? "var(--amber)" : "inherit"}">${esc(String(x[1]))}</div></div>`).join("");
+  const tip = $("batchTip");
+  if (tip) {
+    const totalResolved = list.reduce((a, b) => a + (b.resolved || 0), 0);
+    tip.textContent = `Resolvidos = veredictos que eram implausíveis/feed e agora plausíveis (o offset diário do GC=F mostrou que eram feed). Total histórico: ${totalResolved} flips segundo/últimos lotes.`;
+  }
+  const flipN = list.reduce((a, b) => a + ((b.flips || []).length), 0);
+  $("batchFlipCount").textContent = `${flipN} · ${list.length} lotes`;
+  $("batchTable").innerHTML = list.map(b => {
+    const flips = (b.flips || []).map(f =>
+      `<span class="tag win" title="recount #${esc(String(f.signal_number ?? ""))}">${esc(String(f.day))} #${esc(String(f.signal_number ?? ""))}: ${esc(String(f.from))} → ${esc(String(f.to))}${f.shift != null ? ` (offset ${f.shift} pips)` : ""}</span>`
+    ).join(" ") || "—";
+    return `<tr><td class="muted">${b.ran_at ? when(b.ran_at) : "—"}</td><td>${b.window === "weekly" ? "📅 semanal" : "📆 diário"}</td><td>${b.resolved || 0}</td><td>${flips}</td></tr>`;
+  }).join("") || `<tr><td colspan="4">sem lotes ainda — o re-check em lote corre 1×/dia (e 1×/semana sobre o histórico completo).</td></tr>`;
+}
+function drawAuditRecountsWeekly(items) {
+  const canvas = $("recountsWeeklyChart");
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  const pal = chartPalette();
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  if (!items.length) {
+    ctx.fillStyle = pal.axis; ctx.font = "13px sans-serif";
+    ctx.fillText("Sem recounts ainda — as barras aparecem quando o grupo publicar os recaps.", 20, H / 2);
+    return;
+  }
+  const weeks = {};
+  for (const it of items) {
+    const rc = it.recount || {}, cc = (it.audit || {}).candle_check || {};
+    const at = rc.received_at || "";
+    let week = "desconhecido";
+    if (at) { const dt = new Date(at); const y = dt.getUTCFullYear(); const d0 = new Date(Date.UTC(y, 0, 1)); const wk = Math.ceil(((dt - d0) / 86400000 + d0.getUTCDay() + 1) / 7); week = `${y}-W${String(wk).padStart(2, "0")}`; }
+    const w = weeks[week] || (weeks[week] = { week, plausible: 0, implausible: 0, noData: 0 });
+    if (!cc.checked) w.noData++;
+    else if (cc.plausible) w.plausible++;
+    else w.implausible++;
+  }
+  const list = Object.values(weeks);
+  const padL = 46, padR = 10, padT = 14, padB = 24;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const max = Math.max(1, ...list.map(w => w.plausible + w.implausible + w.noData));
+  const bw = Math.min(46, plotW / list.length * 0.55);
+  const colors = { plausible: "#089981", implausible: "#f23645", noData: pal.axis };
+  list.forEach((w, i) => {
+    const x = padL + i * (plotW / list.length) + (plotW / list.length - bw) / 2;
+    let y = padT + plotH;
+    for (const key of ["plausible", "implausible", "noData"]) {
+      const h = (w[key] || 0) / max * plotH;
+      if (h <= 0) continue;
+      ctx.fillStyle = colors[key];
+      ctx.fillRect(x, y - h, bw, h);
+      y -= h;
+    }
+    ctx.fillStyle = pal.axis; ctx.font = "10px sans-serif"; ctx.textAlign = "center";
+    ctx.fillText(w.week.replace("W", "S"), x + bw / 2, H - 8);
+  });
+  ctx.textAlign = "left"; ctx.font = "10px sans-serif";
+  ctx.fillStyle = "#089981"; ctx.fillText("■ plausível", padL + 4, padT + 4);
+  ctx.fillStyle = "#f23645"; ctx.fillText("■ implausível", padL + 84, padT + 4);
+  ctx.fillStyle = pal.axis; ctx.fillText("■ sem candles", padL + 178, padT + 4);
+}
+async function toggleJournal() {
+  try {
+    const s = await fetch("/api/status").then(r => r.json());
+    const enabled = !!(s.config && s.config.execution_journal_enabled);
+    const next = !enabled;
+    if (!confirm(`Confirmas ${next ? "LIGAR" : "DESLIGAR"} o journal de execução?${next ? "\n\nOs eventos de evidência (quotes, fills, recounts implausíveis) passam a ser gravados em execution_events — a BD cresce; desliga quando a recolha terminar." : ""}`)) return;
+    const r = await fetch("/api/config", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ execution_journal_enabled: next })
+    }).then(x => x.json());
+    if (r.ok === false) throw new Error(r.error || "toggle falhou");
+    toast(`Journal ${next ? "LIGADO" : "desligado"} — recolha de evidência ${next ? "ativa" : "parada"}`, next ? "ok" : "info");
+    await loadAudit();
+  } catch (e) { toast("Não foi possível mudar o journal", "err"); }
+}
+async function recheckRecount(id, btn) {
+  if (!btn) return;
+  const old = btn.textContent;
+  btn.disabled = true; btn.textContent = "…";
+  try {
+    const r = await fetch(`/api/recounts/${id}/recheck`, { method: "POST" }).then(x => x.json());
+    if (!r.ok) throw new Error(r.error || "re-check falhou");
+    const cc = (r.audit || {}).candle_check || {};
+    const verdict = cc.checked
+      ? (cc.plausible ? "✓ plausível (candles frescos)" : "✗ implausível (candles frescos)")
+      : "sem dados (candles frescos)";
+    toast(`Recount #${r.recount?.signal_number}: ${verdict}`, cc.plausible ? "ok" : "err");
+    await loadAudit();
+  } catch (e) { toast("Não foi possível re-correr o candle-check", "err"); }
+  if (btn) { btn.disabled = false; btn.textContent = old; }
+}
+async function recheckAllRecounts(btn) {
+  if (!btn) return;
+  if (!confirm("Re-correr o candle-check de TODOS os recounts com candles frescos e o offset mais recente?\n\nO veredicto é gravado em lote na BD (trade_recounts.candle_check) — read-only para a execução, mas a Yahoo pode demorar alguns segundos por símbolo.")) return;
+  const old = btn.textContent;
+  btn.disabled = true; btn.textContent = "…";
+  try {
+    const r = await fetch("/api/recounts/recheck-all", { method: "POST" }).then(x => x.json());
+    if (!r.ok) throw new Error(r.error || "re-check em lote falhou");
+    toast(`Lote concluído: ${r.rechecked}/${r.total} recounts re-corridos · ${r.changed} com veredicto alterado · ${r.errors} erros`, r.changed ? "ok" : "info");
+    await loadAudit();
+  } catch (e) { toast("Não foi possível correr o re-check em lote", "err"); }
+  if (btn) { btn.disabled = false; btn.textContent = old; }
+}
+function renderFillsZone(fz) {
+  if (!fz || !fz.total_fills) {
+    $("fillsZoneStats").innerHTML = "<div class=muted style='font-size:12px'>Sem fills reais MT5 no período (ou sem candles para medir).</div>";
+    $("fillsZoneDayTable").innerHTML = "";
+    $("fillsZoneTable").innerHTML = "";
+    $("fillsZoneRowsCount").textContent = "0";
+    return;
+  }
+  $("fillsZoneStats").innerHTML = [
+    ["Fills reais", fz.total_fills], ["Na zona", fz.in_zone || 0],
+    ["Perseguições", fz.chases || 0],
+    ["% na zona", fz.pct_in_zone == null ? "—" : fmt(fz.pct_in_zone, 1) + "%"],
+    ["Máx fora", fz.max_distance == null ? "—" : `${fz.max_distance} pips`],
+    ["Medidos p/ guard", fz.source_guard || 0], ["Fallback candles", fz.source_candles || 0]
+  ].map(x => `<div class="mini"><div class="lbl">${x[0]}</div><div class="val ${x[0] === "Perseguições" && x[1] ? "warn" : x[0] === "Máx fora" && x[1] !== "—" && x[1] !== "0 pips" ? "warn" : ""}">${x[1]}</div></div>`).join("");
+  const days = fz.by_day || [];
+  $("fillsZoneDayTable").innerHTML = days.map(d =>
+    `<tr><td class="muted">${esc(d.date)}</td><td>${d.total}</td><td>${d.in_zone}</td>` +
+    `<td class="${d.chases ? "warn" : ""}">${d.chases}</td>` +
+    `<td>${d.max_distance == null ? "—" : d.max_distance}</td></tr>`
+  ).join("") || `<tr><td colspan="5">sem dias no período</td></tr>`;
+  // divergência GC=F↔spot por dia: quantas perseguições eram só do feed
+  const fd = fz.feed_divergence || {};
+  const divDays = fd.by_day || [];
+  $("fillsDivCount").textContent = fd.measured || 0;
+  $("fillsDivStats").innerHTML = [
+    ["Fills com ambos", fd.measured || 0],
+    ["Offset médio", fd.mean_offset == null ? "—" : `${fd.mean_offset} pips`],
+    ["Máx |offset|", fd.max_offset_abs == null ? "—" : `${fd.max_offset_abs} pips`],
+    ["Falsas perseguições (só feed)", fd.false_persecutions || 0],
+    ["Perseguições reais (spot+GC=F)", fd.real_persecutions || 0]
+  ].map(x => `<div class="mini"><div class="lbl">${x[0]}</div><div class="val ${x[0] === "Falsas perseguições (só feed)" && x[1] ? "warn" : x[0] === "Perseguições reais (spot+GC=F)" && x[1] ? "loss" : ""}">${x[1]}</div></div>`).join("");
+  $("fillsDivDayTable").innerHTML = divDays.map(d =>
+    `<tr><td class="muted">${esc(d.date)}</td><td>${d.fills}</td>` +
+    `<td class="${d.offset_mean && Math.abs(d.offset_mean) > 10 ? "warn" : ""}">${d.offset_mean} pips</td>` +
+    `<td>${d.offset_max} pips</td>` +
+    `<td class="${d.false_persecutions ? "warn" : ""}">${d.false_persecutions}</td></tr>`
+  ).join("") || `<tr><td colspan="5">sem fills com ambas as fontes no período</td></tr>`;
+  drawFillsDivChart(fd);
+  const rows = fz.rows || [];
+  $("fillsZoneRowsCount").textContent = rows.length;
+  $("fillsZoneTable").innerHTML = rows.map(f => {
+    const zone = Array.isArray(f.zone) ? `${f.zone[0]}–${f.zone[1]}` : (f.entry ?? "");
+    const badge = f.in_zone ? `<span class="tag win">na zona</span>`
+      : `<span class="tag ${(f.distance || 0) > 30 ? "loss" : "warn"}">${esc(f.distance_txt || "fora")}</span>`;
+    const src = f.distance_source === "guard"
+      ? `<span class="tag" title="spot MT5 no momento da execução (autoritativo)">spot</span>`
+      : `<span class="tag muted-tag" title="candles Yahoo — GC=F diverge do spot para metais">candles</span>`;
+    let px = f.price != null ? esc(f.price) : "—";
+    if (f.market_price != null) {
+      px = `${esc(f.market_price)} <span class="muted" style="font-size:11px">spot</span>`;
+      if (f.feed_divergence != null)
+        px += `<div class="muted" style="font-size:10px" title="preço GC=F (Yahoo) à hora do sinal">GC=F ${esc(f.price ?? "")} · offset ${f.feed_divergence} pips</div>`;
+    }
+    return `<tr><td class="muted" style="font-size:12px">${when(f.opened_at)}</td>` +
+      `<td>${esc(f.symbol)} ${esc((f.direction || "").toUpperCase())}</td>` +
+      `<td>${esc(f.entry ?? "")}</td><td>${esc(zone)}</td>` +
+      `<td>${px}</td>` +
+      `<td>${badge}</td><td>${src}</td>` +
+      `<td class="${cls(f.pnl)}" style="font-size:12px">${money(f.pnl)}</td></tr>`;
+  }).join("") || `<tr><td colspan="8">sem trades com zona no período</td></tr>`;
+}
+function drawFillsDivChart(fd) {
+  const canvas = document.getElementById("fillsDivChart");
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  const pal = chartPalette();
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  const days = (fd && fd.by_day) || [];
+  if (!days.length) {
+    ctx.fillStyle = pal.axis; ctx.font = "13px sans-serif";
+    ctx.fillText("Sem dados de divergência ainda — aparecem quando houver fills com spot + GC=F no mesmo dia.", 20, H / 2);
+    return;
+  }
+  const padL = 46, padR = 46, padT = 14, padB = 24;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const maxFalse = Math.max(1, ...days.map(d => d.false_persecutions || 0));
+  const offs = days.map(d => Math.abs(d.offset_mean || 0));
+  const maxOff = Math.max(1, ...offs);
+  const bw = Math.min(46, plotW / days.length * 0.55);
+  // barras: falsas perseguições (escala esquerda, âmbar)
+  days.forEach((d, i) => {
+    const x = padL + i * (plotW / days.length) + (plotW / days.length - bw) / 2;
+    const h = (d.false_persecutions || 0) / maxFalse * plotH;
+    if (h > 0) {
+      ctx.fillStyle = "#f59e0b";
+      ctx.fillRect(x, padT + plotH - h, bw, h);
+    }
+    ctx.fillStyle = pal.axis; ctx.font = "10px sans-serif"; ctx.textAlign = "center";
+    ctx.fillText(d.date.slice(5).replace("-", "/"), x + bw / 2, H - 8);
+  });
+  // linha: offset médio GC=F−spot (escala direita, azul)
+  ctx.strokeStyle = "#38bdf8"; ctx.lineWidth = 2;
+  ctx.beginPath();
+  days.forEach((d, i) => {
+    const x = padL + i * (plotW / days.length) + (plotW / days.length) / 2;
+    const y = padT + plotH - (Math.abs(d.offset_mean || 0) / maxOff * plotH);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+  ctx.fillStyle = "#38bdf8";
+  days.forEach((d, i) => {
+    const x = padL + i * (plotW / days.length) + (plotW / days.length) / 2;
+    const y = padT + plotH - (Math.abs(d.offset_mean || 0) / maxOff * plotH);
+    ctx.beginPath(); ctx.arc(x, y, 3, 0, Math.PI * 2); ctx.fill();
+  });
+  ctx.font = "10px sans-serif"; ctx.textAlign = "left";
+  ctx.fillStyle = "#f59e0b"; ctx.fillText("■ falsas perseguições", padL + 4, padT + 4);
+  ctx.fillStyle = "#38bdf8"; ctx.fillText("◆ offset médio (pips)", padL + 150, padT + 4);
+}
+async function loadAudit() {
+  try {
+    const [pre, j, f, g, r, rej, bch, out, da] = await Promise.all([
+      fetch("/api/analysis/pre-real-checklist").then(r => r.json()),
+      fetch("/api/operations/journal-quality").then(r => r.json()),
+      fetch("/api/analysis/fill-audit?days=30").then(r => r.json()),
+      fetch("/api/analysis/forward-gate?days=30").then(r => r.json()),
+      fetch("/api/recounts?limit=200").then(r => r.json()),
+      fetch("/api/analysis/rejections?days=30").then(r => r.json()),
+      fetch("/api/recounts/batches").then(r => r.json()),
+      fetch("/api/operations/replay/outages?days=30").then(r => r.json()),
+      fetch("/api/operations/daily-audit").then(r => r.json())
+    ]);
+    renderPreReal(pre); renderJournal(j); renderFills(f); renderGate(g); renderRecounts(r);
+    renderFillsZone(rej && rej.fills_zone ? rej.fills_zone : {});
+    renderRecountBatches(bch ? bch.batches : []);
+    renderOutages(out && out.ok ? out : { summary: {}, timeline: [], episodes: [] });
+    renderBePlus(da && da.ok ? da : null);
+    await loadArchives();
+  } catch (e) { toast("Não foi possível carregar a auditoria", "err"); }
+}
+$("refreshAudit").onclick = loadAudit;
+$("archiveForward").onclick = archiveForward;
+$("toggleJournal").onclick = toggleJournal;
+loadAudit();
+setInterval(loadAudit, 60000);
+</script>
+</body>
+</html>

@@ -8,6 +8,8 @@ from app.execution.protection import (
     sl_exit_reason,
     time_stop_due,
     time_stop_due_iso,
+    protect_trigger_hit,
+    protect_trigger_level,
 )
 
 
@@ -115,8 +117,11 @@ def test_protect_latency_storage_and_stats(tmp_path):
 
 
 def test_hybrid_protect_waits_for_mechanical_protection():
-    assert hybrid_protect_eligible(None, None) is False
-    assert hybrid_protect_eligible(4400.0, None) is False
+    """15/09: o protect do grupo é sempre elegível — é monotónico e só
+    aperta. O gate causal antigo recusava-o sem proteção auto e a perna
+    rodou com o SL completo (−13,93 €)."""
+    assert hybrid_protect_eligible(None, None) is True
+    assert hybrid_protect_eligible(4400.0, None) is True
     assert hybrid_protect_eligible(4400.0, "2026-08-19T10:00:00+00:00") is True
 
 
@@ -162,6 +167,29 @@ def test_common_boundaries_for_confirmation_stop_and_reason():
     assert sl_exit_reason("sell", 99.0, 100.0) == "trail"
 
 
+def test_auto_protect_trigger_is_shared_for_buy_sell_and_rejects_invalid_levels():
+    assert protect_trigger_level(
+        direction="buy", entry=100.0, tp1=104.0, fraction=0.75,
+    ) == 103.0
+    assert protect_trigger_hit(
+        direction="buy", price=103.0, entry=100.0, tp1=104.0,
+        fraction=0.75,
+    ) is True
+    assert protect_trigger_level(
+        direction="sell", entry=100.0, tp1=96.0, fraction=0.75,
+    ) == 97.0
+    assert protect_trigger_hit(
+        direction="sell", price=97.0, entry=100.0, tp1=96.0,
+        fraction=0.75,
+    ) is True
+    assert protect_trigger_level(
+        direction="buy", entry=100.0, tp1=99.0, fraction=0.75,
+    ) is None
+    assert protect_trigger_level(
+        direction="buy", entry=100.0, tp1=104.0, fraction=0.0,
+    ) is None
+
+
 def test_time_stop_adapters_ignore_invalid_durations_and_mixed_timestamp_styles():
     assert time_stop_due(100.0, 160.0, "not-a-number") is False
     assert time_stop_due_iso(
@@ -174,3 +202,89 @@ def test_time_stop_adapters_ignore_invalid_durations_and_mixed_timestamp_styles(
         "2026-08-19T10:01:00",
         "invalid",
     ) is False
+
+
+def test_auto_protect_reducer_is_idempotent_and_monotonic():
+    from app.execution.protection import reduce_auto_protect
+
+    decision = reduce_auto_protect(
+        direction="buy", price=103.0, entry=100.0, stop_loss=96.0,
+        tp1=104.0, leg1_open=True, remaining_sls={2: 100.0, 3: 102.0},
+        trigger_fraction=0.75, buffer_fraction=0.10,
+    )
+    assert decision.triggered is True
+    assert decision.trigger_level == 103.0
+    assert decision.group_sl == 100.4
+    assert decision.move_sls == ((2, 100.4),)
+
+    repeated = reduce_auto_protect(
+        direction="buy", price=103.0, entry=100.0, stop_loss=96.0,
+        tp1=104.0, leg1_open=False, remaining_sls={2: 100.4, 3: 102.0},
+        trigger_fraction=0.75, buffer_fraction=0.10,
+        already_triggered=True,
+    )
+    assert repeated.triggered is False
+    assert repeated.move_sls == ()
+
+
+def test_initial_floor_be_buffer_pips():
+    """BE+ (tp2_protect): com `be_buffer_pips` o piso pós-TP1 fica em
+    entrada ± buffer (cobre o spread), nunca acima/abaixo do TP1."""
+    buy = AutoProtectionPolicy(
+        direction="buy", entry=100.0, tp1=102.0, tp2=104.0,
+        be_buffer_pips=40.0, pip_size=0.01,
+    )
+    assert buy.initial_floor() == 100.4  # 40 pips × 0.01
+    sell = AutoProtectionPolicy(
+        direction="sell", entry=100.0, tp1=98.0, tp2=96.0,
+        be_buffer_pips=40.0, pip_size=0.01,
+    )
+    assert sell.initial_floor() == 99.6  # espelho da venda
+    # sem buffer = BE clássico (comportamento anterior preservado)
+    plain = AutoProtectionPolicy(
+        direction="buy", entry=100.0, tp1=102.0, tp2=104.0,
+    )
+    assert plain.initial_floor() == 100.0
+
+
+def test_initial_floor_fill_anchor_worst_of():
+    """Âncora por perna: o chão usa o PIORE custo entre a entrada do sinal e
+    o fill da perna — num buy, fill ACIMA da entrada (adversário, pagou mais)
+    sobe a âncora para o fill (BE tem de ser realmente sem perda — incidente
+    t-07e968709234); fill abaixo da entrada (melhor) mantém a entrada."""
+    pol = AutoProtectionPolicy(
+        direction="buy", entry=100.0, tp1=102.0, tp2=104.0,
+        be_buffer_pips=40.0, pip_size=0.01,
+    )
+    # fill adversário (acima da entrada num buy): âncora sobe para o fill
+    assert pol.initial_floor(anchor=100.8) == 101.2  # 100.8 + 40 pips
+    # fill melhor que a entrada (comprou mais barato): âncora fica na entrada
+    assert pol.initial_floor(anchor=99.5) == 100.4   # 100.0 + 40 pips
+    # espelho de venda: fill abaixo da entrada (adversário) é o pior
+    sell = AutoProtectionPolicy(
+        direction="sell", entry=100.0, tp1=98.0, tp2=96.0,
+        be_buffer_pips=40.0, pip_size=0.01,
+    )
+    assert sell.initial_floor(anchor=99.2) == 98.8   # 99.2 - 40 pips
+    assert sell.initial_floor(anchor=100.5) == 99.6  # entrada continua a ser o pior
+    # anchor inválido/None = comportamento anterior (entrada do sinal)
+    assert pol.initial_floor(anchor=None) == 100.4
+    assert pol.initial_floor(anchor=0) == 100.4
+
+
+def test_initial_floor_be_buffer_never_crosses_tp1():
+    """Buffer maior que a distância entrada→TP1 fica limitado (com 1 pip
+    de folga) — o SL protegido nunca cruza o TP1."""
+    tight = AutoProtectionPolicy(
+        direction="buy", entry=100.0, tp1=100.3, tp2=101.0,
+        be_buffer_pips=400.0, pip_size=0.01,
+    )
+    # room = |100.3-100.0| - 0.01 = 0.29 → floor = 100.0 + 0.29 < TP1
+    import pytest as _pytest
+    assert tight.initial_floor() == _pytest.approx(100.29)
+    # distância mínima (TP1 a 1 pip): sem espaço, cai no BE clássico
+    minimal = AutoProtectionPolicy(
+        direction="buy", entry=100.0, tp1=100.01, tp2=100.5,
+        be_buffer_pips=40.0, pip_size=0.01,
+    )
+    assert minimal.initial_floor() == 100.0

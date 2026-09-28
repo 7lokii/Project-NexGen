@@ -12,8 +12,9 @@ Safety rules (never trade blindly):
     (default 0.8) — a low-confidence parse is a failed signal, not a trade.
   * The proposed signal must pass `validate_signal` (stop on the right side,
     TPs ordered, no absurd TP distance). Anything invalid -> failed signal.
-  * Signals parsed this way are flagged `llm_parsed=True`, which forces them
-    to PENDING (manual approval) — auto mode never executes them.
+  * Signals parsed this way are flagged `llm_parsed=True`, which keeps them
+    OUT of execution for ever (Item 12 removed the manual mode): they are
+    registered and alerted for audit only — never executed, never pending.
 
 Disabled by default: no API key / base URL configured -> `try_llm_parse`
 returns None and the pipeline behaves exactly as before (regex only).
@@ -151,5 +152,5 @@ async def try_llm_parse(raw_text: str, source: str = "telegram",
         return _failed("LLM: entrada/stop loss em falta")
 
     print(f"[llm] parse OK ({signal.symbol} {signal.direction} @ "
-          f"{signal.entry} conf {confidence:.2f}) — requer aprovação manual")
+          f"{signal.entry} conf {confidence:.2f}) — registo apenas (nunca executa)")
     return signal

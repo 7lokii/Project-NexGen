@@ -319,7 +319,14 @@ com as credenciais do `.env` (o AutoTrading tem de estar ON no terminal).
    confirma `hedged=true`, AutoTrading ligado e `blocked_reason` vazio.
 2. Confirma que o listener está a apanhar o grupo: `tail listener.log`
    (ou `Get-Content listener.log -Tail 20`).
-3. Manda uma mensagem de teste no grupo e vê o fluxo completo na dashboard.
+3. No painel **👻 Shadow-paper**, confirma `ativo` e as estratégias
+   `auto_escada_3` e `auto_escada_5` para acumular evidência forward sem
+   ordens novas. O snapshot deve mostrar
+   `shadow_paper.execution_isolated=true`; isto não altera `EXECUTION_MODE`,
+   `MT5_DRY_RUN` nem a conta demo.
+4. Manda uma mensagem de teste no grupo e vê o fluxo completo na dashboard.
+5. Confirma `GET /api/window`: a janela UTC termina em `2026-08-29T00:00:00+00:00`, mostra trades reais/P&L/ritmo e o gate de promoção da auto-escada 3.
+6. Se o kill switch estiver pausado para esta janela, confirma no `/api/status` que `killswitch_rearm_at` está persistido. O tick reativa a pausa no prazo, envia feed/Telegram e limpa a chave; não é necessário criar uma tarefa agendada separada.
 
 ---
 
@@ -350,6 +357,16 @@ A saúde operacional aparece no Relatório e em `GET /api/operations?days=90`.
 Não é necessário configurar credenciais novas: os dados são gravados na BD
 local nas tabelas de exceções, quotes MT5, reconexões e modifies. Deixa o
 servidor acumular pelo menos duas semanas antes de interpretar tendências.
+
+O **shadow-paper** é configurado pela dashboard ou por `POST /api/config` com
+`shadow_paper_enabled` e `shadow_paper_strategies`. As trades ficam nas tabelas
+`paper_*`, com `origin="shadow"`, e a conta/saldo/kill diário dessa origem são
+separados da corrida normal; não passam pelo `MT5Engine`. O histórico
+`historical=True` e sinais `llm_parsed` são ignorados para esta amostra. A fila
+`pending_management` mantém marcadores separados para a execução real, paper
+normal e shadow, para uma correção/saída não desaparecer entre streams. Se o
+modo for desligado, as trades existentes continuam auditáveis e só novas
+aberturas são bloqueadas.
 
 **Watchdog simples** (PowerShell, corre a cada minuto via Task Scheduler):
 reinicia o servidor se `server.pid` não responder, e reabre o MT5 se o

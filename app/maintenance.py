@@ -42,6 +42,7 @@ TABLE_POLICIES = {
     "ignored_messages": "latest 1000 rows (bounded at insert time)",
     "config": "indefinite; current state and audit snapshots",
     "paper_accounts": "indefinite; current virtual-account state",
+    "protection_states": "until trade closes; restart-safe auto-management state",
     "pending_management": "archive applied rows after 90 days; retain unapplied rows",
     "operational_exceptions": "archive after 365 days; retain aggregate metrics",
     "spread_observations": "archive after 365 days; retain monthly averages",
@@ -362,6 +363,10 @@ def audit_database(path: os.PathLike[str] | str) -> dict:
         conn.close()
 
 
+# These are the durable core tables present in backups created before the
+# restart-safe protection-state migration as well. `protection_states` is
+# validated when present, but remains optional so an older backup can still be
+# restored and audited safely.
 REQUIRED_RESTORE_TABLES = (
     "signals", "trades", "positions", "paper_trades", "paper_positions",
     "notifications", "config",

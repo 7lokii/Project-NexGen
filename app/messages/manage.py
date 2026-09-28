@@ -17,6 +17,8 @@ prioritise the specific phrasings the group actually uses.
 import re
 from typing import Optional
 
+from app.messages.recounts import parse_recount
+
 # TP1..TP5 HIT — the group announces every target it considers hit. It
 # sometimes announces two at once ("TP4 and 5 HIT") — the optional second
 # number lets the classifier take the highest one.
@@ -130,6 +132,16 @@ _SL_ADJUSTED = re.compile(r"\bSL\s+(?:adjusted|edited|corrected)\b", re.IGNORECA
 
 # Periodic summaries ("Weekly summary", "Thursday summary").
 _SUMMARY = re.compile(r"\b(\w+day|\w+ly)\s+summary\b", re.IGNORECASE)
+# R1: corrections must say explicitly that the summary/numbers are being
+# corrected. This avoids treating ordinary summaries or discussion of a bad
+# result as an instruction. The payload still needs summary numbers below.
+_SUMMARY_CORRECTION = re.compile(
+    r"\b(?:summary\s+)?(?:correction|corrected|amendment|erratum)\b|"
+    r"\b(?:update|updated|amend|amended)\s+(?:the\s+)?summary\b|"
+    r"\b(?:wrong|incorrect)\s+(?:summary|numbers)\b|"
+    r"\b(?:summary|numbers)\b.{0,24}\b(?:wrong|incorrect)\b",
+    re.IGNORECASE,
+)
 
 # "TP5 HIT Full target" is a tp_hit; make sure generic chatter about pips or
 # the market ("Volume increased...") never triggers an action.
@@ -160,9 +172,13 @@ def classify(text: str) -> Optional[dict]:
       {"kind": "close_all"}      # out at BE / we're out / close the setup
       {"kind": "move_sl"}        # move SL to a level (or nudge)
       {"kind": "summary"}        # periodic win-rate report
+      {"kind": "summary_correction"}  # R1 correction linked to a summary
+      {"kind": "recount"}        # per-trade recap ("Signal #1: Sell at 4357 … +110 pips")
 
     Order matters: TP/SL hits are checked before the looser exit patterns so
-    "TP1 HIT +70 pips" never matches a "close" rule.
+    "TP1 HIT +70 pips" never matches a "close" rule. Recounts are ground
+    truth per-trade reports — they must be classified before the chatter
+    filter discards them.
     """
     text = (text or "").strip()
     if not text:
@@ -172,9 +188,23 @@ def classify(text: str) -> Optional[dict]:
     text = text.replace("\u2019", "'").replace("\u2018", "'")
 
     # Summaries first: they may contain "volume" / "watch" words later in the
-    # text, which must not suppress the ground-truth report.
-    if _SUMMARY.search(text) and re.search(r"trades?\s*sent|winning", text, re.IGNORECASE):
+    # text, which must not suppress the ground-truth report. R1 corrections
+    # have their own kind so the state layer can resolve and update a target.
+    has_summary_numbers = re.search(
+        r"trades?\s*sent|winning\s+trades?|win\s*rate",
+        text, re.IGNORECASE,
+    )
+    if _SUMMARY_CORRECTION.search(text) and has_summary_numbers:
+        return {"kind": "summary_correction"}
+    if _SUMMARY.search(text) and has_summary_numbers:
         return {"kind": "summary"}
+
+    # R2: per-trade recounts ("Signal #1: Sell at 4357. Price went up to
+    # 4362, then dropped to 4351. +110 pips") are structured ground truth
+    # for the day's real fills. Checked before the chatter filter so they
+    # never land in `failed`/ignored.
+    if parse_recount(text):
+        return {"kind": "recount"}
 
     if _SKIP_WORDS.search(text) and not (_TP_HIT.search(text) or _TP_EMOJI.search(text)):
         return None

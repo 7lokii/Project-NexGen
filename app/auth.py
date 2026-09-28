@@ -16,11 +16,70 @@ every check so tests can toggle it with monkeypatch.
 import os
 import secrets
 import time
+from collections import deque
 
 COOKIE_NAME = "sb_session"
 SESSION_TTL = 7 * 24 * 3600  # 7 days
 
 _sessions: dict[str, float] = {}  # token -> expiry (unix ts)
+
+# ---------------------------------------------------------------- rate limit
+# Lockout por IP no /api/login: janela deslizante em memória (processo único).
+# Após LOGIN_MAX_ATTEMPTS falhas dentro de LOGIN_WINDOW_SECONDS o IP fica
+# bloqueado até a janela expirar. Config por env (0 desliga o limite).
+LOGIN_WINDOW_SECONDS = int(os.getenv("SIGNALBOT_LOGIN_WINDOW", "300") or 300)
+LOGIN_MAX_ATTEMPTS = int(os.getenv("SIGNALBOT_LOGIN_MAX_ATTEMPTS", "5") or 5)
+
+_failed_logins: dict[str, deque] = {}  # ip -> timestamps de falhas
+
+
+def client_ip(request) -> str:
+    """IP real do cliente (atrás do Caddy/túnel respeita X-Forwarded-For)."""
+    xff = request.headers.get("x-forwarded-for") if request is not None else None
+    if xff:
+        # primeiro salto da cadeia é o cliente original
+        return xff.split(",", 1)[0].strip() or "?"
+    if request is not None and request.client is not None:
+        return request.client.host or "?"
+    return "?"
+
+
+def login_locked(ip: str) -> int:
+    """Segundos de bloqueio restantes para o IP (0 = livre)."""
+    if LOGIN_MAX_ATTEMPTS <= 0 or LOGIN_WINDOW_SECONDS <= 0:
+        return 0
+    now = time.time()
+    dq = _failed_logins.get(ip)
+    if not dq:
+        return 0
+    cutoff = now - LOGIN_WINDOW_SECONDS
+    while dq and dq[0] < cutoff:
+        dq.popleft()
+    if len(dq) < LOGIN_MAX_ATTEMPTS:
+        return 0
+    return max(1, int(dq[0] + LOGIN_WINDOW_SECONDS - now))
+
+
+def record_failed_login(ip: str) -> None:
+    """Regista uma falha de login do IP (janela deslizante, anti brute-force)."""
+    if LOGIN_MAX_ATTEMPTS <= 0 or LOGIN_WINDOW_SECONDS <= 0:
+        return
+    now = time.time()
+    dq = _failed_logins.setdefault(ip, deque())
+    dq.append(now)
+    cutoff = now - LOGIN_WINDOW_SECONDS
+    while dq and dq[0] < cutoff:
+        dq.popleft()
+
+
+def clear_failed_logins(ip: str) -> None:
+    """Login com sucesso limpa o histórico do IP."""
+    _failed_logins.pop(ip, None)
+
+
+def reset_login_limit_state() -> None:
+    """Limpa todo o estado do lockout (testes)."""
+    _failed_logins.clear()
 
 
 def dashboard_password() -> str:

@@ -1,17 +1,19 @@
 from datetime import datetime
 
 from app.backtest import (aggregate, apply_daily_stop, attribute_protect_events,
-                          drawdown_from_results, _roll_pf, simulate_signal,
-                          simulate_signal_managed)
+                          correlate_management, drawdown_from_results, _roll_pf,
+                          simulate_signal, simulate_signal_managed)
 from app.models import Signal
 
 
 def make_signal(entry=1.0850, sl=1.0820, tp1=1.0890, tp2=1.0920,
-                direction="buy", received_at="2026-08-17T10:00:00"):
-    return Signal(id="s1", source="tg:Test", raw_text="", symbol="EURUSD",
+                direction="buy", received_at="2026-08-17T10:00:00",
+                signal_id="s1", source="tg:Test", message_id=None):
+    return Signal(id=signal_id, source=source, raw_text="", symbol="EURUSD",
                   direction=direction, entry=entry, stop_loss=sl,
                   take_profit_1=tp1, take_profit_2=tp2,
-                  status="historical", received_at=received_at)
+                  status="historical", received_at=received_at,
+                  message_id=message_id)
 
 
 BASE = int(datetime.fromisoformat("2026-08-17T10:00:00").timestamp())
@@ -290,6 +292,59 @@ def test_apply_daily_stop_off_and_zero_limit():
     assert apply_daily_stop(results, 1000.0, 0) == {"skipped": 0}
     assert apply_daily_stop(results, 1000.0, -1) == {"skipped": 0}
     assert results[0]["outcome"] == "loss"
+
+
+def test_auto_protect_closes_first_leg_and_locks_remaining_legs_without_telegram():
+    sig = make_signal()
+    sig.take_profit_3 = 1.0960
+    cs = candles(
+        highs=[1.0881, 1.0860],
+        lows=[1.0870, 1.0852],
+    )
+    result = simulate_signal(
+        sig, cs, 1.0, 10_000, 60,
+        spread_pips=0.0, slippage_pips=0.0, commission_per_lot=0.0,
+        protect_trigger=0.75, protect_buffer=0.10,
+    )
+    assert result["auto_protected"] is True
+    assert result["auto_protect_level"] == 1.088
+    assert result["leg1_pnl"] > 0
+    assert result["legs_pnl"][2] > 0
+    assert result["legs_pnl"][2] == result["legs_pnl"][3]
+
+
+def test_correlate_management_prefers_reply_and_drops_unresolved_reply():
+    """A reply must beat the chronological fallback when two same-symbol
+    signals are open; an explicit but unknown reply must never jump to the
+    latest signal and contaminate its P&L."""
+    first = make_signal(signal_id="s-first", message_id="101")
+    second = make_signal(
+        received_at="2026-08-17T10:05:00", signal_id="s-second", message_id="102",
+    )
+    event_at = int(datetime.fromisoformat("2026-08-17T10:06:00").timestamp())
+    linked = correlate_management([
+        first, second,
+    ], [("tg:Test", event_at, "close_tp", False, 2, 4400.0, "mgmt-1", "101")])
+    assert [event[1] for event in linked["s-first"]] == ["close_tp"]
+    assert linked["s-first"][0][3] == 2
+    assert linked["s-first"][0][5] == 4400.0
+    assert linked["s-second"] == []
+
+    unresolved = correlate_management([
+        first, second,
+    ], [("tg:Test", event_at, "close_all", False, None, None, "mgmt-2", "999")])
+    assert unresolved["s-first"] == [] and unresolved["s-second"] == []
+
+
+def test_managed_replays_move_sl_at_explicit_level():
+    """`Adjust SL to X` is a real chronological event in the backtest;
+    a nudge without a level is only audit metadata."""
+    sig = make_signal()
+    cs = candles(highs=[1.0880], lows=[1.0870])
+    event = (cs[0]["ts"], "move_sl", False, None, "mgmt-3", 1.0875)
+    result = simulate_signal_managed(sig, cs, [event], 1.0, 10_000, 60)
+    assert "move_sl" in result["mgmt_applied"]
+    assert result["outcome"] in ("be", "loss")
 
 
 def test_managed_honors_manage_kinds():
@@ -625,6 +680,82 @@ def test_stair_and_trailing_no_conflict():
     assert res["outcome"] == "win" and res["legs_pnl"][3] > 0
 
 
+def test_mfe_pips_measured_on_buy():
+    """R3: o backtest mede a excursão máxima favorável (MFE) em pips — uma
+    trade que andou +40 pips e voltou ao SL tem MFE alto mas outcome loss.
+    A medição é por observação, nunca uma decisão de fill."""
+    sig = make_signal()
+    # candle 1 vai a 1.0930 (+40 pips sobre 1.0890? não: sobre a entrada
+    # 1.0850 → 1.0930−1.0850 = 80 pips de MFE) e depois cai ao SL 1.0820
+    cs = candles(highs=[1.0930], lows=[1.0820])
+    res = simulate_signal(sig, cs, 1.0, 10_000, 60)
+    assert res["outcome"] == "loss"
+    assert res["mfe_pips"] >= 70.0, f"MFE {res['mfe_pips']} deveria captar o high 1.0930"
+
+
+def test_mfe_pips_on_sell():
+    """R3: MFE numa venda mede a distância do preço ABAIXO da entrada."""
+    sig = make_signal(direction="sell", entry=1.0850, sl=1.0880,
+                      tp1=1.0810, tp2=1.0780)
+    cs = candles(highs=[1.0880], lows=[1.0790])  # -60 pips a favor antes do SL
+    res = simulate_signal(sig, cs, 1.0, 10_000, 60)
+    assert res["outcome"] == "loss"
+    assert res["mfe_pips"] >= 50.0
+
+
+def test_aggregate_mfe_win_rate():
+    """R3: mfe_win_rate conta wins na convenção do grupo (MFE ≥ threshold),
+    independentemente do outcome final — o caso clássico é a trade que andou
+    +40 pips e voltou ao SL (loss pnl, win na convenção MFE)."""
+    results = [
+        {"outcome": "win", "pnl": 100.0, "mfe_pips": 60.0},
+        {"outcome": "loss", "pnl": -50.0, "mfe_pips": 40.0},  # andou e voltou
+        {"outcome": "loss", "pnl": -30.0, "mfe_pips": 10.0},
+        {"outcome": "be", "pnl": 0.0, "mfe_pips": 25.0},      # exatamente no limiar
+    ]
+    a = aggregate(results, mfe_threshold_pips=25)
+    assert a["win_rate"] == 25.0       # só 1 fechou com pnl>0
+    assert a["mfe_win_rate"] == 75.0   # 3 de 4 andaram ≥25 pips a favor
+    assert a["mfe_threshold_pips"] == 25.0
+    # sem MFE (dados antigos) degrada para 0 — nunca rebenta
+    legacy = aggregate([{"outcome": "win", "pnl": 10.0}])
+    assert legacy["mfe_win_rate"] == 0.0
+
+
+def test_struggle_rule_closes_half_at_be_after_adverse():
+    """R4: a regra 'struggle' — antes do TP1, se o preço andou contra a
+    entrada por `struggle_ae_pips` e volta à entrada, fecha 50% das pernas a
+    breakeven e protege as restantes na entrada."""
+    sig = make_signal()  # buy 1.0850, SL 1.0820, TP1 1.0890
+    sig.take_profit_3 = 1.0960
+    # candle 1: low 1.0830 (andou 20 pips contra: 1.0850−1.0830, acima do SL
+    # 1.0820) e fecha abaixo da entrada; candle 2: high 1.0852 (volta à
+    # entrada) — sem tocar SL nem TP1
+    cs = candles(highs=[1.0840, 1.0852], lows=[1.0830, 1.0835], start_ts=BASE + 900)
+    base = simulate_signal(sig, cs, 1.0, 10_000, 60, stair_levels=3, stair_from=1,
+                           trail_factor=2.0)
+    struggle = simulate_signal(sig, cs, 1.0, 10_000, 60, stair_levels=3,
+                               stair_from=1, trail_factor=2.0,
+                               struggle_ae_pips=15.0, struggle_fraction=0.5)
+    assert struggle["struggle_applied"] is True
+    # sem a regra, a trade continua aberta (nunca toca SL nem TP1 nestas velas)
+    assert base["outcome"] == "open"
+    # com a regra, a perna 1 fecha a breakeven: o preço é a entrada, mas o
+    # fill ainda paga o spread/slippage da entrada — P&L pequeno (≥ −2 €),
+    # muito melhor que o SL original (perna fechava em −30+ €)
+    assert struggle["leg1_pnl"] >= -2.0, struggle["leg1_pnl"]
+    assert abs(struggle["leg1_pnl"]) < 2.0
+
+
+def test_struggle_rule_off_by_default():
+    """R4: sem `struggle_ae_pips`, a regra nunca dispara (compatibilidade
+    total com o comportamento atual)."""
+    sig = make_signal()
+    cs = candles(highs=[1.0840, 1.0852], lows=[1.0815, 1.0835], start_ts=BASE + 900)
+    res = simulate_signal(sig, cs, 1.0, 10_000, 60)
+    assert res.get("struggle_applied") is False
+
+
 def test_risk_per_signal_consistent():
     """O risco por SINAL é igual independentemente do nº de pernas: o risco é
     dividido pelas pernas (2/3/5 arriscam o mesmo montante total)."""
@@ -639,3 +770,35 @@ def test_risk_per_signal_consistent():
         amounts[n] = n * lots * (sig.entry - sig.stop_loss) * 100_000
     spread = max(amounts.values()) - min(amounts.values())
     assert spread < max(amounts.values()) * 0.01, amounts
+
+
+def test_tp1_then_breakeven_plus_buffer():
+    """BE+ (tp2_protect): com `be_buffer_pips`, o leg 2 fecha na entrada +
+    buffer (lucro pequeno) em vez de entrada seca — outcome passa de "be"
+    para "win" e o P&L é positivo."""
+    sig = make_signal()
+    # TP1 na vela 1; vela 2 toca a entrada (1.0850) — o BE clássico fecha
+    # na entrada, o BE+ (1.0854) fecha antes e converte "be" em "win"
+    cs = candles(highs=[1.0890, 1.0850], lows=[1.0860, 1.0848])
+    base = simulate_signal(sig, cs, risk_pct=1.0, balance=10_000,
+                           delay_seconds=60)
+    plus = simulate_signal(sig, cs, risk_pct=1.0, balance=10_000,
+                           delay_seconds=60, be_buffer_pips=4.0)
+    assert base["outcome"] == "be"
+    assert plus["outcome"] == "win"
+    assert plus["pnl"] > base["pnl"]
+    # sem buffer, o resultado idêntico ao clássico (regressão)
+    none = simulate_signal(sig, cs, risk_pct=1.0, balance=10_000,
+                           delay_seconds=60, be_buffer_pips=None)
+    assert none["outcome"] == base["outcome"]
+
+
+def test_tp1_buffer_capped_by_tp1_in_backtest():
+    """Buffer gigante não cruza o TP1 no backtest — fica limitado com 1 pip
+    de folga e o TP2 continua a fechar tudo mais acima."""
+    sig = make_signal()
+    cs = candles(highs=[1.0890, 1.0920], lows=[1.0860, 1.0870])
+    res = simulate_signal(sig, cs, risk_pct=1.0, balance=10_000,
+                          delay_seconds=60, be_buffer_pips=10_000.0)
+    assert res["outcome"] == "win"  # TP2 normal, sem interferência
+    assert res["pnl"] > 0

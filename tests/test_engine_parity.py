@@ -193,3 +193,33 @@ def test_same_price_events_have_same_decision_sl_reason_and_pnl(
         for path in temp_paths:
             if os.path.exists(path):
                 os.remove(path)
+
+
+def test_sim_engine_auto_protect_matches_shared_trigger_and_group_floor():
+    path = tempfile.mktemp(suffix=".db")
+    db = DB(path)
+    try:
+        market = MarketSimulator(seed=2)
+        market.prices["XAUUSD"] = 4400.0
+        engine = SimEngine(db, market)
+        signal = _signal("buy", 4400.0, 4396.0, 4402.0, 4404.0, 4406.0)
+        trade = engine.open_trade(
+            signal, risk_pct=1.0, balance=1000.0,
+            trade_id="sim-auto-protect", now="2026-08-19T10:00:00+00:00",
+        )
+        market.prices["XAUUSD"] = 4401.5
+        events = engine.update(
+            now="2026-08-19T10:01:00+00:00",
+            auto={"protect_trigger": 0.75, "protect_buffer": 0.10},
+        )
+        positions = {p.leg: p for p in db.positions_for_trade(trade.id)}
+        assert any(e.get("reason") == "auto_protect" for e in events)
+        assert positions[1].status == "closed"
+        assert positions[1].exit_reason == "auto_protect"
+        assert positions[1].close_price == 4401.5
+        assert positions[2].stop_loss == 4400.4
+        assert positions[3].stop_loss == 4400.4
+    finally:
+        db.close()
+        if os.path.exists(path):
+            os.remove(path)

@@ -25,22 +25,26 @@ class Notifier:
 
     async def send(self, kind: str, text: str, created_at: str = "",
                    tg_text: str = "", parse_mode: str = "Markdown",
-                   action: str = "") -> None:
+                   action: str = "", lane: str = "") -> None:
         """Regista/broadcast `text` (limpo, para o feed da dashboard) e, se
         `tg_text` for dado, envia ESSE texto formatado (Markdown) para o
         Telegram — o feed nunca mostra asteriscos/markdown.
 
         `action` (opcional) associa uma ação ao item do feed — ex.:
-        "promote:<strategy_id>" mostra um botão "⬆️ Promover" na dashboard."""
+        "promote:<strategy_id>" mostra um botão "⬆️ Promover" na dashboard.
+        `lane` (opcional) marca a origem do evento ("main"/"tp2") para o
+        feed distinguir os eventos das duas contas."""
         from app.execution.engine import _now_iso
         created_at = created_at or _now_iso()
-        self.db.insert_notification(kind, text, created_at, action or None)
+        self.db.insert_notification(kind, text, created_at, action or None,
+                                    lane=lane or None)
         await self.ws.broadcast({
             "type": "notification",
             "kind": kind,
             "text": text,
             "created_at": created_at,
             "action": action,
+            "lane": lane or "",
         })
         if self.token and self.chat_id:
             try:
