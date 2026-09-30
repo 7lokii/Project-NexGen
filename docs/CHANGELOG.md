@@ -9,6 +9,38 @@ Formato: `### YYYY-MM-DD — título` · bullets com o quê/porquê.
 
 ---
 
+### 2026-09-30 - Ambiente de testes criado e numero de testes corrigido
+
+- **`.venv` criado no projeto** (Python 3.14.2, o unico Python desta maquina).
+  Todas as dependencias do `requirements.txt` instaladas, incluindo
+  `MetaTrader5 5.0.6231`, que tem wheel para 3.14. Sem este ambiente nao havia
+  forma de correr a suite neste PC.
+- **O `AGENTS.md` dizia 456 testes; a suite tem 631.** O numero real foi medido
+  com `pytest --collect-only -q` depois do ambiente existir, e bate certo com o
+  que o `operacao-e-vps.md` e este changelog ja diziam. O `tests/test_docs.py`
+  conta a suite e exige que o `AGENTS.md` mencione esse numero, portanto o
+  teste falhava e o CI ficava vermelho. Corrigido.
+- **6 testes de `test_api.py` estao vermelhos, e nao por causa desta mudanca.**
+  `test_report_includes_by_day`, `test_recount_candle_check_daily_futures_offset`,
+  `test_rejection_report_categories_and_replay`,
+  `test_rejection_report_zone_and_orphans`,
+  `test_rejection_report_includes_ignored_and_strategy` e
+  `test_report_accepts_lane_filter`. Causa unica e provada: semeiam sinais e
+  trades em datas fixas de agosto de 2026 e chamam os endpoints com `days=30`,
+  que filtram por `date.today() - days` (`app/state.py:1258` e
+  `app/analysis.py:385`). Passado o dia 30 a seguir a data semeada, os dados
+  caem fora da janela. Com o relogio congelado em 2026-08-22, 2026-08-25 ou
+  2026-09-15, as 6 passam; hoje, 2026-09-30, as 6 falham. Nao ha mudanca de
+  codigo: `git diff` mostra `app/` intocado. **Corrigido**: as 6 semeiam agora
+  datas relativas, com dois helpers no topo do `test_api.py`, `_dias_atras(n,
+  hora, minuto)` e `_dia_atras(n)`. Segue o precedente que o projeto ja usava
+  (o backdate relativo na linha 3801 e o helper `_stamp` do
+  `test_observability.py`); nao se congelou o relogio global para nao mexer nos
+  outros 625 testes. Suite completa: **630 passam, 1 salta, 0 falham**. As 6
+  passam com o relogio congelado em 2027-09-30, 2028-02-29 e 2030-12-31, por
+  isso as bombas-relogio ficaram desarmadas.
+- Sem mudanca de comportamento no programa: e ambiente e sincronizacao de docs.
+
 ### 2026-09-16 — Boot da lane tp2 corrigido + falha de boot ≠ bloqueio runtime + WhatsApp single-lane + CLOSE ALL na tp2_protect
 
 - **Boot da tp2 falhava SEMPRE com worker saudável** (causa raiz): o lifespan

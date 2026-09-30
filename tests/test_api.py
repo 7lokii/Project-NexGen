@@ -40,6 +40,26 @@ EURUSD4 = ("BUY EURUSD @ 1.0850\nSL 1.0820\n"
            "TP1 1.0890\nTP2 1.0920\nTP3 1.0950\nTP4 1.0980")
 
 
+def _dias_atras(dias: int, hora: int = 12, minuto: int = 0) -> str:
+    """ISO timestamp `dias` days back from now, in UTC.
+
+    Os endpoints do relatorio (`/api/report`, `/api/analysis/rejections`)
+    filtram por `date.today() - days`. Um dado semeado numa data fixa cai
+    fora da janela de 30 dias assim que passam 30 dias, e o teste fica
+    vermelho sozinho, sem ninguem mexer no codigo. Foi o que aconteceu a
+    2026-09-16 com as datas de agosto. Semear relativo e a regra daqui.
+    """
+    from datetime import datetime, timedelta, timezone
+    dt = datetime.now(timezone.utc) - timedelta(days=dias)
+    return dt.replace(hour=hora, minute=minuto, second=0, microsecond=0).isoformat()
+
+
+def _dia_atras(dias: int) -> str:
+    """`YYYY-MM-DD` de `dias` dias atras, para comparar com `by_day`."""
+    from datetime import date, timedelta
+    return (date.today() - timedelta(days=dias)).isoformat()
+
+
 @pytest.fixture
 def client():
     """Fresh SQLite/runtime wiring per test.
@@ -925,7 +945,7 @@ def test_report_includes_by_day(client):
     # independente do fluxo de execução: grava uma trade fechada diretamente
     from app.main import state
     from app.models import Trade
-    now = "2026-08-17T12:00:00"
+    now = _dias_atras(2)
     state.db.insert_trade(Trade(
         id="byday-test-1", signal_id="byday-sig-1", symbol="EURUSD", direction="BUY",
         entry=1.0850, stop_loss=1.0820, take_profit_1=1.0890, take_profit_2=1.0920,
@@ -1569,7 +1589,7 @@ def test_recount_candle_check_daily_futures_offset(client, monkeypatch):
     from app.models import Position, Signal, Trade
     from datetime import datetime
     st = main_module.state
-    day = "2026-08-22"
+    day = _dia_atras(2)
     day_ts = int(datetime.fromisoformat(day + "T00:00:00+00:00").timestamp())
 
     # sinal do dia (para o recount resolver símbolo + hora)
@@ -3234,7 +3254,7 @@ def test_rejection_report_categories_and_replay(client, monkeypatch):
     from app.models import Signal
     db = DB(DB_PATH)
 
-    base = "2026-08-20T10:00:00+00:00"
+    base = _dias_atras(2, hora=10)
 
     def _sig(sid, text, status="rejected", error="", entry=4600.0, sl=4592.0,
              tp1=4605.0):
@@ -3317,7 +3337,10 @@ def test_rejection_report_zone_and_orphans(client, monkeypatch):
     from app.models import Position, Signal, Trade
     db = DB(DB_PATH)
 
-    base = "2026-08-21T08:00:00+00:00"
+    dia = _dia_atras(2)
+    base = f"{dia}T08:00:00+00:00"
+    fecha1 = f"{dia}T12:00:00+00:00"
+    fecha2 = f"{dia}T13:00:00+00:00"
     # sinal fora da zona: preço real 4429, entrada 4379 → distância grande
     db.insert_signal(Signal(
         id="zp-far", source="tg:Golden Moves", raw_text="I'm buying XAUUSD",
@@ -3338,7 +3361,7 @@ def test_rejection_report_zone_and_orphans(client, monkeypatch):
         take_profit_1=4322.0, take_profit_2=0.0, take_profit_3=0.0,
         take_profit_4=0.0, take_profit_5=0.0, risk_pct=1.0,
         lots_1=0.01, lots_2=0.0, lots_3=0.0, lots_4=0.0, lots_5=0.0,
-        status="closed", opened_at=base, closed_at="2026-08-21T12:00:00+00:00",
+        status="closed", opened_at=base, closed_at=fecha1,
         pnl=0.0, exit_reason="pending_expired",
         entry_zone_low=4317.0, entry_zone_high=4317.0,
         market_price_at_open=None, entry_distance=10.0, entry_guard="{}",
@@ -3349,7 +3372,7 @@ def test_rejection_report_zone_and_orphans(client, monkeypatch):
         id="pos-orphan-1", trade_id="tr-orphan", leg=1, symbol="XAUUSD",
         direction="buy", lots=0.01, entry=4317.0, stop_loss=4308.0,
         take_profit=4322.0, status="closed", opened_at=base,
-        closed_at="2026-08-21T12:00:00+00:00", close_price=None, pnl=0.0,
+        closed_at=fecha1, close_price=None, pnl=0.0,
         exit_reason="pending_expired", exit_msg_id=None, lane_id="main",
         order_ticket=999001,
     ))
@@ -3364,7 +3387,7 @@ def test_rejection_report_zone_and_orphans(client, monkeypatch):
         take_profit_4=0.0, take_profit_5=0.0, risk_pct=1.0,
         lots_1=0.01, lots_2=0.0, lots_3=0.0, lots_4=0.0, lots_5=0.0,
         status="closed", opened_at=base,
-        closed_at="2026-08-21T13:00:00+00:00", pnl=-12.5, exit_reason="sl",
+        closed_at=fecha2, pnl=-12.5, exit_reason="sl",
         entry_zone_low=4379.0, entry_zone_high=4379.0,
         market_price_at_open=4429.0, entry_distance=50.0, entry_guard="{}",
         execution_mode="mt5-real", lane_id="main", entry_style="market",
@@ -3411,7 +3434,7 @@ def test_rejection_report_zone_and_orphans(client, monkeypatch):
     # histórico por dia + fonte da distância: o guard (spot) é autoritativo e
     # o dia da colocação entra no by_day
     assert fz["by_day"], fz
-    day = next((d for d in fz["by_day"] if d["date"] == "2026-08-21"), None)
+    day = next((d for d in fz["by_day"] if d["date"] == dia), None)
     assert day is not None and day["chases"] >= 1, fz["by_day"]
     assert day["max_distance"] >= 45, day
     assert fz["source_guard"] >= 1, fz
@@ -3423,7 +3446,7 @@ def test_rejection_report_zone_and_orphans(client, monkeypatch):
     assert fd["mean_offset"] is not None and abs(fd["mean_offset"] - 0.5) < 0.2, fd
     assert fd["real_persecutions"] >= 1, fd
     assert fd["false_persecutions"] == 0, fd
-    assert any(d["date"] == "2026-08-21" for d in fd["by_day"]), fd
+    assert any(d["date"] == dia for d in fd["by_day"]), fd
     assert fill["market_price"] == 4429.0, fill
     assert abs((fill["feed_divergence"] or 0.0) - 0.5) < 0.2, fill
 
@@ -3438,12 +3461,12 @@ def test_rejection_report_includes_ignored_and_strategy(client, monkeypatch):
     db.record_ignored(
         message_id="ig-1", source="tg:Golden Moves", group_name="Golden Moves",
         raw_text="Good morning team ☀️", reason="conversa",
-        received_at="2026-08-25T09:00:00+00:00",
+        received_at=_dias_atras(2, hora=9),
     )
     db.record_ignored(
         message_id="ig-2", source="tg:Golden Moves", group_name="Golden Moves",
         raw_text="+50 pips 🔥", reason="conversa",
-        received_at="2026-08-25T09:05:00+00:00",
+        received_at=_dias_atras(2, hora=9, minuto=5),
     )
     r = client.get("/api/analysis/rejections?days=30&strategy_id=nova_gestao")
     assert r.status_code == 200
@@ -5583,7 +5606,7 @@ def test_report_accepts_lane_filter(client):
     drawdown referenciado ao saldo da lane; sem lane, `by_lane` é exposto."""
     from app.main import state
     from app.models import Trade
-    now = "2026-08-17T12:00:00"
+    now = _dias_atras(2)
     state.db.insert_trade(Trade(
         id="lane-report-main", signal_id="lane-sig-m", symbol="EURUSD",
         direction="BUY", entry=1.0850, stop_loss=1.0820, take_profit_1=1.0890,
