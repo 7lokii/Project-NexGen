@@ -1,468 +1,464 @@
-# Project NexGen — O que é isto? (para quem não é programador)
+# Project NexGen - What is this? (for non-programmers)
 
-Este documento explica o projeto em linguagem simples, sem código. Se és o
-Rúben ou o Miguel, começa por aqui.
+This document explains the project in plain language, no code. If you are
+Ruben or Miguel, start here.
 
-A ferramenta de evidência também regista, quando autorizada, o que o broker
-respondeu: fills de abertura/fecho, retcodes de ordens e alterações de stop,
-tickets e tempos de execução. A página **Auditoria** mostra a qualidade diária
-desses dados, compara cada fill com um replay seguro e indica a primeira
-inconsistência. Também mostra um gate de 30 dias para as auto-escadas em
-shadow-paper, com pelo menos 20 trades e regras estatísticas explícitas.
-Isto melhora a auditoria, mas continua desligado por defeito e não transforma
-um replay numa ordem real nem promove uma estratégia sozinho. Na página
-**Auditoria** podes descarregar o relatório em JSON/CSV e arquivar a janela
-forward para enviar ou consultar mais tarde. O resumo diário mostra no feed e
-no Telegram quantos eventos estão completos e como avança cada auto-escada.
-Enquanto faltar qualquer regra do gate, o botão **Promover** aparece bloqueado;
-o servidor também recusa a promoção, mesmo que alguém tente fazê-la por API.
-
----
-
-## Em uma frase
-
-Um programa que **lê os sinais do grupo de Telegram**, valida rapidamente se a
-mensagem incompleta foi **editada** e depois **faz a trade sozinho** — sempre
-em modo automático, com as verificações de risco sempre ativas (não existe
-modo manual).
-
-> ⚠️ **Importante e honesto:** o projeto suporta simulação/paper e execução
-> numa conta **demo MT5**. O servidor da VPS pode enviar ordens para a demo;
-> isto não é dinheiro real, mas continua a exigir as mesmas precauções. Uma
-> conta real nunca é ativada sem instrução explícita.
+The evidence tool also records, when allowed, what the broker
+answered: open/close fills, order retcodes and stop changes,
+tickets and execution times. The **Audit** page shows the daily quality
+of that data, compares each fill with a safe replay and points to the first
+mismatch. It also shows a 30-day gate for the auto-ladders in
+shadow-paper, with at least 20 trades and explicit statistical rules.
+This improves audit, but stays off by default and does not turn
+a replay into a real order nor promote a strategy alone. On the
+**Audit** page you can download the report in JSON/CSV and archive the forward window
+to send or check later. The daily summary shows in the feed and
+on Telegram how many events are complete and how each auto-ladder advances.
+While any gate rule is missing, the **Promote** button shows locked;
+the server also refuses promotion, even if someone tries it by API.
 
 ---
 
-## O que o programa faz, passo a passo
+## In one sentence
 
-### Validação técnica sem tocar na conta
+A program that **reads the signals from the Telegram group**, quickly checks if the
+incomplete message was **edited** and then **trades on its own** - always
+in automatic mode, with risk checks always on (there is no
+manual mode).
 
-Existe também uma ferramenta de estudo chamada **replay determinístico**. Ela
-recebe uma sequência de sinais, preços, mensagens de gestão e, quando existe,
-evidência do broker (fills, retcodes, alterações de stop e latência). Repete os
-eventos de decisão nos três caminhos internos (simulação, paper e MT5 em
-MT5 dry-run) e compara decisões, stops, motivo de saída e lucro. A evidência do
-broker é apenas passiva no estudo; não força um resultado. Corre em bases de
-dados temporárias: não cria trades na produção, não envia ordens e não altera a
-estratégia principal.
+> ⚠️ **Important and honest:** the project supports simulation/paper and execution
+> on an **MT5 demo** account. The VPS server can send orders to the demo;
+> this is not real money, but still needs the same care. A
+> real account is never enabled without an explicit instruction.
 
-No histórico de trades existe também o botão **🔁 replay**. Ele recolhe a fita
-daquela trade a partir do journal (sinal, preços e gestão), corre a mesma
-sequência nos três motores e mostra se houve divergências passo a passo. É uma
-ferramenta de auditoria: continua read-only, não envia ordens MT5 e não mexe no
-saldo nem na estratégia principal.
+---
 
-1. **Recebe o sinal** — ou clicas num botão de demonstração na dashboard, ou
-   o programa **lê o grupo de Telegram** (ver guia abaixo).
-2. **Entende o sinal** — o programa "lê" a mensagem e extrai os dados:
-   qual o par (ex.: EURUSD), se é compra ou venda, a entrada, o stop loss e
-   os alvos (**TP1 a TP5**, conforme o grupo enviar). Funciona em português
-   e inglês.
-3. **Espera por edições (10 segundos por defeito)** — uma mensagem incompleta
-   pode ser corrigida pelo grupo logo depois de enviada. O relógio reinicia
-   quando chega uma edição. Um sinal já completo não espera: segue
-   imediatamente para as verificações de risco (decisão baseada em dados —
-   ver secção "Janela de edição"); o valor é configurável na dashboard
+## What the program does, step by step
+
+### Technical validation without touching the account
+
+There is also a study tool called **deterministic replay**. It
+takes a sequence of signals, prices, management messages and, when present,
+broker evidence (fills, retcodes, stop changes and latency). It repeats the
+decision events on the three internal paths (simulation, paper and MT5 in
+MT5 dry-run) and compares decisions, stops, exit reason and profit. Broker evidence
+is only passive in the study; it never forces a result. It runs on temp
+databases: it creates no production trades, sends no orders and does not change the
+main strategy.
+
+In trade history there is also the **replay** button. It collects the tape of
+that trade from the journal (signal, prices and management), runs the same
+sequence on the three engines and shows if there were step-by-step divergences. It is an
+audit tool: still read-only, sends no MT5 orders and touches neither
+balance nor the main strategy.
+
+1. **Gets the signal** - either you click a demo button on the dashboard, or
+   the program **reads the Telegram group** (see guide below).
+2. **Understands the signal** - the program "reads" the message and pulls the data:
+   which pair (e.g. EURUSD), buy or sell, entry, stop loss and
+   targets (**TP1 to TP5**, as the group sends). It works in Portuguese
+   and English.
+3. **Waits for edits (10 seconds by default)** - an incomplete message
+   may be fixed by the group right after it is sent. The clock restarts
+   when an edit arrives. An already complete signal does not wait: it goes
+   straight to risk checks (data-driven decision -
+   see "Edit window"); the value is set on the dashboard
    (`edit_window_seconds`).
-4. **Verifica o risco** — antes de qualquer trade, confirma que está tudo
-   dentro dos limites (ver abaixo).
-5. **Decide** — faz a trade sozinho: só existe o modo automático (o modo
-   manual foi removido). Sinais bloqueados pelas proteções de zona de
-   entrada/lote mínimo ficam `pending` para confirmação explícita do
-   operador na dashboard.
-6. **Reage às instruções do grupo** — além dos sinais, o programa lê as
-   mensagens de **gestão** do grupo e age nelas sozinho (ver secção abaixo).
+4. **Checks risk** - before any trade, it confirms all is
+   within limits (see below).
+5. **Decides** - it trades alone: only automatic mode exists (manual mode
+   was removed). Signals blocked by entry-zone/min-lot protections stay `pending` for explicit
+   operator confirmation on the dashboard.
+6. **Reacts to group instructions** - besides signals, the program reads the
+   **management** messages of the group and acts on them alone (see section below).
 
 ---
 
-## A estratégia das "N entradas" (TP1 a TP5)
+## The "N entries" strategy (TP1 to TP5)
 
-Cada sinal abre **uma posição por alvo** que o grupo enviar (até 5):
+Each signal opens **one position per target** the group sends (up to 5):
 
-- A **primeira** fecha no **TP1** (lucro mais pequeno);
-- As **seguintes** ficam a correr até aos seus alvos (**TP2, TP3, …**) — lucros
-  maiores, mas só se o preço lá chegar.
+- The **first** closes at **TP1** (smaller profit);
+- The **next ones** keep running to their targets (**TP2, TP3, ...**) - bigger
+  profits, but only if price gets there.
 
-E há uma proteção importante: **quando a primeira fecha no TP1, todas as
-restantes passam a ter o stop loss na entrada** (ficam "a zeros"). Ou seja,
-mesmo que o preço volte atrás, essas posições não perdem dinheiro — cada uma
-corre depois para o seu próprio alvo.
+And there is an important guard: **when the first closes at TP1, all
+remaining ones move stop loss to entry** (they go "flat"). So
+even if price comes back, those positions lose no money - each one
+then runs to its own target.
 
-O grupo também **dá instruções ao vivo** e o programa obedece:
+The group also **gives live instructions** and the program obeys:
 
-| O grupo diz… | O programa faz… |
+| The group says... | The program does... |
 |---|---|
-| "TP1 HIT" | Move o stop loss das posições restantes para a entrada (ficam protegidas) |
-| "close first entries and move stop loss above best entries" | Fecha a **primeira posição** (bloqueia lucro) e sobe o stop das restantes para **acima da entrada** |
-| "Close TP1 here" (sem "move stop loss") | Fecha só a primeira posição; as restantes mantêm o stop |
-| "Adjust/Move SL to X" | Move o stop loss de **todas** as posições abertas para o nível indicado |
-| "TP1 4059 SL 4047" (como resposta a um sinal) | Corrige os níveis do sinal (edição/confirmação do grupo) |
-| "we're out" | Fecha **tudo** ao preço atual; "out at BE" protege as pernas restantes na entrada (não força um fecho imediato) |
-| "SL HIT" | Regista e reconcilia com o broker |
-| Resumo diário/semanal | Guarda o win rate que o grupo reporta (ver "páginas de teste") |
-| "Correction: … Trades Sent …" | Atualiza o resumo original quando a mensagem responde a ele (ou identifica um único período) e volta a comparar os números com o bot |
-| "Signal #1: Sell at 4357 … +110 pips" | Guarda o **recount por trade** e compara-o com o que o bot realmente fechou nesse dia (entrada e pips) — se divergirem, avisa-te |
+| "TP1 HIT" | Moves stop loss of remaining positions to entry (they stay protected) |
+| "close first entries and move stop loss above best entries" | Closes the **first position** (locks profit) and moves the stop of the rest to **above entry** |
+| "Close TP1 here" (without "move stop loss") | Closes only the first position; the rest keep the stop |
+| "Adjust/Move SL to X" | Moves stop loss of **all** open positions to the given level |
+| "TP1 4059 SL 4047" (as reply to a signal) | Fixes signal levels (group edit/confirm) |
+| "we're out" | Closes **all** at current price; "out at BE" protects remaining legs at entry (does not force an immediate close) |
+| "SL HIT" | Logs and reconciles with the broker |
+| Daily/weekly summary | Stores the win rate the group reports (see "test pages") |
+| "Correction: ... Trades Sent ..." | Updates the original summary when the message replies to it (or points to a single period) and re-compares numbers with the bot |
+| "Signal #1: Sell at 4357 ... +110 pips" | Stores the **per-trade recount** and compares it with what the bot really closed that day (entry and pips) - warns you if they differ |
 
-Estas mensagens são tratadas **na hora** (não esperam o minuto da janela de
-edição — seria tarde demais) e aparecem no histórico com o ícone 📨.
+These messages are handled **at once** (they do not wait for the edit-window minute -
+it would be too late) and show in history with the 📨 icon.
 
-**E o programa sabe a que sinal a mensagem responde?** Sim. Quando o grupo
-responde a uma mensagem no Telegram (ex.: "SL HIT" como resposta ao sinal de
-compra), o programa captura essa relação e age na trade **daquele sinal** —
-mesmo que haja várias trades abertas do mesmo par. Se a mensagem chegar antes
-de a trade abrir (sinal ainda a aguardar edições), a instrução fica guardada
-e é aplicada automaticamente quando a trade abrir.
+**And does the program know which signal the message answers?** Yes. When the group
+replies to a message on Telegram (e.g. "SL HIT" as reply to the buy
+signal), the program captures that link and acts on the trade **of that signal** -
+even with several open trades of the same pair. If the message arrives before
+the trade opens (signal still waiting for edits), the instruction is stored
+and applied automatically when the trade opens.
 
-> Nota: o risco total por trade é dividido pelas N posições — abrir mais alvos
-> não aumenta o que arriscas se o stop loss for atingido.
-
----
-
-## A janela até 28 de agosto e a promoção
-
-Na página principal existe um cartão **“Quanto falta para promover a
-auto_escada_3”**. Ele junta quantas trades shadow já fecharam, PF, intervalo
-IC95, drawdown e o ritmo/ETA. Enquanto faltar qualquer regra objetiva, o botão
-de promoção continua bloqueado — isto não muda a conta demo sozinho.
-
-A mesma informação, incluindo trades reais fechadas/abertas, P&L, dias restantes
-e ritmo face à meta mínima 10 e alvo 20, está disponível em `GET /api/window`.
-A janela termina às 00:00 UTC de 29/08/2026.
-
-## O slider de risco
-
-Na dashboard há um **slider de risco** (ex.: 0.1% a 5%).
-
-Ele não escolhe o "tamanho" da trade diretamente — escolhe **quanto estás
-disposto a perder se o stop loss for atingido**, em percentagem da conta.
-
-Exemplo: com 10 000 € e risco de 1%, cada trade arrisca no máximo 100 €. Se o
-stop loss estiver longe, o programa usa menos "peso"; se estiver perto, usa
-mais. O risco em dinheiro é sempre o mesmo.
-
-**Regra de ouro:** começa com 0.1–0.5% e só sobe depois de veres resultados
-na simulação. O slider não te protege de sinais maus — só define o quanto te
-dói quando eles forem maus.
+> Note: total risk per trade is split across the N positions - opening more targets
+> does not raise what you risk if stop loss hits.
 
 ---
 
-## As proteções (porque é que isto não rebenta à toa)
+## The window to 28 August and promotion
 
-| Proteção | O que faz |
+On the main page there is a card **"How much is left to promote
+auto_escada_3"**. It joins how many shadow trades already closed, PF, IC95 range,
+drawdown and pace/ETA. While any objective rule is missing, the
+promotion button stays locked - this does not change the demo account alone.
+
+The same info, including real closed/open trades, P&L, days left
+and pace vs the minimum target 10 and goal 20, is at `GET /api/window`.
+The window ends at 00:00 UTC on 29/08/2026.
+
+## The risk slider
+
+On the dashboard there is a **risk slider** (e.g. 0.1% to 5%).
+
+It does not pick trade "size" directly - it picks **how much you are
+willing to lose if stop loss hits**, as a percent of the account.
+
+Example: with 10,000 EUR and 1% risk, each trade risks at most 100 EUR. If the
+stop loss is far, the program uses less "weight"; if it is near, it uses
+more. Risk in money is always the same.
+
+**Golden rule:** start at 0.1-0.5% and only raise after seeing results
+in simulation. The slider does not guard you from bad signals - it only sets how much it
+hurts when they are bad.
+
+---
+
+## The guards (why this does not blow up randomly)
+
+| Guard | What it does |
 |---|---|
-| **Kill switch** | Um botão vermelho que pausa tudo na hora. As posições já abertas continuam a ser geridas (para não as largar ao acaso), mas nada de novo é aberto. |
-| **Limite de perda diária** | Se hoje já perdeste mais do que o limite (ex.: 3%), o programa **pausa sozinho** e avisa. Normalmente reativa-se manualmente; quando existe um prazo `killswitch_rearm_at`, pode rearmar automaticamente no instante UTC definido e avisa no feed/Telegram. |
-| **Máximo de posições** | Limita quantas trades podem estar abertas ao mesmo tempo (default 5; configurável). |
-| **Confirmação explícita (não é modo manual)** | Só sinais bloqueados pelas proteções (zona de entrada / lote mínimo) ficam pendentes para confirmação do operador — e mesmo essa confirmação **não** contorna os interruptores globais (kill switch, limite diário, máximo de posições). |
+| **Kill switch** | A red button that pauses all at once. Already open positions keep being managed (so they are not left adrift), but nothing new opens. |
+| **Daily loss limit** | If today you already lost more than the limit (e.g. 3%), the program **pauses alone** and warns. Normally it re-arms manually; when a `killswitch_rearm_at` deadline exists, it can re-arm automatically at the set UTC time and warns on feed/Telegram. |
+| **Max positions** | Caps how many trades can be open at the same time (default 5; settable). |
+| **Explicit confirm (not manual mode)** | Only signals blocked by guards (entry zone / min lot) stay pending for operator confirm - and even that confirm does **not** bypass the global switches (kill switch, daily limit, max positions). |
 
-### A proteção híbrida (em teste)
+### The hybrid guard (in test)
 
-Existe uma estratégia experimental chamada **Auto escada 3 híbrida**. Ela usa
-primeiro a proteção automática (escada e trailing, sem esperar por uma pessoa)
-e só aproveita uma mensagem `protect` do grupo quando essa mensagem melhora o
-stop loss. Nunca recua uma proteção que já foi conquistada. A página de teste
-e o Relatório mostram o vencedor, os pips/segundos de atraso e a atribuição
-causal de cada evento; a estratégia não substitui a principal nem envia ordens
-para a conta demo sem promoção explícita.
+There is a trial strategy called **Hybrid auto ladder 3**. It uses
+first the automatic guard (ladder and trailing, no need to wait for a person)
+and only takes a `protect` message from the group when that message improves the
+stop loss. It never steps back a guard already won. The test page
+and Report show the winner, delay pips/seconds and causal
+credit of each event; the strategy neither replaces the main one nor sends orders
+to the demo account without explicit promotion.
 
-O estudo da variante mais agressiva, **Auto escada 5**, também corre uma grelha
-segura de 27 combinações do modo defensivo. Como nenhuma baixou o drawdown do
-período antigo para menos de 50% e apareceu um pico isolado, o bot manteve os
-valores atuais — não escolheu um valor só porque ganhou num ponto do histórico.
+The study of the more aggressive variant, **Auto ladder 5**, also runs a safe
+grid of 27 combos of defensive mode. As none cut the old-period drawdown
+below 50% and an lone spike showed, the bot kept current
+values - it did not pick a value just because it won at one point of history.
 
-No Item 3, testámos a **confirmação automática** da Auto escada 3 ligada e
-desligada, nas três janelas históricas, sem misturar dados entre variantes.
-Ligá-la reduziu o drawdown antigo de **312,9% para 278,3%** e baixou o PF
-atual só de **1,27 para 1,26** (0,79%, dentro do limite de 10%). Por isso,
-essa estratégia passou a usar a confirmação por defeito. Isto altera apenas
-a estratégia de teste/paper — a referência `nova_gestao`; a conta demo usa `tp2_protect` e não
-foram promovidas.
+In Item 3, we tested **auto confirm** of Auto ladder 3 on and
+off, on the three history windows, with no data mixed between variants.
+Turning it on cut old drawdown from **312.9% to 278.3%** and cut current PF
+only from **1.27 to 1.26** (0.79%, inside the 10% cap). So
+that strategy now uses confirm by default. This only changes
+the test/paper strategy - the `nova_gestao` reference; the demo account uses `tp2_protect` and none
+were promoted.
 
-Antes de uma estratégia automática poder passar da corrida paper para a conta
-demo MT5, o programa percorre uma janela de 10 trades reais: compara a saída
-com o paper (tem de coincidir em pelo menos 9), verifica se todas as posições
-têm stop loss, se não há ordens duplicadas e se o broker aceitou os modifies.
-Se um gate falhar, o mecanismo pode fazer rollback para a estratégia configurada na demo. Isto é
-uma proteção da conta demo; nunca promove uma conta real.
-
----
-
-## Operação 24/7 e travões de segurança
-
-- **Conta MT5 hedged**: a estratégia abre uma perna independente por TP. Em
-  execução real o bot verifica `margin_mode=RETAIL_HEDGING`; uma conta netting
-  ou um modo desconhecido fica bloqueado e aparece como aviso vermelho, sem
-  enviar ordens.
-- **Logs**: `server.log`, `listener.log` e os respetivos `.err.log` rodam
-  automaticamente por tamanho (10 MiB e 5 cópias por defeito). Os limites são
-  `SIGNALBOT_LOG_MAX_BYTES` e `SIGNALBOT_LOG_BACKUP_COUNT`.
-- **Espaço e backups**: há um check diário de espaço livre (10 GiB por defeito)
-  no feed/Telegram. O teste mensal
-  `.venv/Scripts/python backup_db.py --restore-check` restaura o backup para
-  uma BD temporária e valida a integridade; um backup corrompido gera alerta.
-
-## Saúde operacional e CI
-
-Na tab **Relatório** há o painel **🩺 Saúde operacional**. Ele reúne, sem
-interferir nas trades, as exceções recentes (com o contexto), o spread MT5
-médio por símbolo/mês, as reconexões por semana e os modifies de stop recusados
-pelo broker. Quando ainda não há amostras, o painel diz isso explicitamente;
-uma tendência só é considerada depois de pelo menos duas semanas de dados.
-Os mesmos dados podem ser consultados por `GET /api/operations?days=90`.
-
-O projeto também tem CI no GitHub: cada push ou pull request corre a suite
-completa e valida as regras de documentação. Existe um teste manual opcional
-que cria uma falha deliberada apenas para confirmar que o CI a assinala; ele
-não é executado nas alterações normais.
-
-### Shadow-paper: aprender com sinais live sem abrir a demo
-
-A dashboard tem um painel **👻 Shadow-paper**. Quando está ativo, cada sinal
-live completo abre uma cópia numa conta virtual da estratégia escolhida — por
-defeito `auto_escada_3` — mesmo que a conta principal esteja em **Manual** ou
-com o **Kill switch** ligado. Isto serve para acumular evidência forward da
-auto sem permitir uma única ordem no MT5.
-
-A cópia fica separada e identificada como `shadow`: tem saldo virtual,
-kill diário e métricas próprios, e não altera saldo, posições, risco ou
-execução da conta demo nem a conta da corrida paper normal. Edições do sinal
-e mensagens do grupo como
-`TP1 HIT`, `protect`, `we're out`, `move SL` e correções `TP1 ... SL ...`
-seguem também para o papel shadow, com a mesma relação de resposta do Telegram.
-As entregas da gestão shadow e da corrida paper normal têm marcadores separados,
-por isso uma instrução pendente não se perde quando só uma das contas já abriu.
-O replay histórico e propostas interpretadas por IA não entram nesta amostra.
-Podes desligar o modo ou escolher várias estratégias no painel; desligá-lo
-impede novas aberturas, mas não apaga as trades shadow já registadas.
-
-Existe também um **journal opcional de execução** para investigações: guarda
-quotes e mensagens de gestão numa fita read-only que pode ser reproduzida para
-perceber porque os motores tomaram uma decisão. Está desligado por defeito,
-não abre trades e não muda o intervalo normal de produção.
-
-## Modo de funcionamento
-
-O programa corre sempre em **modo automático**: faz tudo sozinho, desde que
-passe nas verificações de risco. As proteções (kill switch, limite diário,
-máx. posições) estão sempre ativas — não existe modo manual. Só sinais
-bloqueados pelas proteções de zona de entrada/lote mínimo ficam pendentes
-para **confirmação explícita** do operador na dashboard.
+Before an auto strategy can move from the paper run to the MT5
+demo account, the program walks a 10-trade real window: it compares the exit
+with paper (must match on at least 9), checks all positions
+have stop loss, no duplicate orders and that the broker took the modifies.
+If a gate fails, the path can roll back to the strategy set on demo. This is
+a demo-account guard; it never promotes a real account.
 
 ---
 
-## Onde vês tudo
+## 24/7 operation and safety brakes
 
-A **dashboard** é uma página web (no teu PC, ou mais tarde numa VPS acessível
-pelo telemóvel), organizada em separadores. **Quando o programa corre na VPS
-com login ligado, a dashboard pede uma password** (ecrã de login 🔐) — só
-entra quem tiver a palavra-passe, e há um botão "🚪 Sair" no topo para
-terminar a sessão. O botão de **Kill switch** (pausar tudo) continua sempre
-acessível depois de entrares.
+- **Hedged MT5 account**: the strategy opens one independent leg per TP. In
+  real execution the bot checks `margin_mode=RETAIL_HEDGING`; a netting account
+  or unknown mode stays blocked and shows as a red warning, with no
+  orders sent.
+- **Logs**: `server.log`, `listener.log` and the `.err.log` ones rotate
+  automatically by size (10 MiB and 5 copies by default). The caps are
+  `SIGNALBOT_LOG_MAX_BYTES` and `SIGNALBOT_LOG_BACKUP_COUNT`.
+- **Space and backups**: there is a daily free-space check (10 GiB by default)
+  on feed/Telegram. The monthly test
+  `.venv/Scripts/python backup_db.py --restore-check` restores the backup to
+  a temp DB and checks integrity; a corrupt backup raises an alert.
 
-A dashboard tem o **estilo Cyberpunk 2077** (cores neon **roxo e vermelho**,
-fontes técnicas e um efeito de ecrã CRT subtil) — é o único tema do site.
-Em ecrãs largos, o fundo mostra **terminais de código animados** (como um
-monitor antigo) com o **tema do próprio bot**: sinais XAUUSD com TP1..TP5 e
-SL, ticks de preço, fills e saldo/equity, com uma retícula ao centro. A
-**navegação está numa barra fixa no topo** (itens horizontais; no telemóvel
-abre com o ☰) e a barra de estado no topo: os badges (modo, estratégia,
-MT5, execução), os utilizadores online + relógio, o **🛑 Kill switch** e o
-**Sair**. A faixa de **preços ao vivo** (GOLD, SILVER, EURUSD…) foi
-**removida** para um topbar mais limpo e rápido — o preço ao vivo vive no
-badge "preços reais"/"simulação". Navegas
-com as **setas ↑↓ + Enter** (ou com o rato) entre a **página principal**
-(a conta MT5 demo com execução broker, com a estratégia ativa (`tp2_protect`) — **começa a partir de hoje**,
-sem simulação do passado) e o **dropdown ▚ ESTRATÉGIAS** no topo — onde
-vivem as **7 estratégias atualmente visíveis** (`nova_gestao`,
+## Operational health and CI
+
+On the **Report** tab there is the **🩺 Operational health** panel. It joins, with no
+effect on trades, recent exceptions (with context), average MT5 spread
+per symbol/month, reconnects per week and broker-rejected stop modifies.
+When no samples exist yet, the panel says so plainly;
+a trend only counts after at least two weeks of data.
+The same data is at `GET /api/operations?days=90`.
+
+The project also has CI on GitHub: each push or pull request runs the full
+suite and checks doc rules. There is an optional manual test
+that makes a deliberate failure only to confirm CI flags it; it
+does not run on normal changes.
+
+### Shadow-paper: learn from live signals without opening demo
+
+The dashboard has a **👻 Shadow-paper** panel. When on, each full live
+signal opens a copy in a virtual account of the picked strategy - by
+default `auto_escada_3` - even if the main account is in **Manual** or
+with **Kill switch** on. This collects forward evidence of the
+auto with no single order on MT5.
+
+The copy stays apart and tagged `shadow`: it has its own virtual balance,
+daily kill and metrics, and changes neither balance, positions, risk nor
+execution of the demo account or the normal paper-run account. Signal edits
+and group messages like
+`TP1 HIT`, `protect`, `we're out`, `move SL` and `TP1 ... SL ...` fixes
+also go to shadow paper, with the same Telegram reply link.
+Shadow management deliveries and the normal paper-run ones have separate markers,
+so a pending instruction is not lost when only one of the accounts already opened.
+History replay and AI-parsed proposals do not enter this sample.
+You can turn the mode off or pick several strategies in the panel; turning it off
+stops new opens, but does not erase shadow trades already stored.
+
+There is also an **optional execution journal** for research: it stores
+quotes and management messages in a read-only tape that can replay to
+see why engines made a decision. It is off by default,
+opens no trades and does not change the normal production range.
+
+## Run mode
+
+The program always runs in **automatic mode**: it does all alone, as long as
+it passes risk checks. Guards (kill switch, daily cap,
+max positions) are always on - there is no manual mode. Only signals
+blocked by entry-zone/min-lot guards stay pending
+for explicit operator **confirm** on the dashboard.
+
+---
+
+## Where you see all
+
+The **dashboard** is a web page (on your PC, or later on a VPS reached
+by phone), split in tabs. **When the program runs on the VPS
+with login on, the dashboard asks for a password** (🔐 login screen) - only
+one with the password gets in, and there is a "🚪 Exit" button at the top to
+end the session. The **Kill switch** button (pause all) stays always
+reachable after you log in.
+
+The dashboard has the **Cyberpunk 2077 style** (neon **purple and red** colors,
+tech fonts and a subtle CRT screen effect) - it is the only site theme.
+On wide screens, the back shows **animated code terminals** (like an
+old monitor) with the **bot theme**: XAUUSD signals with TP1..TP5 and
+SL, price ticks, fills and balance/equity, with a reticle in the middle. The
+**nav sits in a fixed top bar** (flat items; on phone it
+opens with ☰) and the top status bar: badges (mode, strategy,
+MT5, execution), online users + clock, **🛑 Kill switch** and
+**Exit**. The **live price strip** (GOLD, SILVER, EURUSD...) was
+**removed** for a cleaner and faster topbar - live price lives in the
+"real prices"/"simulation" badge. You move
+with **↑↓ arrows + Enter** (or mouse) between the **main page**
+(the MT5 demo account with broker execution, with the active strategy (`tp2_protect`) - **starts from today**,
+no past simulation) and the **▚ STRATEGIES dropdown** at the top - home of
+the **7 currently visible strategies** (`nova_gestao`,
 `nova_gestao_fallback`, `tp2_protect`, `auto_3`, `auto_escada_3`,
-`auto_escada_3_hibrida` e `auto_escada_5`), cada uma com a sua página de
-simulação (saldo a começar há 1 mês com 1.000 €, curva,
-comparação e corrida paper ao vivo). As estratégias antigas perdedoras
-(`tp2`, `tp2_gestao`, `nova_gestao_3`, `auto_2`, `auto_protect_5` e a regra
-R4 `auto_escada_3_struggle`) foram removidas do programa a 01/09; `nova` e
-`auto_5` continuam apenas como referências internas de backtest (ocultas do
+`auto_escada_3_hibrida` and `auto_escada_5`), each with its own
+simulation page (balance starting 1 month ago with 1,000 EUR, curve,
+compare and live paper run). Old loser strategies
+(`tp2`, `tp2_gestao`, `nova_gestao_3`, `auto_2`, `auto_protect_5` and R4 rule
+`auto_escada_3_struggle`) were removed from the program on 01/09; `nova` and
+`auto_5` stay only as internal backtest refs (hidden from
 menu).
 
-Na análise de resolução, o bot só chama um resultado de M1 quando o Yahoo ainda
-conserva os candles (até cerca de 7 dias). Para períodos maiores, o relatório
-mostra claramente o fallback para 15m/1h; também compara atrasos de 0, 8, 60 e
-300 segundos. Assim não confundimos uma amostra recente de M1 com um histórico
-completo.
- A **TP1..TP5 + gestão** é a **referência** (a estratégia ativa na
-config, que a principal executa e que aparece na corrida paper) — e o bot
-mostra quem está a ganhar entre as visíveis ao vivo. Há ainda uma página
-**HELP** (no
-menu, logo a seguir ao diagnóstico) que explica cada estratégia com cartões
-interativos
-(clica
-para expandir: como funciona + números reais dos últimos 30 dias) e um
-glossário de conceitos (TP, SL, breakeven, gestão do grupo, kill diário,
-corrida paralela). Para a versão completa e estática (incluindo as
-estratégias ocultas e os resultados por janela), há o documento
-**`docs/ESTRATEGIAS.md`** no projeto. Na corrida, quando a estratégia automática (Auto escada
-3) e a referência saem **diferentes no mesmo sinal** — por exemplo, o grupo
-mandou "sair" e a automática continuou — o feed mostra uma notificação
-**⚖️ Divergência** com o P&L de cada lado. A página principal tem um
-**painel da Fase 2** com o saldo e o PF da automática vs a referência ao
-vivo, o contador de sinais resolvidos (N) e o progresso para os critérios
-de aprovação (N ≥ 20 · PF ≥ 1.5); a tab **Relatório** mostra a tabela de
-todas as divergências por sinal (razão da saída e P&L de cada lado) e a
-tabela **⚡ Real vs backtest** — quando a conta demo fecha trades, cada uma
-aparece comparada com o backtest do mesmo sinal (diferença de entrada,
-preço real vs o fill do simulador, e de saída, fecho real vs o nível
-esperado). O **resumo diário** (à hora configurada) inclui também o estado
-da corrida da Fase 2: saldo e PF da automática vs a referência e quantos
-sinais faltam para os critérios. Cada página de teste da Fase 2 tem ainda
-um botão **"⬇️ Exportar CSV"** que descarrega as trades de papel da
-estratégia e da referência (preços, timestamps, SLs, motivo de saída)
-para análise fora da dashboard. A página do **TP1→BE + sair no
-TP2** mostra ainda um **exemplo real de uma trade**: o gráfico com o
-caminho do preço, a entrada, o SL, o TP1 e o TP2, e a linha do tempo de
-onde cada evento teria acontecido.
-Cada página de teste tem um botão **"⬆️ Promover a principal"** para passar
-essa estratégia para a conta real (na página da própria estratégia ativa o
-botão não aparece — ela já é a principal); a principal mostra um **badge com
-a estratégia ativa** (com clarão quando muda) que indica também **quais os
-parâmetros em uso na execução real** (nº de pernas, fechar no TP, lote fixo
-e gestão do grupo) e um **aviso vermelho se alguma das estratégias de teste
-estiver a ganhar à principal** na corrida paper. Quando promoves uma
-estratégia, fica uma **notificação no feed** a dizer exatamente o que
-mudou na execução real. Se a estratégia guardada já não existir (foi
-removida), o badge avisa a **vermelho** "config órfã" e mostra qual é a
-estratégia de recurso a correr — nunca engana.
-Na tab **🔧 Diagnóstico** aparece também o **"📚 Último replay do
-histórico"**: a data e o total de mensagens/sinais/gestão/ignoradas que o
-bot reencaminhou no último arranque.
-Cada página de teste mostra **dois horizontes**: a simulação do **último
-mês** (seletor de 7/30/90 dias) e o bloco **"📜 Desde o início do grupo"**
-— o mesmo replay sobre **todo o histórico** de sinais que o bot conhece —
-mais a **tabela de trades de papel** da corrida paralela (cada trade
-fechada com o seu P&L, símbolo, entrada e lotes). O **comparativo de cada
-página** desenha agora 3 estratégias nos mesmos sinais — **TP1..TP5,
-TP1..TP5 + gestão (a principal) e fechar no TP2** — com o P&L de cada uma
-na legenda, para veres o que a gestão do grupo teria dado face às outras.
-Na tab **🔧 Diagnóstico** há também um botão "🧹 Limpar reinícios" (com
-confirmação) para apagar à mão o histórico de reinícios do listener, e um
-bloco **"⏱️ Atraso das edições do grupo"** que mostra quanto tempo o grupo
-demora a editar as mensagens (mínimo, média, mediana, p90, máximo) face à
-janela atual de 20s — a mediana a verde se estiver dentro da janela e a
-vermelho se não, para saberes se a janela está bem calibrada com dados
-reais em vez de por tentativa.
-Se o grupo **editar uma mensagem depois de o bot já ter executado** a
-trade (janela passada), aparece um **alerta vermelho** na dashboard a
-avisar que a entrada pode estar desatualizada. E o contrário também:
-se um sinal chegar **incompleto** (ex.: entrada sem TP/SL ainda) e o
-grupo completar a mensagem nos minutos seguintes, o bot **recupera o
-sinal** e abre a janela de espera de novo com o conteúdo certo.
-As **páginas de teste** do menu terminal mostram a comparação das estratégias
-(nova, nova + gestão — a principal — e fechar no TP2) sobre os sinais reais
-do grupo, do período escolhido (7/30/90 dias) **e** um bloco **"📜 Desde o
-início do grupo"** sobre todo o histórico, para veres se o edge se mantém.
-A **simulação do último mês** ("se começasses há 1 mês com X €, hoje terias
-Y €") está nessas mesmas páginas, tal como o **walk-forward** (o edge
-mantém-se ao longo do tempo?) e os **estudos de risco** (risco %/saldo do
-sim — o saldo default são os 1.000 € próprios de cada estratégia). É
-simulação pura: nunca abre trades reais.
-Cada página de teste tem o seletor de período (7/30/90 dias ou **tudo**),
-que fica **guardado** — recarregues a página e ele mantém a escolha. Quando
-o bot arranca e termina de ler o histórico do grupo, aparece no feed a
-notificação **"📚 Replay do histórico concluído"** com o total de mensagens
-e de sinais/gestão/ignoradas reencaminhados.
+On resolve analysis, the bot only calls an M1 result when Yahoo still
+keeps the candles (up to about 7 days). For longer spans, the report
+plainly shows fallback to 15m/1h; it also compares delays of 0, 8, 60 and
+300 seconds. So we do not mix a fresh M1 sample with a full
+history.
+  The **TP1..TP5 + management** is the **reference** (the active strategy in
+config, which the main one runs and which shows in the paper run) - and the bot
+shows who is winning live among the visible ones. There is also a **HELP** page (in
+menu, right after diagnostics) that explains each strategy with live
+cards
+(click
+to expand: how it works + real numbers of the last 30 days) and a
+glossary (TP, SL, breakeven, group management, daily kill,
+parallel run). For the full static version (with
+hidden strategies and results per window), see
+**`docs/ESTRATEGIAS.md`** in the project. In the run, when the auto strategy (Auto ladder
+3) and the reference exit **different on the same signal** - e.g. the group
+said "exit" and the auto kept going - the feed shows a
+**⚖️ Divergence** note with the P&L of each side. The main page has a
+**Phase 2 panel** with live auto vs reference balance and PF, the solved-signal count (N) and progress to
+approval rules (N ≥ 20 · PF ≥ 1.5); the **Report** tab shows the table of
+all per-signal divergences (exit reason and P&L of each side) and the
+**⚡ Real vs backtest** table - when the demo account closes trades, each one
+shows compared with the same-signal backtest (entry diff,
+real price vs simulator fill, and exit, real close vs expected
+level). The **daily summary** (at the set hour) also has Phase 2 run state:
+auto vs reference balance and PF and how many
+signals are left for the rules. Each Phase 2 test page also has
+an **"⬇️ Export CSV"** button that downloads the paper trades of the
+strategy and reference (prices, timestamps, SLs, exit reason)
+for analysis outside the dashboard. The **TP1->BE + exit at
+TP2** page also shows a **real trade example**: the chart with the
+price path, entry, SL, TP1 and TP2, and the timeline of
+where each event would have happened.
+Each test page has an **"⬆️ Promote to main"** button to move
+that strategy to the real account (on the active strategy page the
+button does not show - it is already main); the main one shows a **badge with
+the active strategy** (with glow when it changes) which also states **which
+params run in real execution** (leg count, close at TP, fixed lot
+and group management) and a **red warning if any test strategy
+is beating main** in the paper run. When you promote a
+strategy, a **feed note** stays saying exactly what
+changed in real execution. If the stored strategy no longer exists (it was
+removed), the badge warns in **red** "orphan config" and shows which
+fallback strategy runs - it never misleads.
+On the **🔧 Diagnostics** tab there is also **"📚 Last history
+replay"**: the date and total messages/signals/management/ignored the
+bot forwarded at last startup.
+Each test page shows **two views**: the **last
+month** simulation (7/30/90-day picker) and the **"📜 Since group start"** block
+- the same replay over **all** signal history the bot knows -
+plus the **paper trades table** of the parallel run (each closed
+trade with its P&L, symbol, entry and lots). The **compare on each
+page** now draws 3 strategies on the same signals - **TP1..TP5,
+TP1..TP5 + management (main) and close at TP2** - with the P&L of each
+in the legend, to see what group management would have given vs the others.
+On the **🔧 Diagnostics** tab there is also a "🧹 Clear restarts" button (with
+confirm) to wipe by hand the listener restart history, and a
+**"⏱️ Group edit delay"** block that shows how long the group
+takes to edit messages (min, mean, median, p90, max) vs the
+current 20s window - median in green if inside the window and in
+red if not, so you know if the window is well tuned on real
+data instead of by guess.
+If the group **edits a message after the bot already ran** the
+trade (window passed), a **red alert** shows on the dashboard
+warning entry may be stale. And the reverse too:
+if a signal arrives **incomplete** (e.g. entry with no TP/SL yet) and the
+group fills the message in the next minutes, the bot **recovers the
+signal** and reopens the wait window with the right content.
+The **test pages** of the end menu show strategy compare
+(new, new + management - main - and close at TP2) on real group
+signals, for the picked span (7/30/90 days) **and** a **"📜 Since
+group start"** block over all history, to see if edge holds.
+The **last-month simulation** ("if you had started 1 month ago with X EUR, today you would have
+Y EUR") sits on those same pages, as do **walk-forward** (does edge
+hold over time?) and **risk studies** (sim risk %/balance - default sim balance is each strategy own 1,000 EUR). It is
+pure simulation: it never opens real trades.
+Each test page has the span picker (7/30/90 days or **all**),
+which stays **saved** - reload the page and it keeps the pick. When
+the bot starts and ends reading group history, the feed
+shows the **"📚 History replay done"** note with total messages
+and forwarded signals/management/ignored.
 
-Ao entrar, a dashboard faz um **arranque tipo terminal** (boot sequence):
-linhas a aparecer com som de teclado, mostrando o estado real do sistema
-(MT5 ligado, AutoTrading, modo de execução) antes de revelar os números.
-As **notificações também têm som**: um sinal agudo quando uma trade abre,
-um alerta grave quando algo corre mal (risco, MT5 offline, AutoTrading
-desligado). O som respeita as regras do navegador — desbloqueia no primeiro
-clique, e silencia-se no próprio navegador (mute do separador).
+On login, the dashboard runs a **terminal-style boot** (boot sequence):
+lines appearing with keyboard sound, showing real system state
+(MT5 on, AutoTrading, run mode) before it shows numbers.
+**Notes also have sound**: a high beep when a trade opens,
+a low alert when something fails (risk, MT5 offline, AutoTrading
+off). Sound follows browser rules - it unlocks on first
+click, and mutes in the browser itself (tab mute).
 
-- **Sinais** — o histórico completo dos sinais recebidos do Telegram, com
-  filtro por grupo e estado (à espera de edições, pendente, histórico, etc.);
-  sinais pendentes por guard de zona/lote têm botão de confirmação explícita;
-- **Posições** — as trades abertas em tempo real;
-- **Histórico** — todas as trades fechadas, com P&L;
-- **Relatório** — win rate, profit factor, risco/recompensa, consistência
-  **por grupo**, a **curva de equity** (evolução do P&L ao longo do tempo),
-  o **drawdown máximo** e um **gráfico de barras com o P&L e o win rate de
-  cada dia**, para o período que escolheres (7/30/90 dias);
-- **🧪 Páginas de teste (menu)** — o backtest A/B/C (TP1..TP5 · **TP1..TP5
-  + gestão do grupo** · fechar no TP2), o **walk-forward** (o edge mantém-se
-  ao longo do tempo?) e os **estudos de risco** (risco %/saldo do sim). A
-  coluna "+ gestão" simula no backtest as instruções do grupo (fechar a 1ª
-  posição, subir o stop, sair tudo) para medir quanto do resultado vem da
-  gestão deles;
-- **🚫 Ignoradas** — auditoria das mensagens do grupo que o bot decidiu
-  **não registar** (conversa: "Good morning", "+50 pips", links, avisos).
-  Nenhum sinal nem instrução de gestão fica aqui — só conversa — e nunca
-  entra na execução. Serve para veres tudo o que o grupo diz, mesmo o que
-  o bot ignora;
-- **No header** (à direita da marca) vês os badges de estado: modo
-  auto/manual, a estratégia ativa, a conta MT5 real (login · saldo) e o
-  modo de execução (real/dry-run). À **direita do ecrã** há um terminal
-  com **quem está ligado à dashboard** (`👥 admin · admin` — cada
-  separador/telemóvel aberto conta e desaparece quando fecha), o
-  **relógio**, o **kill switch** e o botão **Sair**;
-- **🔧 Diagnóstico** — estado do sistema num relance: ligação ao **MT5**
-  (conta, saldo/equity, AutoTrading), **listener do Telegram** (vivo ou
-  OFFLINE, há quanto tempo recebeu a última mensagem do grupo), servidor
-  (uptime), preços reais/simulação, login, base de dados e um **gráfico de
-  uptime das últimas 24h** (listener e MT5 ligados/em baixo, com % de
-  uptime). Se o listener cair, fica vermelho aqui em ~5 segundos;
-- **Auto-recuperação**: se o **listener do Telegram morrer**, o servidor
-  **reinicia-o sozinho** em segundos. O servidor também encerra de forma
-  limpa os seus loops quando é reiniciado, para não ficar com tarefas antigas
-  a gerir preços em duplicado. Se o Telegram pedir um **código de
-  login novo**, aparece um aviso na dashboard com um campo para introduzires
-  o código que o Telegram enviou para a app — o listener volta a ligar
-  sozinho depois disso;
-- um feed de **notificações** sempre visível (trades abertas/fechadas,
-  bloqueios, resumo diário). Quando uma instrução de gestão chega **sem
-trade aberta** nem sinal a que responder, aparece um alerta ⚠️ no feed —
-  nunca fica silenciosa.
+- **Signals** - full history of signals from Telegram, with
+  filter by group and state (waiting for edits, pending, history, etc.);
+  signals pending on zone/lot guard have an explicit-confirm button;
+- **Positions** - live open trades;
+- **History** - all closed trades, with P&L;
+- **Report** - win rate, profit factor, risk/reward, consistency
+  **per group**, the **equity curve** (P&L path over time),
+  **max drawdown** and a **bar chart with P&L and win rate of
+  each day**, for the span you pick (7/30/90 days);
+- **🧪 Test pages (menu)** - A/B/C backtest (TP1..TP5 · **TP1..TP5
+  + group management** · close at TP2), **walk-forward** (does edge hold
+  over time?) and **risk studies** (sim risk %/balance). The
+  "+ management" column replays group instructions in backtest (close 1st
+  position, raise stop, exit all) to measure how much result comes from
+  their management;
+- **🚫 Ignored** - audit of group messages the bot chose to
+  **not store** (chat: "Good morning", "+50 pips", links, warnings).
+  No signal or management instruction lands here - only chat - and it never
+  enters execution. It shows all the group says, even what
+  the bot skips;
+- **In the header** (right of the brand) you see state badges: mode
+  auto/manual, active strategy, real MT5 account (login · balance) and
+  run mode (real/dry-run). At the **right of the screen** there is a terminal
+  with **who is on the dashboard** (`👥 admin · admin` - each
+  open tab/phone counts and vanishes when closed), the
+  **clock**, the **kill switch** and the **Exit** button;
+- **🔧 Diagnostics** - system state at a glance: **MT5** link
+  (account, balance/equity, AutoTrading), **Telegram listener** (alive or
+  OFFLINE, how long since the last group message), server
+  (uptime), real prices/simulation, login, database and an **uptime chart of the
+  last 24h** (listener and MT5 up/down, with %
+  uptime). If the listener drops, it goes red here in ~5 seconds;
+- **Auto-recovery**: if the **Telegram listener dies**, the server
+  **restarts it alone** in seconds. The server also cleanly shuts
+  its loops when restarted, so no stale tasks stay
+  managing prices twice. If Telegram asks for a **new
+  login code**, a warning shows on the dashboard with a field to type
+  the code Telegram sent to the app - the listener connects back
+  alone after that;
+- an always-visible **notes** feed (open/closed trades,
+  blocks, daily summary). When a management instruction arrives **with no
+  open trade** or signal to answer, a ⚠️ alert shows on the feed -
+  it never stays silent.
 
-Também podes receber **notificações no Telegram** (quando o bot abre ou fecha
-uma trade, o resumo do dia, ou alertas de risco), se ligares um bot
-(`TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` no `.env` — cria o bot com
-@BotFather e envia-lhe `/start` para obteres o teu chat id).
+You can also get **Telegram notes** (when the bot opens or closes
+a trade, the day summary, or risk alerts), if you link a bot
+(`TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` in `.env` - make the bot with
+@BotFather and send it `/start` to get your chat id).
 
-**Alertas OFFLINE no telemóvel**: quando o **MT5 desliga** (ou o AutoTrading
-desliga), o programa envia-te um DM no Telegram (Saved Messages) — funciona
-logo de início, sem configuração, porque usa a tua própria conta. E se o
-**listener do Telegram** cair e for reiniciado automaticamente, também fica
-registado no feed — nunca ficas sem saber que algo esteve em baixo.
+**OFFLINE alerts on the phone**: when **MT5 drops** (or AutoTrading
+turns off), the program sends you a Telegram DM (Saved Messages) - it works
+from the start, no setup, because it uses your own account. And if the
+**Telegram listener** drops and auto-restarts, that too stays
+logged on the feed - you never miss that something was down.
 
-### Mensagens apagadas
+### Deleted messages
 
-Se alguém **apagar** a mensagem do sinal no grupo, o programa deteta isso,
-marca o sinal como apagado e — se a trade ainda estiver aberta — **fecha-a ao
-preço atual**. Não ficas com posições órfãs de sinais que já não existem.
+If someone **deletes** the signal message in the group, the program spots it,
+marks the signal as deleted and - if the trade is still open - **closes it at
+current price**. You never keep orphan positions of signals that no longer exist.
 
 ---
 
-## Ligar o teu grupo de Telegram (testar no teu PC, sem VPS)
+## Connect your Telegram group (test on your PC, no VPS)
 
-Isto é tudo local — nada vai para a Internet. Precisas de 4 coisas, uma vez só:
+This is all local - nothing goes to the Internet. You need 4 things, once:
 
-### Passo 1 — Criar as credenciais de API (5 minutos, grátis)
+### Step 1 - Make API credentials (5 minutes, free)
 
-1. Entra em **https://my.telegram.org** com a tua conta.
-2. Clica em **API development tools**.
-3. Preenche o formulário (nome da app: qualquer coisa, ex.: `signalbot`).
-4. Guarda o **api_id** e o **api_hash** que aparecem.
+1. Go to **https://my.telegram.org** with your account.
+2. Click **API development tools**.
+3. Fill the form (app name: anything, e.g. `signalbot`).
+4. Save the **api_id** and **api_hash** shown.
 
-> ⚠️ Não partilhes o api_hash com ninguém.
+> ⚠️ Do not share api_hash with anyone.
 
-### Passo 2 — Entrar no grupo com a tua conta
+### Step 2 - Join the group with your account
 
-O programa usa a **tua conta** para ler o grupo (os grupos de sinais não
-aceitam bots). Abre o link que o Rúben te der no Telegram e **entra no grupo**
-com a conta normal. Se ainda não estiveres lá, o programa também consegue
-entrar por ti pelo link.
+The program uses **your account** to read the group (signal groups do not
+take bots). Open the link Ruben gives you in Telegram and **join the group**
+with the normal account. If you are not there yet, the program can also
+join for you through the link.
 
-### Passo 3 — Configurar o programa
+### Step 3 - Set up the program
 
-Na pasta do projeto, cria um ficheiro chamado `.env` com:
+In the project folder, make a file called `.env` with:
 
 ```
 SIGNALBOT_TG_API_ID=1234567
@@ -471,109 +467,109 @@ SIGNALBOT_TG_PHONE=+3519XXXXXXX
 SIGNALBOT_TG_GROUP=https://t.me/+o_link_do_grupo
 ```
 
-- `SIGNALBOT_TG_PHONE` — o teu número com indicativo (ex.: `+351...`).
-- `SIGNALBOT_TG_GROUP` — o grupo. Pode ser o link de convite, o `@username`
-  ou simplesmente o **nome** (ex.: `Golden Moves`) — o programa procura o chat
-  nos teus chats. A tua conta tem de ser membro do grupo.
+- `SIGNALBOT_TG_PHONE` - your number with prefix (e.g. `+351...`).
+- `SIGNALBOT_TG_GROUP` - the group. It can be the invite link, `@username`
+  or just the **name** (e.g. `Golden Moves`) - the program finds the chat
+  in your chats. Your account must be a group member.
 
-Vários grupos ao mesmo tempo? Usa `SIGNALBOT_TG_GROUPS` com os grupos
-separados por vírgula, e na dashboard há um seletor para filtrar os sinais
-de cada grupo.
+Several groups at once? Use `SIGNALBOT_TG_GROUPS` with comma-split groups,
+and on the dashboard a picker filters signals
+of each group.
 
-### Passo 4 — Correr (duas janelas de terminal)
+### Step 4 - Run (two terminal windows)
 
-**Janela 1 — a dashboard/API:**
+**Window 1 - dashboard/API:**
 
 ```
 .venv/Scripts/python -m uvicorn app.main:app --reload
 ```
 
-**Janela 2 — o leitor do Telegram:**
+**Window 2 - the Telegram reader:**
 
 ```
 .venv/Scripts/python -m app.telegram_listener
 ```
 
-Na primeira vez, o leitor pede-te o **código de verificação** que o Telegram
-envia para o teu telemóvel. Escreve-o e confirma. A partir daí fica a ouvir o
-grupo. (Se tiveres 2FA, pede também a password.)
+On first run, the reader asks for the **check code** Telegram
+sends to your phone. Type it and confirm. Then it listens to the
+group. (With 2FA, it also asks for the password.)
 
-### O que vais ver
+### What you will see
 
-- Uma mensagem incompleta que pareça um sinal aparece na dashboard com
-  **⏳ 20s** por defeito — é a janela de edição a funcionar.
-- Se o grupo **editar** a mensagem, a dashboard mostra a versão nova.
-- Depois dos **20s** (ou do valor configurado), o sinal é executado (se
-  passar nas verificações de risco) — só existe o modo automático. Sinais
-  bloqueados pelas proteções de zona/lote ficam pendentes para confirmação
-  explícita do operador.
-- Mensagens que não pareçam sinais (conversa normal) são ignoradas — vê no
-  terminal do leitor os `[skip]`.
+- An incomplete message that looks like a signal shows on the dashboard with
+  **⏳ 20s** by default - the edit window working.
+- If the group **edits** the message, the dashboard shows the new version.
+- After **20s** (or the set value), the signal runs (if
+  it passes risk checks) - only automatic mode exists. Signals
+  blocked by zone/lot guards stay pending for explicit
+  operator confirm.
+- Messages that do not look like signals (normal chat) are skipped - see
+  `[skip]` in the reader terminal.
 
-## Como começar a testar (sem gastar nada)
+## How to start testing (spend nothing)
 
-1. Corre o programa no teu PC (ver `README.md` para os passos técnicos).
-2. Liga o **listener do Telegram**: ele repõe por defeito o histórico completo
-   do grupo (mensagens marcadas como "histórico", sem executar trades) e
-   continua a receber as novas. Se precisares de limitar o arranque, usa
+1. Run the program on your PC (see `README.md` for tech steps).
+2. Turn on the **Telegram listener**: by default it replays the full
+   group history (messages marked "history", with no trades run) and
+   keeps getting new ones. If you must cap startup, use
    `SIGNALBOT_TG_HISTORICAL_LIMIT`.
-3. Experimenta o modo manual: aprova e rejeita sinais.
-4. Liga o modo **Auto** com risco baixo (0.1–0.5%) e vê o que acontece.
-5. Abre uma **página de teste** (menu) ou o **Relatório** — usa os sinais
-   reais do grupo com os preços históricos reais e mostra se a estratégia
-   tem edge.
-6. No **Relatório** vês a qualidade por grupo ao longo dos dias.
-7. Numa **página de teste**, olha para a comparação de 3 colunas: se a
-   coluna "+ gestão" ganhar claramente, é sinal de que seguir as instruções
-   do grupo (e não só os alvos) faz a diferença — que é exatamente o que o
-   programa faz automaticamente com as mensagens de gestão.
+3. Try manual mode: approve and reject signals.
+4. Turn **Auto** on with low risk (0.1-0.5%) and watch what happens.
+5. Open a **test page** (menu) or the **Report** - it uses real group
+   signals with real history prices and shows if the strategy
+   has edge.
+6. On the **Report** you see quality per group over days.
+7. On a **test page**, look at the 3-column compare: if the
+   "+ management" column clearly wins, it means following group instructions
+   (not only targets) makes the difference - which is exactly what the
+   program does automatically with management messages.
 
-Só quando tiveres confiança (e dados reais de sinais) é que faz sentido pensar
-em ligar isto a uma conta real.
+Only when you trust it (and have real signal data) does it make sense to think
+about linking this to a real account.
 
-### Estado da preparação na demo
+### Demo prep state
 
-Depois do reboot da VPS, o Caddy, servidor, listener e MetaTrader 5 voltaram a
-arrancar. A conta demo `5054644473` está ligada, em modo hedging, com
-`trade_allowed=true`. A principal escolhida é `tp2_protect` (2 pernas, saída no
-TP2). Em 01/09/2026, o saldo observado era **€1.003,89**. O servidor está em
-`mt5-real` com `MT5_DRY_RUN=0`, portanto novos sinais aprovados podem enviar
-ordens para esta conta demo. O paper/shadow continua isolado; isto não autoriza
-uma conta real.
+After the VPS reboot, Caddy, server, listener and MetaTrader 5 came back
+up. Demo account `5054644473` is on, hedged, with
+`trade_allowed=true`. The picked main is `tp2_protect` (2 legs, exit at
+TP2). On 01/09/2026, seen balance was **EUR 1,003.89**. The server is in
+`mt5-real` with `MT5_DRY_RUN=0`, so new approved signals can send
+orders to this demo account. Paper/shadow stays apart; this does not allow
+a real account.
 
 ---
 
-## Proteção extra durante uma sequência de perdas
+## Extra guard during a loss streak
 
-As duas estratégias auto-escada em shadow (`auto_escada_3` e
-`auto_escada_5`) observam o mesmo mercado, mas sem enviar ordens para a conta
-MT5. Se as últimas 10 trades dessa estratégia tiverem PF inferior a 1, o bot
-entra temporariamente em modo defensivo: aperta o trailing, ativa o time stop
-e limita o risco de cada nova entrada a 1,25%. Quando a janela recupera, volta
-ao risco normal. A conta virtual de cada estratégia é independente da outra e
-da conta real.
+The two shadow auto-ladder strategies (`auto_escada_3` and
+`auto_escada_5`) watch the same market, but send no orders to the MT5
+account. If the last 10 trades of that strategy have PF below 1, the bot
+goes briefly defensive: it tightens trailing, turns on time stop
+and caps risk of each new entry at 1.25%. When the window recovers, it goes
+back to normal risk. Each strategy virtual account is apart from the other and
+from the real account.
 
-O estado da proteção também é guardado. Se a VPS reiniciar depois de TP1 ou
-durante um trailing, o bot recupera o pico, os SLs e o momento da proteção em
-vez de começar a trade do zero. Esta recuperação é automática e não altera a
-estratégia principal nem o kill switch.
+Guard state is also stored. If the VPS reboots after TP1 or
+during a trailing, the bot recovers peak, SLs and guard time
+instead of starting the trade from zero. This recovery is automatic and changes neither the
+main strategy nor the kill switch.
 
-## Perguntas frequentes
+## FAQ
 
-**Isto dá dinheiro garantido?**
-Não. Ninguém tem isso. O programa só executa o que lhe é dado — a qualidade dos
-sinais é que decide. Por isso é que se testa primeiro em simulação.
+**Does this make guaranteed money?**
+No. Nobody has that. The program only runs what it gets - signal quality
+decides. That is why you test first in simulation.
 
-**Posso perder dinheiro?**
-Nesta versão, não — é tudo simulado. Numa versão real, sim, podes perder o que
-arriscas (e o slider serve precisamente para controlar isso).
+**Can I lose money?**
+In this version, no - it is all simulated. In a real version, yes, you can lose what
+you risk (and the slider is exactly there to control that).
 
-**O programa "analisa o mercado com AI"?**
-Não. Isso é marketing. O programa interpreta os sinais e gere o risco. Prever
-preços com "AI" não é algo fiável — não construímos isso, de propósito.
+**Does the program "read the market with AI"?**
+No. That is marketing. The program reads signals and handles risk. Predicting
+prices with "AI" is not reliable - we did not build that, on purpose.
 
-**E as contas financiadas (FTMO/Stmo)?**
-São um assunto separado e arriscado: têm regras duras (perda diária, drawdown,
-proibição de hedging, muitos proíbem automação). Antes de pensar nisso, valida
-os sinais em simulação durante semanas. Não compres contas financiadas com base
-em promessas de "50% numa semana" — isso é o padrão de quem quer vender-te algo.
+**And funded accounts (FTMO/Stmo)?**
+That is a separate risky topic: they have hard rules (daily loss, drawdown,
+no hedging, many ban automation). Before thinking of that, check
+signals in simulation for weeks. Do not buy funded accounts on
+"50% in a week" promises - that is the pattern of sellers.

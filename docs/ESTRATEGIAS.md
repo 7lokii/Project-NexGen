@@ -1,39 +1,39 @@
-# Estratégias do Project NexGen — documento de avaliação
+# Project NexGen strategies - review document
 
-> **Objetivo deste documento**: ser a fonte ÚNICA para avaliar as estratégias
-> do bot, sem precisar de ler mais nenhum documento do projeto. Explica o
-> contexto (o que o bot faz), os conceitos (TP/SL/BE/PF/DD…), as **13
-> estratégias do registo central** (mecânica completa + resultados), como os números
-> foram obtidos (metodologia) e como julgar se uma estratégia é boa.
+> **Goal of this document**: be the SINGLE source to review the bot
+> strategies, with no need to read any other project document. It explains the
+> context (what the bot does), concepts (TP/SL/BE/PF/DD...), the **13
+> strategies of the central registry** (full mechanics + results), how numbers
+> were found (method) and how to judge if a strategy is good.
 >
-> Estado: **2026-08-31** · suite de testes indicada em `AGENTS.md` · conta
-> **demo** (nunca dinheiro real).
+> State: **2026-08-31** · test suite stated in `AGENTS.md` · **demo** account
+> (never real money).
 
 ---
 
-## Parte I — Contexto (o que é o sistema)
+## Part I - Context (what the system is)
 
-O Project NexGen é um **bot de copy-trading semi-automático**: lê sinais de
-um grupo de Telegram chamado **Golden Moves**, espera ~10 segundos (janela de
-edição — o grupo edita a mensagem para completar o sinal), e executa a trade
-numa conta **demo** do MetaTrader 5 com uma **estratégia de N pernas**
-(TP1..TP5 + SL + breakeven). Há uma dashboard web que mostra tudo ao vivo.
+Project NexGen is a **semi-automatic copy-trading bot**: it reads signals from
+a Telegram group called **Golden Moves**, waits ~10 seconds (edit window
+- the group edits the message to fill the signal), and runs the trade
+on an **MT5 demo** account with an **N-leg strategy**
+(TP1..TP5 + SL + breakeven). A web dashboard shows all live.
 
-### Evidência replayável por trade
+### Per-trade replayable evidence
 
-Quando o journal opt-in está ligado, o histórico de trades mostra `🔁 replay`.
-O botão exporta automaticamente uma fita completa da trade — sinal estruturado,
-quotes e gestão correlacionada por reply — e compara SimEngine, PaperRace e
-MT5 dry-run. O resultado inclui um snapshot depois de cada evento para localizar
-onde os motores divergem. É uma ferramenta de auditoria read-only; não muda a
-principal `nova_gestao`, o shadow-paper ou o kill switch. A página `/auditoria`
-também exporta o bundle diário em JSON/CSV e arquiva snapshots das janelas
-forward para envio e comparação posterior. O resumo diário inclui a qualidade
-do journal e o progresso de `auto_escada_3/5` no feed/Telegram. A UI deixa a
-promoção visível apenas como ação bloqueada até todos os gates objetivos
-(N≥20, PF, IC95%, DD e referência) passarem; o backend aplica a mesma defesa.
+When the opt-in journal is on, trade history shows a replay button.
+The button auto-exports a full tape of the trade - structured signal,
+quotes and reply-linked management - and compares SimEngine, PaperRace and
+MT5 dry-run. The result has a snapshot after each event to find
+where engines diverge. It is a read-only audit tool; it does not change the
+main `nova_gestao`, shadow-paper or the kill switch. The `/auditoria` page
+also exports the daily bundle in JSON/CSV and archives forward-window snapshots
+for later send and compare. The daily summary adds journal quality
+and `auto_escada_3/5` progress on feed/Telegram. The UI shows promotion
+only as a blocked action until all objective gates
+(N>=20, PF, IC95%, DD and reference) pass; the backend applies the same guard.
 
-**Formato de um sinal** (exemplo real do grupo):
+**Signal format** (real group example):
 
 ```
 I'm buying XAUUSD
@@ -46,571 +46,570 @@ TP5 4410
 SL 4392
 ```
 
-Significado: comprar ouro na zona **4400–4396** (o bot entra a ~4400), TP1 em
-4402, TP2 em 4404… TP5 em 4410, e **SL em 4392** (perde se cair abaixo).
-Cada TP fecha **uma perna** da trade; o risco total da trade é dividido pelas
-pernas.
+Meaning: buy gold in zone **4400-4396** (bot enters near 4400), TP1 at
+4402, TP2 at 4404... TP5 at 4410, and **SL at 4392** (loses if it drops below).
+Each TP closes **one leg** of the trade; total trade risk is split across
+legs.
 
-**Gestão do grupo**: além dos sinais, o Golden Moves envia **mensagens de
-gestão ao vivo** ("TP1 HIT", "Close TP1 here", "we're out", "move SL to
-4331", "protect…"). O bot classifica essas mensagens e aplica-as às trades
-abertas — **se a estratégia ativa honrar esse tipo de gestão** (ver Parte IV).
+**Group management**: besides signals, Golden Moves sends **live management
+messages** ("TP1 HIT", "Close TP1 here", "we're out", "move SL to
+4331", "protect..."). The bot classifies those messages and applies them to open
+trades - **if the active strategy honors that management kind** (see Part IV).
 
-**Conta demo**: tudo o que está neste documento corre em dinheiro virtual
-(conta demo MT5). Nunca se promove a conta real sem decisão explícita do
-utilizador (SPEC v3, rascunho).
+**Demo account**: all in this document runs on virtual money
+(MT5 demo account). Never promote to a real account without an explicit user
+decision (SPEC v3, draft).
 
-**Shadow-paper (forward)**: a conta principal mantém-se separada da evidência
-forward. A configuração VPS observa agora `auto_escada_3` e `auto_escada_5`,
-com duas contas virtuais independentes em `origin="shadow"`; isto não altera
-a estratégia principal nem envia ordens ao MT5. Por defeito, sinais live completos alimentam a `auto_escada_3` e a
-`auto_escada_5`, cada uma numa conta paper marcada `origin="shadow"`, mesmo
-em Manual ou com kill switch;
-histórico e propostas `llm_parsed` ficam fora. A gestão do grupo e as correções
-TP1/SL são espelhadas sem consumir a fila de gestão real nem a entrega da
-corrida paper normal: `pending_management` mantém marcadores separados para
-`applied`, `paper_applied` e `shadow_applied`. A deduplicação inclui a origem
-e a conta virtual, o kill diário e as métricas do shadow não partilham saldo
-com a corrida normal. Isto não é Fase 3 e nunca envia ordens ao MT5.
+**Shadow-paper (forward)**: the main account stays apart from forward
+evidence. The VPS setup now watches `auto_escada_3` and `auto_escada_5`,
+with two standalone virtual accounts at `origin="shadow"`; this does not change
+the main strategy nor send orders to MT5. By default, full live signals feed `auto_escada_3` and
+`auto_escada_5`, each in a paper account tagged `origin="shadow"`, even
+in Manual or with kill switch on;
+history and `llm_parsed` proposals stay out. Group management and TP1/SL fixes
+mirror with no use of the real management queue or normal paper-run
+delivery: `pending_management` keeps split markers for
+`applied`, `paper_applied` and `shadow_applied`. Dedup adds origin
+and virtual account, daily kill and shadow metrics share no balance
+with the normal run. This is not Phase 3 and never sends orders to MT5.
 
-### Replay determinístico entre motores
+### Deterministic replay across engines
 
-Para validar que a estratégia não ganha apenas por uma diferença acidental entre
-adapters, existe uma fita read-only com eventos `signal`, `quote` e `management`,
-complementados pela evidência `order_request`, `order_result`,
-`modify_request`, `modify_result`, `fill_open` e `fill_close` do MT5. O journal
-regista retcodes, tickets, preços, P&L e latência sinal→ordem→fill quando a
-execução os fornece. `POST /api/operations/replay` alimenta a mesma sequência
-ao SimEngine, à corrida PaperRace e ao MT5 dry-run, devolve por sinal decisões,
-SL aplicado, razão, P&L e `broker_observations`. As respostas do broker são
-passivas no estudo: não autorizam ordens nem sobrescrevem decisões simuladas.
-A ordem de eventos com o mesmo timestamp é definida por `sequence`. Isto é uma
-ferramenta de validação, não muda a principal `nova_gestao`, não liga o MT5
-real e não constitui evidência forward por si só.
+To check the strategy does not win only from an accidental gap across
+adapters, there is a read-only tape with `signal`, `quote` and `management` events,
+plus `order_request`, `order_result`,
+`modify_request`, `modify_result`, `fill_open` and `fill_close` evidence from MT5. The journal
+logs retcodes, tickets, prices, P&L and signal-to-order-to-fill latency when
+execution provides them. `POST /api/operations/replay` feeds the same sequence
+to SimEngine, PaperRace and MT5 dry-run, returns per-signal decisions,
+applied SL, reason, P&L and `broker_observations`. Broker answers are
+passive in the study: they allow no orders and never overwrite simulated decisions.
+Event order with the same timestamp comes from `sequence`. This is a
+validation tool, it does not change main `nova_gestao`, does not turn on real MT5
+and is not forward evidence alone.
 
-### Gate forward controlado das auto-escadas
+### Controlled forward gate of auto-ladders
 
-A página `/auditoria` e `GET /api/analysis/forward-gate` separam a evidência
-forward do P&L do backtest mensal. A janela padrão é UTC de 30 dias e usa
-somente trades fechadas de `origin="shadow"` para `auto_escada_3` e
-`auto_escada_5`; a `nova_gestao` de `origin="race"` é a referência por
-`signal_id`. Uma estratégia só fica `eligible` quando tem N≥20, PF≥1.5, o
-limite inferior do IC95% da média é positivo, DD≤125% do saldo inicial, há pelo
-menos 20 sinais comparáveis e o P&L não fica mais de 10% atrás da referência.
-O resultado é um gate descritivo com `promotion="manual_only"`: não muda a
-principal nem autoriza MT5.
+The `/auditoria` page and `GET /api/analysis/forward-gate` split forward
+evidence from monthly backtest P&L. The default window is 30-day UTC and uses
+only closed trades of `origin="shadow"` for `auto_escada_3` and
+`auto_escada_5`; `nova_gestao` of `origin="race"` is the reference by
+`signal_id`. A strategy only goes `eligible` with N>=20, PF>=1.5, the
+lower IC95% bound of mean P&L positive, DD<=125% of start balance, at least
+20 comparable signals and P&L no more than 10% behind reference.
+The result is a descriptive gate with `promotion="manual_only"`: it does not change main
+nor allow MT5.
 
-O painel principal **“Quanto falta para promover a auto_escada_3”** junta esse
-resultado com o ETA de ritmo (`fase3_eta`) e mostra explicitamente N/PF/IC95/DD
-e os gates em falta. `GET /api/window` devolve o mesmo bloco para auditoria.
-A janela operacional real do resumo diário decorre em UTC de 20/08/2026 até
-29/08/2026 00:00, com meta mínima 10 e alvo 20 trades; isto é observação, não
-é uma promoção automática.
+The main panel **"How much is left to promote auto_escada_3"** joins that
+result with pace ETA (`fase3_eta`) and plainly shows N/PF/IC95/DD
+and missing gates. `GET /api/window` returns the same block for audit.
+The real daily-summary run window runs in UTC from 20/08/2026 to
+29/08/2026 00:00, with min target 10 and goal 20 trades; this is watching, not
+an auto promotion.
 
-### Revisão de segunda-feira — 31/08/2026
+### Monday review - 31/08/2026
 
-Foi repetida a bateria read-only depois da acumulação de novos sinais (sem
-alterar configuração, paper, shadow ou MT5). No recorte atual de 30 dias, a
-ablação encontrou `all` com PF **5,96** e +**€3.472,29**, contra PF **2,19** e
-+**€833,90** sem gestão; a gestão aplicada ocorreu em 43 sinais. Isto é
-consistente com manter `nova_gestao` como principal, mas não é evidência para
-promover uma auto-escada.
+The read-only battery ran again after new signals arrived (no
+change to config, paper, shadow or MT5). In the current 30-day cut, the
+ablation found `all` with PF **5.96** and +**EUR 3,472.29**, vs PF **2.19** and
++**EUR 833.90** with no management; applied management hit 43 signals. This is
+in line with keeping `nova_gestao` as main, but is no evidence to
+promote an auto-ladder.
 
-O sweep do `auto_escada_3` confirmou o filtro `confirm_filter`: PF atual
-**1,17** em ambos, enquanto no histórico antigo a DD caiu de **284,8%** para
-**242,8%**; o gate passa. O sweep defensivo da `auto_escada_5` não encontrou
-combinação elegível: PF atual **1,85**, mas PF histórico antigo **0,64** e DD
-**219,0%**. Portanto não se alterou nenhum default.
+The `auto_escada_3` sweep confirmed the `confirm_filter`: current PF
+**1.17** in both, while on old history DD dropped from **284.8%** to
+**242.8%**; gate passes. The defensive sweep of `auto_escada_5` found no
+eligible combo: current PF **1.85**, but old-history PF **0.64** and DD
+**219.0%**. So no default changed.
 
-O walk-forward de 90 dias escolheu gestão completa em todos os três folds, mas
-só **1/3** dos blocos de teste foi lucrativo; é evidência de mudança de regime,
-não uma licença para extrapolar o resultado recente. O teste de pesos TP3–TP5
-piorou PF atual de **2,19** para **1,94** e aumentou DD de **21,9%** para
-**27,6%**, pelo que se mantém distribuição igual. O fallback mecânico produziu
-resultados idênticos ao humano nesta amostra (zero ativações observadas), logo
-fica study-only e desligado.
+90-day walk-forward picked full management in all three folds, but
+only **1/3** of test blocks made money; it is regime-change evidence,
+not a license to extrapolate the fresh result. The TP3-TP5 weight test
+cut current PF from **2.19** to **1.94** and raised DD from **21.9%** to
+**27.6%**, so equal split stays. The mechanical fallback gave
+same results as human in this sample (zero seen triggers), so
+it stays study-only and off.
 
-O estudo de polling continua a mostrar que 1 s pode perder eventos intrabar em
-relação a 100 ms; isto é diagnóstico de sensibilidade, não P&L mensal. Houve
-também símbolos sem histórico Yahoo (`AROUND`), excluídos do replay; os números
-acima não devem ser tratados como cobertura completa desse símbolo.
+The polling study still shows 1s can miss intrabar events vs
+100 ms; this is sensitivity diagnosis, not monthly P&L. There were
+also symbols with no Yahoo history (`AROUND`), out of replay; numbers
+above must not be read as full cover of that symbol.
 
-**Estado operacional atual (2026-09-01):** a principal está configurada como
-`tp2_protect`, com 2 pernas e saída no TP2. A conta é a demo hedged
-`5054644473` (`MetaQuotes-Demo`), saldo observado **€1.003,89**,
-`max_positions=5`, AutoTrading ligado e `MT5_DRY_RUN=0`: novos sinais aprovados
-podem enviar ordens para a conta demo. Isto não é uma autorização para uma
-conta real; qualquer promoção para dinheiro real continua bloqueada por decisão
-humana explícita.
+**Current run state (2026-09-01):** main is set to
+`tp2_protect`, with 2 legs and exit at TP2. The account is hedged demo
+`5054644473` (`MetaQuotes-Demo`), seen balance **EUR 1,003.89**,
+`max_positions=5`, AutoTrading on and `MT5_DRY_RUN=0`: new approved signals
+can send orders to the demo account. This is no permit for a
+real account; any promotion to real money stays blocked on an explicit
+human decision.
 
 ---
 
-## Operação segura (antes de promover uma auto)
+## Safe operation (before promoting an auto)
 
-A execução multi-perna só é compatível com uma conta MT5 **RETAIL_HEDGING**
-(`margin_mode=2`). Em modo real o provider verifica o tipo no arranque e
-bloqueia netting/desconhecido; o painel mostra `hedged=false` e o motivo em
-vez de enviar ordens que poderiam fundir as pernas. A conta principal continua
-uma **demo** e a promoção para uma conta real exige instrução explícita.
+Multi-leg run only fits an **RETAIL_HEDGING** MT5 account
+(`margin_mode=2`). In real mode the provider checks type at startup and
+blocks netting/unknown; the panel shows `hedged=false` and the reason
+instead of sending orders that could merge legs. The main account stays
+a **demo** and promotion to a real account needs an explicit instruction.
 
-A VPS também limita `server.log`/`listener.log`/erros a 10 MiB por ficheiro e
-5 cópias por defeito (`SIGNALBOT_LOG_MAX_BYTES`/
-`SIGNALBOT_LOG_BACKUP_COUNT`), verifica o disco diariamente (10 GiB livres por
-defeito) e testa mensalmente o backup mais recente com:
+The VPS also caps `server.log`/`listener.log`/errors at 10 MiB per file and
+5 copies by default (`SIGNALBOT_LOG_MAX_BYTES`/
+`SIGNALBOT_LOG_BACKUP_COUNT`), checks disk daily (10 GiB free by
+default) and monthly tests the newest backup with:
 
 ```text
 .venv/Scripts/python backup_db.py --restore-check
 ```
 
-Estes checks são operacionais: não alteram parâmetros de estratégia, não
-abrem trades e não contam como amostra forward da Fase 2/3.
+These checks are run ops: they change no strategy params, open
+no trades and do not count as Phase 2/3 forward sample.
 
-### Saúde operacional e validação contínua (Itens 10 e 17)
+### Operational health and ongoing checks (Items 10 and 17)
 
-O painel Saúde operacional do Relatório e `GET /api/operations?days=N` mostram
-as exceções persistidas, o spread médio mensal por símbolo, reconexões MT5 por
-semana e modifies de SL recusados por retcode. O `MT5Engine` só considera um
-novo SL aplicado depois de 10009/0; uma falha fica auditada. A amostra deve
-acumular pelo menos duas semanas antes de se tirar uma conclusão de tendência.
+The Report health panel and `GET /api/operations?days=N` show
+stored exceptions, mean monthly spread per symbol, MT5 reconnects per
+week and SL modifies rejected per retcode. `MT5Engine` only takes a new
+SL as applied after 10009/0; a fail stays audited. The sample must
+collect at least two weeks before any trend call.
 
-O registo central também expõe um lifecycle explícito por estratégia:
-`backtest`, `paper`, `shadow`, `menu` e `promotable`. As listas históricas de
-estratégias escondidas continuam compatíveis, mas a dashboard/API não precisa
-de reconstruir essas regras. As métricas forward mostram ainda um intervalo
-bootstrap de P&L (`mean_pnl_ci95`) e um gate descritivo; este gate nunca
-promove uma estratégia sozinho e exige evidência suficiente antes de qualquer
-mudança operacional.
+The central registry also shows an explicit per-strategy lifecycle:
+`backtest`, `paper`, `shadow`, `menu` and `promotable`. Old hidden-strategy
+lists stay compatible, but dashboard/API need not
+rebuild those rules. Forward metrics also show a bootstrap P&L range
+(`mean_pnl_ci95`) and a descriptive gate; this gate never
+promotes a strategy alone and needs enough evidence before any
+run change.
 
-Quando `execution_journal_enabled` está ligado, quotes e mensagens de gestão
-podem ser recolhidos em `execution_events` e consultados por
-`GET /api/operations/events`. É uma fita de auditoria/replay read-only; não
-altera a conta demo nem autoriza promoção.
+When `execution_journal_enabled` is on, quotes and management messages
+can collect in `execution_events` and read by
+`GET /api/operations/events`. It is a read-only audit/replay tape; it does not
+change the demo account nor allow promotion.
 
-O workflow `.github/workflows/ci.yml` corre a suite completa em push/PR e,
-em seguida, `tests/test_docs.py`. Um dispatch manual com `failure_probe=true`
-exercita um pytest deliberadamente falhado para confirmar o comportamento de
-bloqueio; não muda a configuração da conta demo nem promove estratégias.
+The `.github/workflows/ci.yml` workflow runs the full suite on push/PR and
+then `tests/test_docs.py`. A manual dispatch with `failure_probe=true`
+runs a deliberately failing pytest to confirm blocking
+behavior; it does not change demo account setup nor promote strategies.
 
-## Parte II — Conceitos base (necessários para avaliar)
+## Part II - Base concepts (needed to review)
 
-| Conceito | Explicação |
+| Concept | Meaning |
 |---|---|
-| **Sinal** | Mensagem do grupo com entrada, SL e TP1..TP5 |
-| **Perna (leg)** | Uma parte da trade: N pernas = N entradas com o mesmo SL mas TP diferente (leg 1 → TP1, leg 2 → TP2…) |
-| **TP (Take Profit)** | Nível onde a perna fecha com lucro |
-| **SL (Stop Loss)** | Nível onde a perda é cortada |
-| **SL-first** | Regra do sim/execução: se no mesmo instante/candle o SL e um TP forem tocados, conta o SL (conservador) |
-| **BE (breakeven)** | Quando o TP1 bate, o SL das pernas restantes sobe para a ENTRADA — a trade deixa de poder dar prejuízo (no pior caso sai a 0) |
-| **Pips** | Unidade de preço configurada por símbolo: no fallback XAUUSD usa 0.01, XAGUSD 0.001 e forex 0.0001; o broker MT5 pode fornecer os valores reais |
-| **Lote** | Tamanho da posição (0.01 = mínimo); o risco % decide os lotes |
-| **Risco por trade** | % da conta em jogo se o SL bater (default **1,0%**, antes da escala dinâmica; os lotes são calculados por símbolo e divididos pelas pernas) |
-| **PF (Profit Factor)** | Lucro bruto das trades vencedoras ÷ perda bruta das perdedoras. **PF ≥ 1.5 = bom; PF ≥ 2 = muito bom; PF < 1 = perde dinheiro** |
-| **WR (Win Rate)** | % de trades que fecharam com lucro |
-| **P&L** | Lucro/perda total em € |
-| **DD (Drawdown)** | Maior queda pico→vale do saldo, em % (ex.: DD 25% = a conta chegou a descer 25% do pico) |
-| **N** | Nº de sinais/trades resolvidos numa amostra |
-| **Backtest** | Replay dos sinais REAIS do grupo sobre preços históricos (velas reais), com as mesmas regras da produção |
-| **Corrida paper** | Cada estratégia tem uma conta virtual de 1000 €; a corrida normal segue sinais que executam na principal, enquanto o **shadow-paper** também pode receber sinais live com a principal em kill switch (o modo manual foi removido — Item 12) — sempre sem MT5 |
-| **Evidence gate** | Intervalo bootstrap e número mínimo de trades para avaliar uma candidata; é evidência estatística, não promoção automática |
-| **Journal/replay** | Fita opt-in de quotes e gestão para reproduzir decisões sem alterar produção |
-| **Look-ahead** | Erro de simulação: usar informação do futuro (ex.: o fecho da vela que ainda está a decorrer). Todas as regras do projeto são **sem look-ahead** |
-| **Out-of-sample** | Validar numa janela temporal diferente da que calibrou os parâmetros (teste de robustez) |
-| **Sweep (grelha)** | Correr um parâmetro em vários valores para ver se o resultado é estável ou um pico de sorte (pico isolado = sobreajuste) |
+| **Signal** | Group message with entry, SL and TP1..TP5 |
+| **Leg** | One part of the trade: N legs = N entries with same SL but different TP (leg 1 -> TP1, leg 2 -> TP2...) |
+| **TP (Take Profit)** | Level where the leg closes in profit |
+| **SL (Stop Loss)** | Level where the loss is cut |
+| **SL-first** | Sim/run rule: if at the same time/candle SL and a TP both hit, SL counts (conservative) |
+| **BE (breakeven)** | When TP1 hits, SL of remaining legs moves to ENTRY - the trade can no longer lose (worst case exits at 0) |
+| **Pips** | Symbol-set price unit: fallback XAUUSD uses 0.01, XAGUSD 0.001 and forex 0.0001; the MT5 broker can give real values |
+| **Lot** | Position size (0.01 = min); risk % sets lots |
+| **Risk per trade** | % of account at stake if SL hits (default **1.0%**, before dynamic scale; lots are set per symbol and split across legs) |
+| **PF (Profit Factor)** | Gross profit of winning trades / gross loss of losing ones. **PF >= 1.5 = good; PF >= 2 = very good; PF < 1 = loses money** |
+| **WR (Win Rate)** | % of trades closed in profit |
+| **P&L** | Total profit/loss in EUR |
+| **DD (Drawdown)** | Worst peak-to-valley balance drop, in % (e.g. DD 25% = account once fell 25% from peak) |
+| **N** | Count of solved signals/trades in a sample |
+| **Backtest** | Replay of REAL group signals on history prices (real candles), with same production rules |
+| **Paper run** | Each strategy has a virtual 1,000 EUR account; the normal run follows signals that run on main, while **shadow-paper** can also take live signals with main on kill switch (manual mode was removed - Item 12) - always with no MT5 |
+| **Evidence gate** | Bootstrap range and min trade count to review a candidate; it is statistical evidence, not auto promotion |
+| **Journal/replay** | Opt-in quotes and management tape to replay decisions with no production change |
+| **Look-ahead** | Sim bug: using future info (e.g. the close of the still-open candle). All project rules are **look-ahead free** |
+| **Out-of-sample** | Check on a different time window than the one that set params (robustness test) |
+| **Sweep (grid)** | Run one param on many values to see if result is stable or a luck spike (lone spike = overfit) |
 
 ---
 
-## Parte III — O que é uma estratégia (parâmetros)
+## Part III - What a strategy is (params)
 
-Uma estratégia diz ao bot **como executar cada trade**: quantas pernas,
-se aplica a gestão do grupo, se sai cedo num TP, e se gere sozinho
-(auto-gestão). Os parâmetros do registo (`app/strategies.py`):
+A strategy tells the bot **how to run each trade**: how many legs,
+if it applies group management, if it exits early at a TP, and if it manages alone
+(auto-manage). Registry params (`app/strategies.py`):
 
-| Parâmetro | O que faz |
+| Param | What it does |
 |---|---|
-| `max_legs` | Nº de pernas (TP1..TPN). `None` = 5 (todas) |
-| `manage` / `manage_kinds` | Gestão do grupo: `True` = honra todos os tipos; um conjunto filtra (ex. `{"protect"}` = só o protect) |
-| `exit_at_tp` | Quando o TP_n bate, TODAS as pernas ainda abertas fecham nesse preço (sair cedo). `None` = corre até ao fim |
-| `lots_override` | Lote fixo em vez de risco % (nenhuma estratégia atual usa) |
-| `stair_levels` / `stair_from` | **Escada de proteção** (auto-gestão): quando o TP_k bate, o SL das pernas seguintes sobe para o nível do TP_k. `stair_from` = degrau onde começa (1 = sobe para o NÍVEL do TP1; 2 = TP1 só vai a BE e a escada começa no TP2) |
-| `confirm_filter` | **Filtro de confirmação** (auto): se uma perna k levar SL (o movimento morreu), as pernas > k fecham ao mercado |
-| `trail_factor` | **Trailing** (auto): após o TP1, o SL segue o pico com folga = `trail_factor × distância(entrada→TP2)`. 2.0 ≈ 8 pips em gold |
-| `time_stop_minutes` | **Time stop** (auto): se as pernas ficarem abertas N min após o TP1, fecham ao mercado |
-| `def_window` / `def_trail` / `def_time_stop` | Modo defensivo após PF < 1.0 nas últimas N trades: trail/time stop mais apertados, sem cortar pernas |
-| `def_risk_pct` | Cap absoluto de risco durante o modo defensivo (1.25% nas auto-escadas; nunca aumenta o risco dinâmico) |
-| `atr_k` / `atr_period` / `atr_timeframe` | Trailing adaptativo por ATR — **desligado** (o sweep provou que é pior; ver Parte VIII) |
-| `struggle_ae_pips` / `struggle_fraction` | **Regra "struggle"** (R4): antes do TP1, se o preço andou contra a entrada por N pips e volta à entrada, fecha `fraction` das pernas a BE e protege as restantes na entrada (conselho do admin "take 50% / make risk-free"). Backtest-only — ver estudo R4 |
+| `max_legs` | Leg count (TP1..TPN). `None` = 5 (all) |
+| `manage` / `manage_kinds` | Group management: `True` = honors all kinds; a set filters (e.g. `{"protect"}` = protect only) |
+| `exit_at_tp` | When TP_n hits, ALL still-open legs close at that price (early exit). `None` = runs to the end |
+| `lots_override` | Fixed lot instead of risk % (no current strategy uses it) |
+| `stair_levels` / `stair_from` | **Protection ladder** (auto-manage): when TP_k hits, SL of later legs moves to TP_k level. `stair_from` = step where it starts (1 = moves to TP1 LEVEL; 2 = TP1 only goes to BE and ladder starts at TP2) |
+| `confirm_filter` | **Confirm filter** (auto): if leg k takes SL (move died), legs > k close at market |
+| `trail_factor` | **Trailing** (auto): after TP1, SL follows peak with slack = `trail_factor x dist(entry->TP2)`. 2.0 is about 8 pips on gold |
+| `time_stop_minutes` | **Time stop** (auto): if legs stay open N min after TP1, they close at market |
+| `def_window` / `def_trail` / `def_time_stop` | Defensive mode after PF < 1.0 on last N trades: tighter trail/time stop, no leg cuts |
+| `def_risk_pct` | Absolute risk cap during defensive mode (1.25% on auto-ladders; never raises dynamic risk) |
+| `atr_k` / `atr_period` / `atr_timeframe` | ATR-adaptive trailing - **off** (sweep proved it worse; see Part VIII) |
+| `struggle_ae_pips` / `struggle_fraction` | **"Struggle" rule** (R4): before TP1, if price went N pips against entry and comes back to entry, it closes `fraction` of legs at BE and guards the rest at entry (admin tip "take 50% / make risk-free"). Backtest-only - see R4 study |
 
-**O que TODAS fazem igual**: SL sempre ativo (SL-first) · TP1 fecha a perna 1
- e move as restantes a BE · risco dividido pelas pernas · custos reais no
- backtest (spread, slippage, comissão) · kill diário (perda do dia > **3%** por
- defeito, configurável) → pausa. Nas auto-escadas, o modo defensivo também
-limita novas entradas a `def_risk_pct=1.25%` quando PF(10) < 1.0.
+**What ALL do the same**: SL always on (SL-first) · TP1 closes leg 1
+ and moves rest to BE · risk split across legs · real costs in
+ backtest (spread, slippage, commission) · daily kill (day loss > **3%** by
+ default, settable) -> pause. On auto-ladders, defensive mode also
+caps new entries at `def_risk_pct=1.25%` when PF(10) < 1.0.
 
 
 ---
 
-## Parte IV — Gestão do grupo (mensagens ao vivo)
+## Part IV - Group management (live messages)
 
-O classificador do bot decide o **tipo** de cada mensagem de gestão; a
-estratégia ativa honra os do seu `manage_kinds`:
+The bot classifier picks the **kind** of each management message; the
+active strategy honors those in its `manage_kinds`:
 
-| kind | Exemplo real do grupo | Ação |
+| kind | Real group example | Action |
 |---|---|---|
-| `tp_hit` | "TP1 HIT +70 pips" | TP1 → SL das restantes a BE; outros TPs → registado |
-| `sl_hit` | "Oh wow SL HIT" | registado + reconciliação |
-| `close_tp1` | "Close TP1 here" | fecha só a perna 1 (restantes mantêm SL) |
-| `close_tp` | "Close TP2 here" | fecha só a perna N ao mercado |
-| `protect` | "close first entries and move stop loss above best entries" | fecha a perna 1 + sobe o SL das restantes para ACIMA da entrada |
-| `close_all` | "we're out", "out at BE" | fecha tudo (BE → à entrada; senão ao mercado) |
-| `move_sl` | "Adjust SL to 4331" | move o SL de todas as pernas abertas para o nível indicado |
-| `summary_correction` | "Correction: Weekly summary … Trades Sent …" | corrige os números do summary alvo por reply/período e reativa a divergência grupo↔bot |
-| `recount` | "Signal #1: Sell at 4357 … +110 pips" | guarda o recount por trade (R2) em `trade_recounts` e audita contra o fill real do mesmo dia (entrada/pips divergentes → alerta) |
+| `tp_hit` | "TP1 HIT +70 pips" | TP1 -> SL of rest to BE; other TPs -> logged |
+| `sl_hit` | "Oh wow SL HIT" | logged + reconcile |
+| `close_tp1` | "Close TP1 here" | closes only leg 1 (rest keep SL) |
+| `close_tp` | "Close TP2 here" | closes only leg N at market |
+| `protect` | "close first entries and move stop loss above best entries" | closes leg 1 + moves SL of rest to ABOVE entry |
+| `close_all` | "we're out", "out at BE" | closes all (BE -> at entry; else at market) |
+| `move_sl` | "Adjust SL to 4331" | moves SL of all open legs to the given level |
+| `summary_correction` | "Correction: Weekly summary ... Trades Sent ..." | fixes numbers of target summary by reply/period and re-arms group-to-bot divergence |
+| `recount` | "Signal #1: Sell at 4357 ... +110 pips" | stores per-trade recount (R2) in `trade_recounts` and audits vs same-day real fill (divergent entry/pips -> alert) |
 
-Uma estratégia com `manage=True` (gestão completa) honra **todos**; uma com
-`manage_kinds={"protect"}` honra **só o protect**; as `auto_*` mecânicas não
-honram gestão do grupo, exceto a `auto_escada_3_hibrida`, que honra apenas
-`protect` através do merge monotónico.
-
----
-
-## Parte IV-A — MFE win rate (R3) e divergência com a convenção do grupo
-
-O grupo conta como **vitória** qualquer trade que andou **25–30 pips a
-favor** (excursão máxima favorável), mesmo que depois volte e feche em
-loss/BE. O bot, até agora, comparava o WR reportado com o seu próprio
-`win_rate` (pnl>0) — convenções diferentes geravam alertas de divergência
-≥10pp espúrios para trades que andaram +40 pips e voltaram ao SL.
-
-O backtest passou a medir `mfe_pips` por trade (observação pura, nunca uma
-decisão de fill) e o agregado expõe `mfe_win_rate` (wins na convenção do
-grupo, MFE ≥ 25 pips por defeito). A divergência grupo↔bot
-(`_check_group_divergence`) compara com o `mfe_win_rate` quando disponível;
-só alerta se mesmo com a convenção do grupo o desvio continuar ≥ 10pp.
-
-## Parte V — Auto-gestão (o bot a gerir sozinho)
-
-As variantes `auto_*` substituem a gestão do grupo por **regras mecânicas**
-corridas a cada tick, sempre **sem look-ahead** (só dados do passado):
-
-1. **Escada de proteção** — o TP_k confirma → o SL das pernas seguintes sobe
-   para o **nível do TP_k** (ideia "dar o TP3 sem perder nada");
-2. **Trailing** — após o TP1: `SL = pico − trail_factor × dist(entrada→TP2)`.
-   O pico é o máximo dos ticks **anteriores** (nunca o atual). É o
-   mecanismo que replica o "we're out / move SL" do grupo — **~90% do
-   edge** das auto;
-3. **Filtro de confirmação** — se uma perna k levar SL, as pernas > k fecham
-   ao mercado ("se a 3 morrer, sai tudo");
-4. **Time stop** — pernas abertas N min após o TP1 fecham ao mercado;
-5. **Modo defensivo** (19/08) — quando o PF das últimas `def_window` (10)
-   trades resolvidas < 1.0, a estratégia passa a trail apertado
-   (`def_trail=1.5`) + time stop (`def_time_stop=60`) **sem cortar pernas**;
-   volta ao normal quando o PF recupera. A história é a da própria conta
-   (paper ou real), sem look-ahead. Espelhado nos 3 motores (backtest /
-   paper / MT5 Fase 3) — ver estudo em Parte VIII;
-6. **Trailing adaptativo por ATR** (`max(trail_factor×dist, atr_k×ATR`) —
-   implementado mas **rejeitado pelos dados**: o ATR do ouro é muito maior
-   que o recuo de ~8 pips, alarga o trail e devolve o lucro ao BE (ver
-   Parte VIII).
-7. **Protect híbrido** — a `auto_escada_3_hibrida` mantém escada/trailing/
-   modo defensivo e aceita apenas o `protect` do grupo quando este é mais
-   protetor que o SL mecânico. A decisão é monotónica (compra: SL mais alto;
-   venda: SL mais baixo), a perna 1 só fecha se o preço conhecido do evento
-   confirmar uma saída não pior, e cada decisão fica em `protect_latency_log`
-   no paper/MT5. O backtest devolve a mesma telemetria sem escrever na BD.
-
-Descobertas honestas do estudo (ver Parte VIII): a escada, o filtro e o time stop
-**não têm edge sozinhos** (PF 0.3–1.36 sem trailing); `max_legs=2` é o pior
-(PF 2.20 com trail) — 2 TPs cortam o motor do lucro.
+A strategy with `manage=True` (full management) honors **all**; one with
+`manage_kinds={"protect"}` honors **only protect**; mechanical `auto_*` do not
+honor group management, except `auto_escada_3_hibrida`, which honors only
+`protect` through monotonic merge.
 
 ---
 
-## Parte VI — As estratégias do registo, UMA A UMA
+## Part IV-A - MFE win rate (R3) and split from group convention
 
-> Nota de resultados: "atual" = últimos 30 dias do formato atual do grupo
-> (julho→hoje); "antiga" = período abr–jul (formato antigo, out-of-sample);
-> "histórico completo" = todos os sinais disponíveis desde o início. Saldo
-> sim 1000 € · risco base 1,0% (com escala dinâmica) · kill diário 3% por
-> defeito · custos reais. Ver metodologia (Parte VII).
+The group counts as a **win** any trade that ran **25-30 pips in
+favor** (max favorable run), even if it later comes back and closes at
+loss/BE. The bot, until now, compared reported WR with its own
+`win_rate` (pnl>0) - different conventions made false >=10pp divergence
+alerts for trades that ran +40 pips and came back to SL.
 
-### Estratégias removidas do registo a 01/09 (remoção completa)
+Backtest now measures `mfe_pips` per trade (pure watch, never a
+fill decision) and the set shows `mfe_win_rate` (wins in group
+convention, MFE >= 25 pips by default). Group-to-bot divergence
+(`_check_group_divergence`) compares with `mfe_win_rate` when present;
+it only alerts if even with group convention the gap stays >= 10pp.
 
-`tp2` (PF 0.86 · −151 €), `tp2_gestao` (perde para a `nova_gestao` no
-compare), `nova_gestao_3` (corta as pernas 4–5 que dão o lucro) e `auto_2`
-(pior PF da família no sweep) foram retiradas do menu E do paper a 19/08
-(consolidação); a 01/09 foram **apagadas do registo** por decisão do
-utilizador — já não podem ser simuladas nem backtestadas. O histórico
-decisório (PF/DD e o porquê) está no CHANGELOG; documentos antigos que as
-mencionem são registo histórico não operacional. Os dados paper órfãos
-ficam na BD sem leitores (nunca se apagam dados).
+## Part V - Auto-manage (bot managing alone)
 
-### 1. `nova` — "TP1..TP5" (sem gestão) — controlo
+`auto_*` variants replace group management with **mechanical rules**
+run each tick, always **look-ahead free** (past data only):
 
-- **Mecânica**: abre as **5 pernas** com o risco dividido; SL-first; TP1
-  fecha a perna 1 e move as restantes a BE; **não aplica NENHUMA mensagem
-  do grupo** (nem protect, nem close_all — corre até ao fim ou até o preço
-  bater SL/TPs).
-- **Parâmetros**: `max_legs=None` (5) · `manage=False` · `exit_at_tp=None`.
-- **Papel**: é o **controlo "o que acontece se não fizermos nada"** — a base
-  de comparação para medir o valor da gestão. Também alimenta o contrafactual
-  "sem gestão" do histórico de trades.
-- **Resultados**: baseline sem gestão — **PF 1.25 · +261.77 €** no período
-  atual (o `auto_5` sem trail é exatamente igual a esta). Ganha pouco; a
-  gestão do grupo multiplica o resultado (ver `nova_gestao`).
-- **Veredicto**: não é candidata a principal — é o termómetro.
+1. **Protection ladder** - TP_k confirms -> SL of later legs moves
+   to **TP_k level** (idea "take TP3 with nothing to lose");
+2. **Trailing** - after TP1: `SL = peak - trail_factor x dist(entry->TP2)`.
+   Peak is the max of **prior** ticks (never current). It is
+   the path that mirrors group "we're out / move SL" - **~90% of
+   edge** of autos;
+3. **Confirm filter** - if leg k takes SL, legs > k close
+   at market ("if 3 dies, exit all");
+4. **Time stop** - legs open N min after TP1 close at market;
+5. **Defensive mode** (19/08) - when PF of last `def_window` (10)
+   solved trades < 1.0, the strategy moves to tight trail
+   (`def_trail=1.5`) + time stop (`def_time_stop=60`) **with no leg cuts**;
+   back to normal when PF recovers. History is from its own account
+   (paper or real), no look-ahead. Mirrored on 3 engines (backtest /
+   paper / MT5 Phase 3) - see study in Part VIII;
+6. **ATR-adaptive trailing** (`max(trail_factorxdist, atr_kxATR`) -
+   built but **rejected by data**: gold ATR is far bigger
+   than the ~8 pip pullback, widens trail and gives profit back to BE (see
+   Part VIII).
+7. **Hybrid protect** - `auto_escada_3_hibrida` keeps ladder/trailing/
+   defensive mode and takes only group `protect` when it is more
+   protective than mechanical SL. The call is monotonic (buy: higher SL;
+   sell: lower SL), leg 1 only closes if known event price
+   already confirmed a no-worse exit, and each call stays in `protect_latency_log`
+   on paper/MT5. Backtest returns the same telemetry with no DB write.
 
-### 2. `nova_gestao` — "TP1..TP5 + gestão" — **PRINCIPAL**
+Honest study finds (see Part VIII): ladder, filter and time stop
+**have no edge alone** (PF 0.3-1.36 with no trailing); `max_legs=2` is worst
+(PF 2.20 with trail) - 2 TPs cut the profit engine.
 
-- **Mecânica**: igual à `nova` (5 pernas, SL-first, BE após TP1) **+ gestão
-  do grupo ao vivo**: `protect` (fecha perna 1 + SL acima da entrada),
-  `close_all` ("we're out" — sai tudo), `close_tp1`/`close_tp`, `move_sl`,
-  TP/SL hits. O grupo decide quando proteger e quando sair; o bot obedece.
-- **Parâmetros**: `manage=True` (todos os kinds) · sem auto-gestão.
-- **Papel**: **a estratégia que a conta demo executa** — a melhor segundo o
-  backtest (a fasquia que as outras têm de bater).
-- **Resultados**: atual **PF 3.28 · +2 369 € · DD 22.7%** (a dashboard mostra
-  PF 3.22 · +2 310 €, janela ligeiramente diferente). **Período antigo:
-  PF 0.63 · −2 622 € (PERDE)** — o edge da gestão do grupo só existe no
-  formato atual; no mercado antigo a gestão humana não salvou.
-- **Veredicto**: a referência. Fraqueza honesta: depende do grupo (e o
-  grupo perdeu no período antigo).
+---
 
-### 3. `tp2_protect` — "Sair no TP2 + protect only" — **teste**
+## Part VI - Registry strategies, ONE BY ONE
 
-- **Mecânica**: SL-first; TP1 fecha a perna 1 e move as restantes a BE;
-  **TP2 bate → todas as pernas fecham**. Da gestão do grupo **só honra o
-  `protect`** (fecha perna 1 + SL acima da entrada) — **ignora
-  `close_all`/`close_tp1`/`move_sl`**: o grupo pode dizer "we're out" que a
-  estratégia continua a correr para o TP2.
-- **Parâmetros**: `exit_at_tp=2` · `manage_kinds={"protect"}`.
-- **Papel**: teste de Fase 2 (corrida paper) — a pergunta "sair cedo só com
-  a proteção do grupo justifica-se?".
-- **Resultados** (estudo 30d, formato atual): **tp2 puro PF 0.86 · −151 €** ·
-  **+ protect PF 2.65 · +1 721 €** · gestão completa PF 3.22 · +2 309 €. O
-  protect recupera ~86% do caminho até à gestão completa.
-- **Veredicto**: sair cedo SÓ vale com a proteção do grupo; mesmo assim a
-  gestão completa (`nova_gestao`) continua a ganhar. Em validação ao vivo.
+> Result note: "current" = last 30 days of current group format
+> (July->today); "old" = Apr-Jul span (old format, out-of-sample);
+> "full history" = all signals on hand since start. Sim
+> balance 1,000 EUR · base risk 1.0% (with dynamic scale) · daily kill 3% by
+> default · real costs. See method (Part VII).
 
-### 4. `auto_3` — "Auto 3 TPs"
+### Strategies removed from registry on 01/09 (full removal)
 
-- **Mecânica**: **3 pernas**, BE após TP1, sem gestão do grupo e sem
-  auto-gestão registada.
-- **Parâmetros**: `max_legs=3` · `manage=False`.
-- **Papel**: mínimo viável "só com 3 TPs" (as pernas 1–2 dão prejuízo; o
-  lucro vive nas 3–5).
-- **Resultados**: no sweep COM trail: **PF 3.03 · +1 723 € · DD 31.2%**
-  (atual) · PF 1.38 · +2 162 € · DD 48.4% (antigo). Sem trail (registada)
-  seria fraca.
-- **Veredicto**: sem o trailing não tem edge; o trailing é o mecanismo
-  (ver `auto_escada_3`, a versão com escada+trail).
+`tp2` (PF 0.86 · -151 EUR), `tp2_gestao` (loses to `nova_gestao` in
+compare), `nova_gestao_3` (cuts legs 4-5 that give profit) and `auto_2`
+(worst PF of family in sweep) left menu AND paper on 19/08
+(consolidation); on 01/09 they were **erased from the registry** by user
+call - they can no longer run nor backtest. The
+decision history (PF/DD and why) is in CHANGELOG; old docs that
+name them are historic non-run record. Orphan paper data
+stays in DB with no readers (data is never erased).
 
-### 5. `auto_5` — "Auto 5 TPs"
+### 1. `nova` - "TP1..TP5" (no management) - control
 
-- **Mecânica**: **5 pernas**, BE após TP1, sem gestão do grupo e sem
-  auto-gestão registada — **é exatamente a `nova`** (baseline sem gestão).
-- **Parâmetros**: `max_legs=None` (5) · `manage=False`.
-- **Papel**: o baseline da família auto (duplicado da `nova`).
-- **Resultados**: no sweep COM trail: **PF 3.50 · +2 613 € · DD 42.6%**
-  (atual) · PF 1.46 · +3 579 € · **DD 84%** (antigo) — com trail ganha muito
-  mas com drawdowns enormes.
-- **Veredicto**: sem trail = `nova`; com trail = muito lucro mas DD 84% no
-  antigo (risco alto demais — por isso a escolha foi a `auto_escada_3`).
+- **Mechanics**: opens **5 legs** with split risk; SL-first; TP1
+  closes leg 1 and moves rest to BE; **applies NO group
+  message** (no protect, no close_all - runs to the end or until price
+  hits SL/TPs).
+- **Params**: `max_legs=None` (5) · `manage=False` · `exit_at_tp=None`.
+- **Role**: it is the **control "what if we do nothing"** - the base
+  to measure management value. It also feeds the "no management" counterfactual
+  of trade history.
+- **Results**: no-management baseline - **PF 1.25 · +261.77 EUR** in current
+  span (`auto_5` with no trail is exactly the same). Wins little; group
+  management multiplies the result (see `nova_gestao`).
+- **Verdict**: not a main candidate - it is the thermometer.
 
-### 6. `auto_escada_3` — "Auto 3 TPs + escada" — **teste · Fase 2** ⭐
+### 2. `nova_gestao` - "TP1..TP5 + management" - **MAIN**
 
-- **Mecânica**: **3 pernas**; BE após TP1; **escada de proteção**
-  (`stair_levels=3`, `stair_from=1`: TP_k confirma → SL das seguintes sobe
-  para o nível do TP_k); **trailing `trail_factor=2.0`** (≈8 pips em gold,
-  o valor honesto calibrado); **modo defensivo** (PF das últimas 10 trades
-  < 1.0 → trail 1.5 + time stop 60 min + risco máximo 1.25%, sem cortar
-  pernas); sem gestão do grupo.
-- **Parâmetros**: `max_legs=3` · `stair_levels=3` · `stair_from=1` ·
+- **Mechanics**: same as `nova` (5 legs, SL-first, BE after TP1) **+ live group
+  management**: `protect` (closes leg 1 + SL above entry),
+  `close_all` ("we're out" - exits all), `close_tp1`/`close_tp`, `move_sl`,
+  TP/SL hits. The group picks when to guard and when to exit; the bot obeys.
+- **Params**: `manage=True` (all kinds) · no auto-manage.
+- **Role**: **the strategy the demo account runs** - the best by
+  backtest (the bar others must beat).
+- **Results**: current **PF 3.28 · +2,369 EUR · DD 22.7%** (dashboard shows
+  PF 3.22 · +2,310 EUR, slightly different window). **Old span:
+  PF 0.63 · -2,622 EUR (LOSES)** - group-management edge only exists in
+  current format; in the old market human management did not save it.
+- **Verdict**: the reference. Honest weak point: it needs the group (and the
+  group lost in the old span).
+
+### 3. `tp2_protect` - "Exit at TP2 + protect only" - **test**
+
+- **Mechanics**: SL-first; TP1 closes leg 1 and moves rest to BE;
+  **TP2 hits -> all legs close**. Of group management it **only honors
+  `protect`** (closes leg 1 + SL above entry) - **ignores
+  `close_all`/`close_tp1`/`move_sl`**: the group can say "we're out" and the
+  strategy still runs to TP2.
+- **Params**: `exit_at_tp=2` · `manage_kinds={"protect"}`.
+- **Role**: Phase 2 test (paper run) - the ask "is early exit with only
+  group guard worth it?".
+- **Results** (30d study, current format): **pure tp2 PF 0.86 · -151 EUR** ·
+  **+ protect PF 2.65 · +1,721 EUR** · full management PF 3.22 · +2,309 EUR. The
+  protect recovers ~86% of the path to full management.
+- **Verdict**: early exit ONLY pays with group guard; even so full
+  management (`nova_gestao`) still wins. In live check.
+
+### 4. `auto_3` - "Auto 3 TPs"
+
+- **Mechanics**: **3 legs**, BE after TP1, no group management and no
+  set auto-manage.
+- **Params**: `max_legs=3` · `manage=False`.
+- **Role**: bare min "only 3 TPs" (legs 1-2 lose; profit
+  lives in 3-5).
+- **Results**: in sweep WITH trail: **PF 3.03 · +1,723 EUR · DD 31.2%**
+  (current) · PF 1.38 · +2,162 EUR · DD 48.4% (old). With no trail (set)
+  it would be weak.
+- **Verdict**: with no trailing it has no edge; trailing is the path
+  (see `auto_escada_3`, the ladder+trail version).
+
+### 5. `auto_5` - "Auto 5 TPs"
+
+- **Mechanics**: **5 legs**, BE after TP1, no group management and no
+  set auto-manage - **it is exactly `nova`** (no-management baseline).
+- **Params**: `max_legs=None` (5) · `manage=False`.
+- **Role**: the auto-family baseline (copy of `nova`).
+- **Results**: in sweep WITH trail: **PF 3.50 · +2,613 EUR · DD 42.6%**
+  (current) · PF 1.46 · +3,579 EUR · **DD 84%** (old) - with trail it wins big
+  but with huge drawdowns.
+- **Verdict**: no trail = `nova`; with trail = big profit but 84% DD on
+  old (too much tail risk - so the pick was `auto_escada_3`).
+
+### 6. `auto_escada_3` - "Auto 3 TPs + ladder" - **test · Phase 2** ⭐
+
+- **Mechanics**: **3 legs**; BE after TP1; **protection ladder**
+  (`stair_levels=3`, `stair_from=1`: TP_k confirms -> SL of next ones moves
+  to TP_k level); **trailing `trail_factor=2.0`** (about 8 pips on gold,
+  the honest tuned value); **defensive mode** (PF of last 10 trades
+  < 1.0 -> trail 1.5 + 60 min time stop + max 1.25% risk, with no
+  leg cuts); no group management.
+- **Params**: `max_legs=3` · `stair_levels=3` · `stair_from=1` ·
   `confirm_filter=True` · `trail_factor=2.0` ·
   `def_window=10 · def_trail=1.5 · def_time_stop=60 · def_risk_pct=1.25` ·
   `manage=False`.
-- **Papel**: **a candidata à Fase 3** (auto-gestão no MT5) — em corrida
-  paper a validar (N ≥ 20 sinais; gates: PF ≥ 1.5 · P&L ≥ 50% da referência
-  · DD ≤ 125%).
-- **Resultados do Item 3** (sweep `--item3-sweep`, mesmas velas/custos,
-  19/08): no período **atual**, `confirm=False` deu **PF 1.27 / DD 11.8%**
-  e `confirm=True` **PF 1.26 / DD 11.8%** (queda relativa de PF 0.79%);
-  no **histórico completo**, 0.47 / 322.0% contra **0.53 / 286.1%**; no
-  **antigo**, 0.40 / 312.9% contra **0.46 / 278.3%**.
-- **Veredicto**: o DD de cauda reduziu-se e o PF atual perdeu menos de 10%,
-  por isso `confirm_filter=True` passou o critério e ficou congelado como
-  default desta estratégia. A alteração é só da auto em paper/backtest;
-  não promove nem altera a principal `nova_gestao`.
+- **Role**: **the Phase 3 candidate** (auto-manage on MT5) - in paper
+  run for check (N >= 20 signals; gates: PF >= 1.5 · P&L >= 50% of reference
+  · DD <= 125%).
+- **Results of Item 3** (sweep `--item3-sweep`, same candles/costs,
+  19/08): in **current** span, `confirm=False` gave **PF 1.27 / DD 11.8%**
+  and `confirm=True` **PF 1.26 / DD 11.8%** (relative PF drop 0.79%);
+  on **full history**, 0.47 / 322.0% vs **0.53 / 286.1%**; on
+  **old**, 0.40 / 312.9% vs **0.46 / 278.3%**.
+- **Verdict**: tail DD fell and current PF lost under 10%,
+  so `confirm_filter=True` passed the bar and froze as
+  default of this strategy. The change is only the auto on paper/backtest;
+  it neither promotes nor changes main `nova_gestao`.
 
-### 7. `auto_escada_5` — "Auto 5 TPs + escada + confirmação"
+### 7. `auto_escada_5` - "Auto 5 TPs + ladder + confirm"
 
-- **Mecânica**: **5 pernas**; escada de proteção (TP_k → SL das seguintes
-  no nível do TP_k); **filtro de confirmação** (perna k leva SL → pernas > k
-  fecham); trailing 2.0; **modo defensivo** (PF(10) < 1.0 → trail 1.5 +
-  time stop 60 min + risco máximo 1.25%); sem gestão do grupo.
-- **Parâmetros**: `max_legs=None` (5) · `stair_levels=5` · `confirm_filter=True`
+- **Mechanics**: **5 legs**; protection ladder (TP_k -> SL of next ones
+  at TP_k level); **confirm filter** (leg k takes SL -> legs > k
+  close); trailing 2.0; **defensive mode** (PF(10) < 1.0 -> trail 1.5 +
+  60 min time stop + max 1.25% risk); no group management.
+- **Params**: `max_legs=None` (5) · `stair_levels=5` · `confirm_filter=True`
   · `trail_factor=2.0` · `def_window=10 · def_trail=1.5 · def_time_stop=60 ·
   def_risk_pct=1.25` · `manage=False`.
-- **Papel**: a variante mais agressiva (mais pernas = mais lucro potencial,
-  mais risco de cauda).
-- **Resultados**: atual **PF 3.66 · +2 787 € · DD 35.9%** · antigo
-  **PF 1.43 · +3 356 € · DD 86.4%** — o melhor PF absoluto mas com
-  **drawdown de 86% no período antigo** (quase falência).
-- **Veredicto**: o equilíbrio é pior que o escada_3 (lucro parecido, DD
-  muito maior) — fica no menu para comparação ao vivo.
+- **Role**: the more aggressive variant (more legs = more profit room,
+  more tail risk).
+- **Results**: current **PF 3.66 · +2,787 EUR · DD 35.9%** · old
+  **PF 1.43 · +3,356 EUR · DD 86.4%** - best absolute PF but with
+  **86% drawdown on the old span** (near ruin).
+- **Verdict**: worse trade than escada_3 (like profit, far
+  bigger DD) - stays on menu for live compare.
 
-### 8. `auto_escada_3_hibrida` — "Auto 3 TPs + escada + protect híbrido" — **experimental**
+### 8. `auto_escada_3_hibrida` - "Auto 3 TPs + ladder + hybrid protect" - **trial**
 
-- **Mecânica**: 3 pernas, escada desde o TP1, trailing `trail_factor=2.0`
-  e modo defensivo (PF(10) < 1.0 → trail 1.5 + time stop 60 min + risco
-  máximo 1.25%). Quando chega `protect` do grupo, compara o SL do grupo com o SL mecânico por perna
-  e aplica apenas o nível mais protetor; nunca recua um SL já ganho pela
-  auto. A perna 1 só fecha quando o preço conhecido no evento já confirmou
-  TP1 e o `protect` não é pior que a proteção automática.
-- **Parâmetros**: `max_legs=3` · `stair_levels=3` · `stair_from=1` ·
+- **Mechanics**: 3 legs, ladder from TP1, trailing `trail_factor=2.0`
+  and defensive mode (PF(10) < 1.0 -> trail 1.5 + 60 min time stop + max
+  1.25% risk). When group `protect` arrives, it compares group SL with mechanical SL per leg
+  and only applies the more protective level; it never walks back an SL already won by
+  auto. Leg 1 only closes when known event price already confirmed
+  TP1 and `protect` is no worse than auto guard.
+- **Params**: `max_legs=3` · `stair_levels=3` · `stair_from=1` ·
   `trail_factor=2.0` · `def_window=10 · def_trail=1.5 · def_time_stop=60` ·
   `manage_kinds={"protect"}`.
-- **Papel**: conta paper própria e página de teste para validar a hipótese
-  "auto mecânica + timing humano". Não substitui `nova_gestao`, não é
-  elegível para auto-switch e a sua telemetria deve acumular pelo menos 20
-  eventos `protect` antes de tirar a conclusão.
-- **Relatório**: a tabela **Protect híbrido — latência auto vs grupo** mostra
-  vencedor, diferença em pips, atraso e ação da perna 1; o backtest usa a
-  mesma cronologia sem look-ahead. `GET /api/analysis/protect_causal` também
-  faz a atribuição por prefixos (baseline sem protect → cada evento) e mostra
-  os piores deltas.
-- **Item 1 validado e encerrado (19/08)**: no snapshot do histórico completo
-  a híbrida ficou igual à auto pura (**PF 2.21 · DD 32.5%**); no recorte de
-  30 dias, ambas ficaram em **PF 3.20 · DD 24.6%**. A causalidade encontrou
-  **355 eventos em 270 sinais, 0 harmful e delta 0 €** — os `protect` não
-  causaram as perdas observadas. A paridade buy/sell entre backtest,
-  SimEngine, PaperRace e MT5 dry-run está em `tests/test_engine_parity.py`.
-  O spec `docs/Melhorias/01-item-01.md` foi apagado só depois desta validação;
-  a híbrida continua experimental e não é elegível para promoção automática.
+- **Role**: own paper account and test page to check the
+  "mechanical auto + human timing" claim. It does not replace `nova_gestao`, is not
+  eligible for auto-switch and its telemetry must collect at least 20
+  `protect` events before a call.
+- **Report**: the **Hybrid protect - auto vs group latency** table shows
+  winner, pip gap, delay and leg-1 action; backtest uses the
+  same timeline with no look-ahead. `GET /api/analysis/protect_causal` also
+  credits by prefixes (no-protect baseline -> each event) and shows
+  worst deltas.
+- **Item 1 checked and closed (19/08)**: on the full-history snapshot
+  hybrid tied pure auto (**PF 2.21 · DD 32.5%**); on the 30-day
+  cut, both hit **PF 3.20 · DD 24.6%**. Causal check found
+  **355 events on 270 signals, 0 harmful and 0 EUR delta** - `protect` calls did not
+  cause seen losses. Buy/sell parity across backtest,
+  SimEngine, PaperRace and MT5 dry-run is in `tests/test_engine_parity.py`.
+  Spec `docs/Melhorias/01-item-01.md` was deleted only after this check;
+  hybrid stays trial and is not eligible for auto promotion.
 
-### ~~9. `auto_protect_5` — removida a 01/09~~ (histórico no CHANGELOG)
+### ~~9. `auto_protect_5` - removed on 01/09~~ (history in CHANGELOG)
 
-> **Removida do registo a 01/09** (decisão do utilizador — remoção completa).
-> Hipótese de proteção precoce sem robustez out-of-sample: **PF 1.27 ·
-> +€281.41 · DD 38.6%** vs `auto_escada_5` PF 1.33 · o melhor atual do sweep
-> (1.0/0.20) tinha PF 1.96 mas o melhor antigo PF 0.50 · −€3 450.62 — nenhuma
-> combinação robusta. A mecânica (`protect_trigger`/`protect_buffer`) fica nos
-> motores para candidatas futuras; o backtest desta variante deixou de ser
-> reproduzível.
-
----
-
-## Parte VII — Metodologia dos resultados (para confiar nos números)
-
-- **Dados**: os sinais reais disponíveis na BD do Golden Moves desde o início
-  do grupo (o número exato aparece no snapshot/relatório e pode crescer quando
-  chega histórico novo), com os 3 formatos de mensagem que o grupo usou ao
-  longo do tempo. O histórico antigo (abr–jul) é o **out-of-sample**:
-  calibrou-se no formato atual e validou-se no antigo.
-- **Simulação**: replay dos sinais sobre **velas reais** (preços históricos),
-  com as MESMAS regras da produção: SL-first, sem look-ahead (nunca se usa o
-  fecho da vela do evento), risco por sinal **1,0% por defeito** (escala
-  dinâmica possível) dividido pelas pernas, **custos reais** (spread,
-  slippage, comissão), contract por símbolo (XAUUSD 100, XAGUSD 5000, forex
-  100000), **kill diário** (perda do dia > **3% por defeito**, configurável →
-  trades do resto do dia não abrem — espelho da produção).
-- **Sweeps**: os parâmetros (trail 1.5–2.5, ATR) foram corridos em grelha
-  para detetar **sobreajuste**: uma curva monotónica sem pico isolado =
-  parâmetro honesto; um pico isolado = sorte. O trail 2.0 é o meio de um
-  plateau monotónico (PF 4.69→1.97, sem saltos).
-- **Validação estatística**: amostras pequenas (< 10–20 trades) são ruído —
-  por isso os gates exigem N ≥ 20 e o veredicto automático só decide com 10
-  trades reais.
-- **Painel ao vivo**: a corrida paper (contas virtuais de 1000 €, todos os
-  sinais reais a partir de hoje) é o teste forward — os números deste
-  documento são o passado; a corrida é o futuro.
+> **Removed from registry on 01/09** (user call - full removal).
+> Early-guard claim with no out-of-sample strength: **PF 1.27 ·
+> +EUR 281.41 · DD 38.6%** vs `auto_escada_5` PF 1.33 · best current of sweep
+> (1.0/0.20) had PF 1.96 but best old PF 0.50 · -EUR 3,450.62 - no
+> robust combo. The path (`protect_trigger`/`protect_buffer`) stays in
+> engines for future candidates; backtest of this variant is no longer
+> reproducible.
 
 ---
 
-## Parte VIII — Como avaliar (guia de leitura)
+## Part VII - Result method (so numbers can be trusted)
 
-Uma estratégia é boa se:
+- **Data**: real on-hand Golden Moves signals in DB since group
+  start (exact count shows in snapshot/report and can grow when
+  new history arrives), with the 3 message formats the group used over
+  time. Old history (Apr-Jul) is **out-of-sample**:
+  tuned on current format and checked on old.
+- **Simulation**: replay of signals on **real candles** (history prices),
+  with SAME production rules: SL-first, look-ahead free (never uses
+  event-candle close), risk per signal **1.0% by default** (dynamic
+  scale possible) split across legs, **real costs** (spread,
+  slippage, commission), contract per symbol (XAUUSD 100, XAGUSD 5000, forex
+  100000), **daily kill** (day loss > **3% by default**, settable ->
+  rest-of-day trades do not open - production mirror).
+- **Sweeps**: params (trail 1.5-2.5, ATR) ran in grid
+  to spot **overfit**: a smooth curve with no lone spike =
+  honest param; a lone spike = luck. Trail 2.0 sits mid
+  smooth plateau (PF 4.69->1.97, no jumps).
+- **Stats check**: small samples (< 10-20 trades) are noise -
+  so gates need N >= 20 and the auto verdict only calls with 10
+  real trades.
+- **Live panel**: the paper run (virtual 1,000 EUR accounts, all
+  real signals from today) is the forward test - numbers in this
+  document are the past; the run is the future.
 
-1. **PF ≥ 1.5 no período atual E não-perdedor no período antigo**
-   (robustez — o grupo perde no antigo, as auto_* ganham);
-2. **DD controlado** (DD ≤ ~40% no antigo; DD > 80% = risco de cauda);
-3. **Sweep monotónico** nos parâmetros (sem pico de sorte);
-4. **bate a referência `nova_gestao`** (PF 3.28 atual / 0.63 antigo) no
-   backtest E na corrida paper ao vivo;
-5. **N ≥ 20 sinais** na corrida antes de concluir qualquer coisa.
+---
 
-**Onde estão hoje (19/08, consolidação)**: `nova_gestao` executa a conta
-demo; a `auto_escada_3` e a `tp2_protect` estão em corrida paper (Fase 2);
-no menu ficam **6 visíveis** (`nova_gestao`, `tp2_protect`,
+## Part VIII - How to review (read guide)
+
+A strategy is good if:
+
+1. **PF >= 1.5 on current span AND not a loser on old span**
+   (robustness - the group loses on old, auto_* win);
+2. **Capped DD** (DD <= ~40% on old; DD > 80% = tail risk);
+3. **Smooth sweep** on params (no luck spike);
+4. **beats reference `nova_gestao`** (PF 3.28 current / 0.63 old) in
+   backtest AND live paper run;
+5. **N >= 20 signals** in the run before any call.
+
+**Where they stand today (19/08, consolidation)**: `nova_gestao` runs the demo
+account; `auto_escada_3` and `tp2_protect` are in paper run (Phase 2);
+menu keeps **6 visible** (`nova_gestao`, `tp2_protect`,
 `auto_3`, `auto_escada_3`, `auto_escada_3_hibrida`, `auto_escada_5`,
-`auto_protect_5`); `nova` e `auto_5` continuam em PAPEL mas
-ocultas do menu (contrafactual "sem gestão" + comparação 5 pernas com/sem
-trail — `MENU_HIDDEN_STRATEGIES`); `tp2`, `tp2_gestao`, `nova_gestao_3` e
-`auto_2` saíram do menu E do paper (`HIDDEN_STRATEGIES`) — ficam só no
-backtest/compare, nunca se apagam dados. Quando a `auto_escada_3` passar os
-gates (N ≥ 20 · PF ≥ 1.5 · P&L ≥ 50% · DD ≤ 125%), sobe para a Fase 3 (MT5
-demo, janela de validação de 10 trades reais com veredicto automático).
-Conta real: nunca sem instrução explícita (SPEC v3, rascunho).
+`auto_protect_5`); `nova` and `auto_5` stay on PAPER but
+hidden from menu ("no management" counterfactual + 5-leg with/without
+trail compare - `MENU_HIDDEN_STRATEGIES`); `tp2`, `tp2_gestao`, `nova_gestao_3` and
+`auto_2` left menu AND paper (`HIDDEN_STRATEGIES`) - stay only in
+backtest/compare, data is never erased. When `auto_escada_3` passes gates
+(N >= 20 · PF >= 1.5 · P&L >= 50% · DD <= 125%), it moves to Phase 3 (MT5
+demo, 10-real-trade check window with auto verdict).
+Real account: never with no explicit instruction (SPEC v3, draft).
 
-**Estudo da consolidação (19/08, `app/study_consolidation.py`)**: testou o
-filtro de entrada (sessão Londres/NY + distância entrada→TP2 ≥ 5 pips + ATR
-p20) e o modo defensivo (PF das últimas 10 trades < 1.0 → trail 1.5 + time
-stop 60 min, SEM cortar pernas) nas 3 janelas:
+**Consolidation study (19/08, `app/study_consolidation.py`)**: tested the
+entry filter (London/NY session + entry-to-TP2 gap >= 5 pips + ATR
+p20) and defensive mode (PF of last 10 trades < 1.0 -> trail 1.5 + time
+stop 60 min, with NO leg cuts) on 3 windows:
 
-| Variante | Atual (PF/DD) | Tudo (PF/DD) | Antiga (PF/DD) |
+| Variant | Current (PF/DD) | All (PF/DD) | Old (PF/DD) |
 |---|---|---|---|
 | auto_escada_3 baseline | 4.95 / 11.8% | 2.13 / 38.0% | 1.41 / 35.2% |
-| + filtro de entrada | 6.29 / 9.4% (rej 8) | 2.15 / 42.8% (rej 32) | 1.50 / 33.4% (rej 180) |
-| + modo defensivo | 4.97 / 11.8% (5 ativos) | 2.20 / 32.5% (224) | 1.48 / 32.5% (219) |
+| + entry filter | 6.29 / 9.4% (rej 8) | 2.15 / 42.8% (rej 32) | 1.50 / 33.4% (rej 180) |
+| + defensive mode | 4.97 / 11.8% (5 on) | 2.20 / 32.5% (224) | 1.48 / 32.5% (219) |
 | auto_escada_5 baseline | 5.73 / 15.8% | 2.25 / 87.1% | 1.43 / 86.4% |
-| + filtro de entrada | 7.33 / 12.5% | 2.32 / 68.4% | 1.50 / 68.7% |
-| + modo defensivo | 5.95 / 15.8% | 2.30 / 85.1% | 1.47 / 86.1% |
+| + entry filter | 7.33 / 12.5% | 2.32 / 68.4% | 1.50 / 68.7% |
+| + defensive mode | 5.95 / 15.8% | 2.30 / 85.1% | 1.47 / 86.1% |
 | auto_3 baseline | 1.25 / 11.8% | 0.44 / 339% | 0.37 / 330% |
-| + filtro de entrada | 1.53 / 9.4% | 0.44 / 327% | 0.37 / 231% |
-| + modo defensivo | 1.68 / 11.8% | 0.97 / 88% | 0.86 / 87% |
+| + entry filter | 1.53 / 9.4% | 0.44 / 327% | 0.37 / 231% |
+| + defensive mode | 1.68 / 11.8% | 0.97 / 88% | 0.86 / 87% |
 
-**Veredicto honesto**: o **filtro de entrada NÃO tem edge** — rejeita
-quase só no período antigo (onde TUDO perde, logo cortar não prova nada; o
-lucro cai), a sessão não filtra nada no atual (o grupo já opera em horário
-ativo) e o ATR rejeita 8 sinais no atual (ruído). A sensibilidade **só-ATR**
-rejeita **0 sinais** (a rejeição do filtro completo era toda da sessão —
-confirma que o ATR não filtra nada por si). **NÃO implementado.**
+**Honest verdict**: the **entry filter has NO edge** - it rejects
+almost only on the old span (where ALL loses, so cutting proves nothing; the
+profit drops), session filters nothing on current (the group already trades in active
+hours) and ATR rejects 8 signals on current (noise). **ATR-only** sensitivity
+rejects **0 signals** (full-filter rejects were all session -
+proof ATR filters nothing alone). **NOT built.**
 
-Na `auto_escada_3` o estudo base encontrou um efeito pequeno e consistente
-(DD menor com P&L igual ou melhor). **Na `auto_escada_5` isso não se confirmou
-de forma robusta**: o sweep específico do Item 2, com baseline não contaminado,
-mostra DD antiga ainda acima de 84% em toda a grelha e um pico isolado de PF
-no eixo `def_window`. O efeito procurado seria do time stop + trail apertado
-em regimes adversos — NÃO de cortar pernas (o `max_legs=2` do spec original
-foi rejeitado: o sweep já provou que 2 pernas cortam o motor do lucro).
-**Implementado (19/08)**: o modo defensivo (trail 1.5 + time stop 60 min
-quando PF(10) < 1.0, sem cortar pernas) está nas `auto_escada_3/5` —
-parâmetros `def_window`/`def_trail`/`def_time_stop` no registo, espelhados
-no backtest (`simulate_signal`), na corrida paper (`PaperRace`, conta
-virtual) e no MT5 real (`_update_real`, Fase 3, trades reais fechadas), com validação na corrida paper antes da Fase 3.
+On `auto_escada_3` the base study found a small steady effect
+(lower DD with same or better P&L). **On `auto_escada_5` this did not hold
+robustly**: the Item 2 sweep, with clean baseline,
+shows old DD still over 84% on the whole grid and a lone PF spike
+on the `def_window` axis. The wanted effect would be time stop + tight trail
+in bad regimes - NOT leg cuts (`max_legs=2` of the first spec
+was rejected: the sweep already proved 2 legs cut the profit engine).
+**Built (19/08)**: defensive mode (trail 1.5 + 60 min time stop
+when PF(10) < 1.0, with no leg cuts) is on `auto_escada_3/5` -
+`def_window`/`def_trail`/`def_time_stop` params in registry, mirrored
+in backtest (`simulate_signal`), paper run (`PaperRace`, virtual
+account) and real MT5 (`_update_real`, Phase 3, closed real trades), with paper-run check before Phase 3.
 
-### Item 2 — sweep defensivo da `auto_escada_5` (19/08)
+### Item 2 - defensive sweep of `auto_escada_5` (19/08)
 
-O sweep reproduzível é executado com:
+The reproducible sweep runs with:
 
 ```text
 PYTHONIOENCODING=utf-8 .venv/Scripts/python -m app.study_consolidation --item2-sweep
 ```
 
-O filtro de entrada do estudo mantém a promessa de não leakage: offsets com
-fuso são convertidos para UTC, o ATR diário usa a última observação de cada
-dia UTC e o piso p20 de cada sinal só consulta dias anteriores; os timestamps
-sem fuso históricos continuam a ser tratados como hora local do bot.
+The study entry filter keeps the no-leak promise: tz offsets convert to UTC, daily ATR uses the last reading of each
+UTC day and each signal p20 floor only reads prior days; historic
+tz-free stamps still read as bot local time.
 
-A grelha completa é `def_window` **5/7/10** × `def_trail` **1.0/1.2/1.5**
-× `def_time_stop` **30/45/60** (27 combinações), nas mesmas janelas
-**atual / tudo / antiga**. O baseline é calculado uma vez por janela e a
-história baseline é reutilizada em todas as variantes, sem leakage. Os três
-time stops tiveram os mesmos números neste replay, por isso a tabela abaixo
-mostra uma linha por combinação de window/trail e indica `30=45=60`.
+The full grid is `def_window` **5/7/10** x `def_trail` **1.0/1.2/1.5**
+x `def_time_stop` **30/45/60** (27 combos), on the same
+**current / all / old** windows. Baseline is set once per window and the
+baseline history is reused on all variants, no leakage. The three
+time stops gave the same numbers in this replay, so the table below
+shows one row per window/trail combo and marks `30=45=60`.
 
-Baseline: atual **PF 5.73 / DD 15.8%** · tudo **PF 2.25 / DD 87.1%** · antiga
+Baseline: current **PF 5.73 / DD 15.8%** · all **PF 2.25 / DD 87.1%** · old
 **PF 1.43 / DD 86.4%**.
 
-| `def_window` | `def_trail` | `def_time_stop` | Atual PF/DD | Tudo PF/DD | Antiga PF/DD |
+| `def_window` | `def_trail` | `def_time_stop` | Current PF/DD | All PF/DD | Old PF/DD |
 |---:|---:|:---:|---:|---:|---:|
 | 5 | 1.0 | 30=45=60 | 6.72 / 15.8% | 2.31 / 84.5% | 1.49 / 85.5% |
 | 5 | 1.2 | 30=45=60 | 6.26 / 15.8% | 2.30 / 84.8% | 1.48 / 85.8% |
@@ -622,63 +621,63 @@ Baseline: atual **PF 5.73 / DD 15.8%** · tudo **PF 2.25 / DD 87.1%** · antiga
 | 10 | 1.2 | 30=45=60 | 5.95 / 15.8% | 2.33 / 84.8% | 1.48 / 85.8% |
 | 10 | 1.5 | 30=45=60 | 5.95 / 15.8% | 2.30 / 85.1% | 1.47 / 86.1% |
 
-**Veredicto do Item 2**: **0 combinações elegíveis**. Nenhuma reduz o DD
-antigo para <50% (o melhor fica ~84.5%); a perda de PF atual não seria o
-problema, mas o risco de cauda continua. A monotonicidade é verde nos eixos
-`def_trail`/`def_time_stop` e nas janelas tudo/antiga; no eixo `def_window` do
-período atual há um pico isolado (PF médio **6.41 → 6.66 → 6.11** para
-5→7→10). Portanto reporta-se o sweep, **não se altera nenhum default** e
-não se promove `auto_escada_5` para a conta MT5. O spec
-`docs/Melhorias/02-item-02.md` foi apagado depois de o sweep e o veredicto
-ficarem documentados.
+**Item 2 verdict**: **0 eligible combos**. None cuts old DD
+below 50% (best stays ~84.5%); current PF loss would not be the
+issue, but tail risk stays. Smoothness is green on
+`def_trail`/`def_time_stop` axes and on all/old windows; on the current-span `def_window` axis
+there is a lone spike (mean PF **6.41 -> 6.66 -> 6.11** for
+5->7->10). So report the sweep, **change no default** and
+do not promote `auto_escada_5` to the MT5 account. Spec
+`docs/Melhorias/02-item-02.md` was deleted after the sweep and verdict
+were filed.
 
-**Reexecução read-only de 19/08**: com a BD atual, o baseline `auto_escada_5`
-ficou em **PF 1.95 / DD 15.8%** na janela atual, **PF 0.70 / DD 310.9%** no
-histórico completo e **PF 0.58 / DD 302.4%** no período antigo. As 27
-combinações reproduzidas ficaram iguais a estes valores e o veredicto manteve
-**0 elegíveis**; esta leitura substitui apenas os números do snapshot acima,
-não altera os defaults nem a configuração da conta.
+**Read-only rerun of 19/08**: with current DB, `auto_escada_5` baseline
+hit **PF 1.95 / DD 15.8%** on the current window, **PF 0.70 / DD 310.9%** on
+full history and **PF 0.58 / DD 302.4%** on the old span. The 27
+replayed combos tied these values and the verdict kept
+**0 eligible**; this reading only replaces snapshot numbers above,
+it changes neither defaults nor account setup.
 
-**Item 3 encerrado (19/08)**: o sweep read-only de `auto_escada_3` comparou
-`confirm_filter=True` vs `False` nas janelas atual/tudo/antiga, com
-`stair_levels=3`, `stair_from=1` e `trail_factor=2.0` fixos. O critério passou:
-DD antiga caiu de 312.9% para 278.3% e o PF atual caiu só de 1.27 para 1.26
-(0.79%, abaixo do limite relativo de 10%). O registo foi atualizado para
-`confirm_filter=True`, sem promover a conta principal; o spec
-`docs/Melhorias/03-item-03.md` foi apagado depois dos testes e da
-aceitação.
+**Item 3 closed (19/08)**: the read-only sweep of `auto_escada_3` compared
+`confirm_filter=True` vs `False` on current/all/old windows, with
+`stair_levels=3`, `stair_from=1` and `trail_factor=2.0` fixed. The bar passed:
+old DD fell from 312.9% to 278.3% and current PF only fell from 1.27 to 1.26
+(0.79%, under the 10% relative cap). The registry moved to
+`confirm_filter=True`, with no main-account promotion; spec
+`docs/Melhorias/03-item-03.md` was deleted after tests and
+accept.
 
-**A/B/C das 5 estratégias base visíveis no histórico completo** (19/08,
+**A/B/C of the 5 visible base strategies on full history** (19/08,
 
-579 sinais, saldo
-inicial 1000 €, risco/kill diário da config — mesma simulação das páginas
-de teste com `days=0`):
+579 signals, start
+balance 1,000 EUR, config risk/daily kill - same run as test pages
+with `days=0`):
 
-| Estratégia | Sinais | Resolvidas | PF | P&L € | WR% | DD% | Falência |
+| Strategy | Signals | Solved | PF | P&L EUR | WR% | DD% | Ruin |
 |---|---|---|---|---|---|---|---|
-| `nova_gestao` (referência) | 579 | 382 | 1.00 | +20 | 49.5 | 252 | ✅ (morre) |
-| `tp2_protect` | 579 | 380 | 0.82 | −1 399 | 49.5 | 330 | ✅ (morre) |
-| `auto_3` | 579 | 444 | 0.43 | −3 207 | 49.5 | 343 | ✅ (morre) |
-| `auto_escada_3` ⭐ | 579 | 482 | 2.10 | +6 863 | 48.3 | 24.3 | ❌ |
-| `auto_escada_5` | 579 | 405 | 2.30 | +11 063 | 46.9 | 25.8 | ❌ |
+| `nova_gestao` (reference) | 579 | 382 | 1.00 | +20 | 49.5 | 252 | yes (dies) |
+| `tp2_protect` | 579 | 380 | 0.82 | -1,399 | 49.5 | 330 | yes (dies) |
+| `auto_3` | 579 | 444 | 0.43 | -3,207 | 49.5 | 343 | yes (dies) |
+| `auto_escada_3` ⭐ | 579 | 482 | 2.10 | +6,863 | 48.3 | 24.3 | no |
+| `auto_escada_5` | 579 | 405 | 2.30 | +11,063 | 46.9 | 25.8 | no |
 
-**Leitura honesta**: no histórico COMPLETO (abr→hoje, que junta o período
-antigo perdedor ao formato atual) só as **auto_escada_3/5 têm edge** — as
-restantes morrem em falência (DD > 100% porque o sim continua a arriscar %
-fixa até o saldo chegar a zero). A `nova_gestao` fica em break-even (+20 €)
-porque o período antigo perde tanto quanto o atual ganha — é por isso que
-os critérios da Fase 3 avaliam a `auto_escada_3` em janelas recentes (N ≥
-20 · PF ≥ 1.5 · P&L ≥ 50% da referência · DD ≤ 125%) e não no histórico
-completo. A `tp2_protect` e a `auto_3` mantêm-se visíveis como testes ao
-vivo (a proteção do grupo e o trail mínimo podem justificar-se em regime
-recente — 30 dias: PF 2.65 e 3.03 respetivamente), mas o histórico completo
-mostra que não sobrevivem a regimes adversos prolongados.
+**Honest read**: on FULL history (Apr->today, which joins the
+old loser span to the current format) only **auto_escada_3/5 have edge** - the
+rest die in ruin (DD > 100% because sim keeps risking a fixed %
+down to zero balance). `nova_gestao` ends flat (+20 EUR)
+because the old span loses as much as the current wins - that is why
+Phase 3 rules review `auto_escada_3` on fresh windows (N >=
+20 · PF >= 1.5 · P&L >= 50% of reference · DD <= 125%) and not on full
+history. `tp2_protect` and `auto_3` stay visible as live
+tests (group guard and min trail may pay in a fresh
+regime - 30 days: PF 2.65 and 3.03 each), but full history
+shows they do not live through long bad regimes.
 
 ---
 
-## Parte VIII-A — Estudos de decisão adicionais (19/08)
+## Part VIII-A - Extra decision studies (19/08)
 
-Os estudos reproduzíveis vivem em `app/study_strategies.py` e são read-only:
+Reproducible studies live in `app/study_strategies.py` and are read-only:
 
 ```text
 .venv/Scripts/python -m app.study_strategies --study ablation
@@ -688,228 +687,225 @@ Os estudos reproduzíveis vivem em `app/study_strategies.py` e são read-only:
 .venv/Scripts/python -m app.study_strategies --study polling
 ```
 
-Na BD atual (30 dias, 107 sinais, saldo 1 000 €, risco 1%, kill diário 6%,
-velas 15m), a ablation encontrou:
+On current DB (30 days, 107 signals, 1,000 EUR balance, 1% risk, 6% daily kill,
+15m candles), ablation found:
 
-| Variante | PF | P&L € | DD |
+| Variant | PF | P&L EUR | DD |
 |---|---:|---:|---:|
-| sem gestão | 1.25 | +261.77 | 42.8% |
-| gestão completa | **3.34** | **+2 438.76** | **22.7%** |
-| só `protect` | 3.09 | +2 177.62 | 22.7% |
-| só `close_all` | 1.54 | +569.21 | 42.8% |
-| só `move_sl` | 1.25 | +261.77 | 42.8% |
-| só `tp_hit` | 1.25 | +261.77 | 42.8% |
+| no management | 1.25 | +261.77 | 42.8% |
+| full management | **3.34** | **+2,438.76** | **22.7%** |
+| `protect` only | 3.09 | +2,177.62 | 22.7% |
+| `close_all` only | 1.54 | +569.21 | 42.8% |
+| `move_sl` only | 1.25 | +261.77 | 42.8% |
+| `tp_hit` only | 1.25 | +261.77 | 42.8% |
 
-A leitura é causalmente útil, mas não prova independência estatística: o
-`protect` é o maior mecanismo isolado; `close_all` ajuda pouco sem `protect`,
-e `move_sl`/`tp_hit` não alteraram esta amostra. O valor da gestão completa é
-principalmente a combinação dos eventos e a correlação temporal do grupo.
+The read is causally useful, but proves no statistical split: the
+`protect` is the biggest lone path; `close_all` helps little with no `protect`,
+and `move_sl`/`tp_hit` did not move this sample. Full-management value is
+mainly the mix of events and group time link.
 
-O walk-forward calibrado (3 folds) escolheu `all → protect → all_fallback_60`
-apenas com base no bloco anterior; os três blocos seguintes foram positivos
-(+61.27 €, +821.29 € e +1 513.26 €), mas o último tem só 26 sinais. O fallback
-teve exatamente o mesmo resultado do `all` no bloco em que foi escolhido.
-Isto valida a continuação da investigação, não autoriza trocar a principal.
+Tuned walk-forward (3 folds) picked `all -> protect -> all_fallback_60`
+only on the prior block; the next three blocks were all green
+(+61.27 EUR, +821.29 EUR and +1,513.26 EUR), but the last has only 26 signals. Fallback
+had exactly the same result as `all` on the block where it was picked.
+This backs more research, it does not allow swapping main.
 
-A validação expandida, sempre selecionando no treino e testando no bloco
-seguinte, ficou assim:
+The wider check, always picking on train and testing on the next
+block, read:
 
-| Período | Sinais | Seleções | Folds de teste positivos | Resultado |
+| Span | Signals | Picks | Green test folds | Result |
 |---|---:|---|---:|---|
-| atual 30d | 107 | all → protect → all_fallback_60 | 3/3 | consistente só no regime recente |
-| últimos 90d | 397 | all → all → all | 1/3 | não robusto; período antigo pesa contra |
-| histórico completo | 578 | all → all → all | 1/3 | não robusto |
-| antigo OOS | 506 | all → all → all | 2/3 | grupo antigo continua perdedor |
+| current 30d | 107 | all -> protect -> all_fallback_60 | 3/3 | steady only in the fresh regime |
+| last 90d | 397 | all -> all -> all | 1/3 | not robust; old span weighs against |
+| full history | 578 | all -> all -> all | 1/3 | not robust |
+| old OOS | 506 | all -> all -> all | 2/3 | old group still a loser |
 
-Nos períodos de 90 dias, completo e antigo, o `all_fallback_60` não alterou
-os números face ao `all`. A gestão robusta que existe hoje é portanto
-**robusta dentro do formato recente**, mas não é uma solução universal para
-o regime antigo; a principal fica inalterada.
+On 90-day, full and old spans, `all_fallback_60` did not move
+numbers vs `all`. Sound management today is thus
+**sound inside the fresh format**, but is no cure-all for
+the old regime; main stays put.
 
-A redistribuição leve de risco para TP3–TP5 não muda nada com saldo de 1 000 €:
-o lote mínimo de 0.01 domina todas as pernas. Num estudo separado com saldo
-10 000 €, `tp345_light` deu PF 1.23 / +875.96 € / DD 13.5%, contra PF 1.17 /
-+598.06 € / DD 12.7% com pesos iguais. É uma hipótese interessante, mas não
-é comparável diretamente à conta atual e não foi promovida.
+Light risk shift to TP3-TP5 changes nothing on a 1,000 EUR balance:
+0.01 min lot rules all legs. In a split study with 10,000 EUR
+balance, `tp345_light` gave PF 1.23 / +875.96 EUR / DD 13.5%, vs PF 1.17 /
++598.06 EUR / DD 12.7% on equal weights. It is a live claim, but not
+directly comparable to the current account and was not promoted.
 
-O fallback mecânico após TP1, se nenhuma gestão chegar em 30/60/120s, aplicou-se
-em apenas 1 dos 107 sinais: P&L +2 438.76 € sem fallback contra +2 439.66 €
-com 30s e +2 439.66 € com 60/120s. O ganho de 0.90 € é ruído; fica desligado
-por defeito.
+Mechanical fallback after TP1, if no management arrives in 30/60/120s, applied
+on only 1 of 107 signals: P&L +2,438.76 EUR with no fallback vs +2,439.66 EUR
+with 30s and +2,439.66 EUR with 60/120s. The 0.90 EUR gain is noise; it stays off
+by default.
 
-O benchmark isolado do motor paper testou a mesma trajetória determinística a
-1s, 250ms e 100ms. Em ambos `auto_escada_3` e `auto_escada_5`, 1s perdeu o
-spike e deixou a trade aberta; 250ms e 100ms fecharam, mas com razões/P&L
-diferentes. Isto confirma sensibilidade de polling, não edge mensal: a
-trajetória é sintética, usa BD temporária e não altera o loop de produção.
-Desde esta validação, o benchmark usa `ManualClock`: cada amostra avança
-explicitamente o relógio pelo intervalo escolhido, incluindo time stops e
-timestamps de saída. A produção continua em ~1s e usa `SystemClock`; não há
-qualquer promoção automática baseada neste teste.
+The lone paper-engine benchmark ran the same fixed path at
+1s, 250ms and 100ms. On both `auto_escada_3` and `auto_escada_5`, 1s missed the
+spike and left the trade open; 250ms and 100ms closed, but with different
+reasons/P&L. This proves polling sensitivity, not monthly edge: the
+path is synthetic, uses a temp DB and does not touch the production loop.
+Since this check, the benchmark uses `ManualClock`: each sample moves
+the clock plainly by the picked gap, with time stops and
+exit stamps. Production stays near 1s and uses `SystemClock`; there is
+no auto promotion from this test.
 
-A fronteira de decisão também foi consolidada: `reduce_auto_protect()` em
-`app/execution/protection.py` calcula uma única vez o gatilho, a proteção do
-grupo e os SL monotónicos. Backtest, paper, SimEngine e MT5 aplicam o mesmo
-resultado nos seus próprios fills/broker. Assim, uma mudança futura no
-threshold pode ser testada em paridade sem duplicar a fórmula em quatro
-motores.
+The call edge was also hardened: `reduce_auto_protect()` in
+`app/execution/protection.py` computes trigger, group
+guard and monotonic SLs once. Backtest, paper, SimEngine and MT5 apply the same
+result on their own fills/broker. So a future threshold change
+can run in parity with no formula copied in four
+engines.
 
-**Estudo R4 — regra "struggle" (20/08)**: a candidata `auto_escada_3_struggle`
-(= auto_escada_3 + `struggle_ae_pips=15` + `struggle_fraction=0.5` — antes do
-TP1, se o preço andou 15 pips contra a entrada e volta à entrada, fecha 50%
-das pernas a BE e protege as restantes) foi corrida nos mesmos sinais/candles
-que a base. O **sweep completo** (`app/sweep_struggle.py`, read-only) correu
-a grelha `struggle_ae_pips` 5/10/15/20/25 × `struggle_fraction` 0.25/0.5/0.75
-nas `auto_escada_3` e `auto_escada_5`, nas janelas atual e completa. A regra
-nunca disparou no período atual (0 sinais) e só em 3 sinais do histórico
-completo; todas as combinações ficaram praticamente idênticas à baseline
-(PF atual 1.26→1.26 e DD 11.8% iguais; no completo PF 0.53→0.53–0.54 e DD
-±3 pp, P&L ±77 €). **Sem edge em nenhuma combinação — a candidata foi
-removida do registo a 01/09** (não é promovida nem voltará sem sinais novos
-em que o padrão "andou contra e voltou" seja mais frequente). O mecanismo
-(`struggle_ae_pips`/`struggle_fraction`) continua disponível nos motores para
-candidatas futuras.
+**R4 study - "struggle" rule (20/08)**: candidate `auto_escada_3_struggle`
+(= auto_escada_3 + `struggle_ae_pips=15` + `struggle_fraction=0.5` - before
+TP1, if price ran 15 pips against entry and comes back to entry, it closes 50%
+of legs at BE and guards the rest) ran on the same signals/candles
+as base. The **full sweep** (`app/sweep_struggle.py`, read-only) ran
+grid `struggle_ae_pips` 5/10/15/20/25 x `struggle_fraction` 0.25/0.5/0.75
+on `auto_escada_3` and `auto_escada_5`, on current and full windows. The rule
+never fired in the current span (0 signals) and only on 3 signals of full
+history; all combos read near same as baseline
+(current PF 1.26->1.26 and same 11.8% DD; on full PF 0.53->0.53-0.54 and DD
+within 3 pp, P&L within 77 EUR). **No edge in any combo - the candidate was
+removed from the registry on 01/09** (not promoted and never back with no new signals
+where the "ran against then came back" shape is more common). The path
+(`struggle_ae_pips`/`struggle_fraction`) stays on in engines for
+future candidates.
 
 ---
 
-## Parte IX — Onde cada estratégia aparece
+## Part IX - Where each strategy shows
 
-| Estratégia | Página | Corrida paper | Backtest/compare | Conta real |
+| Strategy | Page | Paper run | Backtest/compare | Real account |
 |---|---|---|---|---|
-| `nova_gestao` | PRINCIPAL | ✅ (referência) | ✅ | ✅ demo (principal) |
-| `nova_gestao_fallback` | dropdown ▚ ESTRATÉGIAS (`/teste?s=nova_gestao_fallback`) | ✅ experimental | ✅ | 🔒 só com validação |
-| `tp2_protect` | dropdown ▚ (`/teste?s=tp2_protect`) | ✅ | ✅ | 🔒 só com validação |
-| `auto_escada_3` | dropdown ▚ (`/teste?s=auto_escada_3`) | ✅ | ✅ | 🔒 só com validação |
-| `auto_escada_3_hibrida` | dropdown ▚ (`/teste?s=auto_escada_3_hibrida`) | ✅ experimental | ✅ | 🔒 não elegível sem validação explícita |
-| `auto_3`, `auto_escada_5` (referências de backtest) | dropdown ▚ (página de teste própria) | ✅ em papel (não na curva) | ✅ | 🔒 |
-| `nova` (contrafactual), `auto_5` | 🔒 ocultas do menu | ✅ em papel (não na curva) | ✅ | 🔒 |
-| ~~`tp2`, `tp2_gestao`, `nova_gestao_3`, `auto_2`, `auto_protect_5`, `auto_escada_3_struggle`~~ | ❌ removidas do registo a 01/09 | ❌ (dados órfãos na BD sem leitores) | ❌ já não reproduzível | 🔒 |
+| `nova_gestao` | MAIN | ✅ (reference) | ✅ | ✅ demo (main) |
+| `nova_gestao_fallback` | dropdown menu (`/teste?s=nova_gestao_fallback`) | ✅ trial | ✅ | 🔒 only with check |
+| `tp2_protect` | dropdown (`/teste?s=tp2_protect`) | ✅ | ✅ | 🔒 only with check |
+| `auto_escada_3` | dropdown (`/teste?s=auto_escada_3`) | ✅ | ✅ | 🔒 only with check |
+| `auto_escada_3_hibrida` | dropdown (`/teste?s=auto_escada_3_hibrida`) | ✅ trial | ✅ | 🔒 not eligible with no explicit check |
+| `auto_3`, `auto_escada_5` (backtest refs) | dropdown (own test page) | ✅ on paper (not on curve) | ✅ | 🔒 |
+| `nova` (counterfactual), `auto_5` | 🔒 hidden from menu | ✅ on paper (not on curve) | ✅ | 🔒 |
+| ~~`tp2`, `tp2_gestao`, `nova_gestao_3`, `auto_2`, `auto_protect_5`, `auto_escada_3_struggle`~~ | ❌ removed from registry on 01/09 | ❌ (orphan data in DB with no readers) | ❌ no longer reproducible | 🔒 |
 
-As estratégias com página própria têm saldo simulado (1000 €), curva,
-comparação e os números reais de 30 dias; a página **HELP** (`/help`)
-explica-as com cartões interativos. O painel principal **👻 Shadow-paper**
-permite escolher os IDs visíveis que recebem sinais forward; o snapshot
-`shadow_paper` mostra as trades abertas isoladas (`origin="shadow"`) e o
-saldo/PF dessa origem não é misturado com a corrida normal; o modo pode ser
-desligado sem apagar o histórico paper. O critério de evidência
-continua a ser N≥20 sinais resolvidos — não se conclui nada com poucos dados.
-O registo (`app/strategies.py`) é a fonte única de verdade: as removidas a
-01/09 deixaram de existir nele (o `get_strategy` levanta ValueError para ids
-mortos — um estudo com uma estratégia apagada falha em voz alta, nunca corre
-silenciosamente com a principal); `MENU_HIDDEN_STRATEGIES` = `nova`/`auto_5`
-(ocultas do menu mas em papel, para o contrafactual do histórico de trades e
-a comparação do backtest).
+Strategies with their own page have sim balance (1,000 EUR), curve,
+compare and real 30-day numbers; the **HELP** page (`/help`)
+explains them with live cards. The main **👻 Shadow-paper** panel
+lets you pick visible IDs that take forward signals; the
+`shadow_paper` snapshot shows apart open trades (`origin="shadow"`) and the
+balance/PF of that origin never mixes with the normal run; the mode can turn
+off with no paper-history erase. Evidence bar
+stays N>=20 solved signals - no call on thin data.
+The registry (`app/strategies.py`) is the single source of truth: those removed on
+01/09 no longer exist in it (`get_strategy` raises ValueError for dead ids
+- a study with an erased strategy fails loud, never runs
+quietly on main); `MENU_HIDDEN_STRATEGIES` = `nova`/`auto_5`
+(hidden from menu but on paper, for trade-history counterfactual and
+backtest compare).
 
 ---
 
-## Parte X — Fase 3 (MT5 demo) e SPEC v3 (conta real) — protocolo de promoção
+## Part X - Phase 3 (MT5 demo) and SPEC v3 (real account) - promotion path
 
-> Consolidado de `docs/SPEC-auto-gestao.md` (apagado 19/08 — este documento
-> é agora a fonte única sobre estratégias). A Fase 3 é o caminho da
-> `auto_escada_3` da corrida paper para a **conta demo no MT5**; o SPEC v3 é
-> apenas um rascunho de gates para a conta real — **nunca** tocar real sem
-> instrução explícita do utilizador.
+> Folded from `docs/SPEC-auto-gestao.md` (deleted 19/08 - this document
+> is now the single source on strategies). Phase 3 is the path of
+> `auto_escada_3` from paper run to the **demo MT5 account**; SPEC v3 is
+> only a draft of gates for the real account - **never** touch real with no
+> explicit user instruction.
 
-### Configuração congelada da `auto_escada_3` (Fase 2/3)
+### Frozen setup of `auto_escada_3` (Phase 2/3)
 
-| Parâmetro | Valor |
+| Param | Value |
 |---|---|
 | `max_legs` | 3 |
-| `stair_levels` / `stair_from` | 3 / 1 (escada desde o TP1) |
-| `confirm_filter` | true (Item 3, sweep 19/08: DD antiga 312.9% → 278.3% e PF atual 1.27 → 1.26) |
-| `trail_factor` | 2.0 (meio do plateau 1.5–2.5 — monotónico, sem pico isolado) |
-| `def_window` / `def_trail` / `def_time_stop` | 10 / 1.5 / 60 (modo defensivo) |
-| `time_stop_minutes` | 0 (só o defensivo o liga) |
-| risco / kill diário | 1,0% (config) · `daily_stop_pct` ativo (paper e real) |
-| referência | `nova_gestao` em paralelo (mesma conta virtual de 1 000 €) |
+| `stair_levels` / `stair_from` | 3 / 1 (ladder from TP1) |
+| `confirm_filter` | true (Item 3, sweep 19/08: old DD 312.9% -> 278.3% and current PF 1.27 -> 1.26) |
+| `trail_factor` | 2.0 (mid of 1.5-2.5 plateau - smooth, no lone spike) |
+| `def_window` / `def_trail` / `def_time_stop` | 10 / 1.5 / 60 (defensive mode) |
+| `time_stop_minutes` | 0 (only defensive turns it on) |
+| risk / daily kill | 1.0% (config) · `daily_stop_pct` on (paper and real) |
+| reference | `nova_gestao` in parallel (same virtual 1,000 EUR account) |
 
-O `confirm_filter=True` foi congelado como default após o Item 3; a janela
-paper/MT5 continua a exigir os gates da Parte X antes de qualquer promoção.
+`confirm_filter=True` froze as default after Item 3; paper/MT5 window still needs Part X gates before any promotion.
 
-**Não alterar durante a corrida**: parâmetros, regras de entrada/saída,
-custos, filtro de sinais.
+**Do not change during the run**: params, entry/exit rules,
+costs, signal filter.
 
-### X.1 Protocolo de promoção para MT5 (conta demo)
+### X.1 Promotion path to MT5 (demo account)
 
-> Regra de ouro: conta **demo** (`5054644473 · MetaQuotes-Demo`). Nunca
-> promover para real sem instrução explícita (SPEC v3, abaixo).
+> Golden rule: **demo** account (`5054644473 · MetaQuotes-Demo`). Never
+> promote to real with no explicit instruction (SPEC v3, below).
 
-**Pré-requisitos (gate — não saltar):**
-
-```text
-1. Critérios de aprovação com N ≥ 20 sinais resolvidos na corrida paper:
-   PF ≥ 1.5 · P&L ≥ 50% da referência · DD ≤ 125% — **os 3 em simultâneo**
-   (gate estrito, sem comité 2 de 3; decisão do utilizador de 19/08: com
-   N=20 o ruído não justifica flexibilizar — o DD alto é exatamente o
-   sinal de risco que o gate deve travar, mesmo com PF e P&L bons);
-2. Sem gates antecipados: falência precoce (PF < 1.0 com N ≥ 10 → terminar)
-   ou hot streak (nunca promover antes dos N ≥ 20);
-3. Divergências paper vs backtest todas explicadas (spread/slippage/timing);
-4. Zero posições sem SL válido e zero ordens duplicadas no paper.
-```
-
-**O MT5Engine já tem tudo implementado** (verificado; desligado até promover):
-escada/trailing/filtro de confirmação/time stop no `_update_real`, throttling
-de modify (≥ 1 pip, ≤ 1×/min), três níveis de SL (`target→valid→applied` com
-retcodes 10009/10016 + auditoria `autosl:<trade_id>`), modo defensivo (PF das
-últimas 10 trades reais fechadas < 1.0 → trail 1.5 + time stop 60), aviso
-`risk` no feed/Telegram quando um modify é recusado/clamped, teste E2E com
-broker fake. O trailing por ATR (`max(trail_factor×dist, atr_k×ATR)`) está
-implementado nos 3 motores mas **rejeitado pelos dados** (sweep 18/08: ATR é
-estritamente pior que o trail fixo 2.0 — o ATR de ouro alarga o trail e
-devolve o lucro) — fica desligado, nenhuma estratégia define `atr_k`.
-
-**Janela de validação (primeiras 10 trades reais da auto na demo):**
+**Pre-reqs (gate - do not skip):**
 
 ```text
-Aprovar a permanência se, nas 10 primeiras:
-- mesma decisão de saída que o paper no mesmo sinal em ≥ 9/10;
-- zero posições sem SL; zero ordens duplicadas; retcodes 10009;
-- atraso sinal→abertura ≤ ~2 min; P&L coerente com o backtest.
-
-Rollback automático (volta à nova_gestao e reabre a janela depois):
-- PF < 1.0 nas primeiras 10; ≥ 2 divergências estruturais (saída diferente
-  sem explicação de mercado); qualquer posição sem SL; 10027 persistente.
+1. Approval bars with N >= 20 solved signals in the paper run:
+   PF >= 1.5 · P&L >= 50% of reference · DD <= 125% - **all 3 at once**
+   (strict gate, no 2-of-3 board; user call of 19/08: with
+   N=20 noise does not warrant slack - high DD is exactly the
+   risk sign the gate must stop, even with good PF and P&L);
+2. No early gates: early ruin (PF < 1.0 with N >= 10 -> end)
+   or hot streak (never promote before N >= 20);
+3. All paper vs backtest splits explained (spread/slippage/timing);
+4. Zero spots with no valid SL and zero duplicate orders in paper.
 ```
 
-**Automatizado**: `state._check_fase3_validation` decide rollback/manutenção
-uma vez por janela (nova promoção grava snapshot novo e reabre), notifica
-feed/Telegram e guarda o veredicto em `fase3_verdict` (+ histórico
-`fase3_verdicts`, nunca se apaga). A janela é limitada às primeiras 10 trades
-abertas pela estratégia depois de `promoted_at`; a manutenção exige evidência
-paper↔MT5 com a mesma saída em pelo menos 9/10 — pares em falta também
-reprovam. O painel Fase 3 mostra os gates, o ETA
-dos 20 sinais (`fase3_eta`, ritmo dos últimos 30 dias + alerta quando > 6
-semanas ou o ritmo mudar ≥ 50%) e o botão "🎯 Reduzir alvo para 15"
-(`config fase3_target`) quando o ETA estourar. Durante a Fase 3, a corrida
-paper continua em paralelo (a auto paper é a referência teórica da auto
-MT5) e o resumo diário mostra a linha 🚀 da auto MT5 (N real, P&L real).
+**MT5Engine already has all built** (checked; off until promotion):
+ladder/trailing/confirm-filter/time stop in `_update_real`, modify
+throttle (>= 1 pip, <= 1x/min), three SL levels (`target->valid->applied` with
+retcodes 10009/10016 + `autosl:<trade_id>` audit), defensive mode (PF of last
+10 closed real trades < 1.0 -> trail 1.5 + 60 time stop), `risk`
+warn on feed/Telegram when a modify is refused/clamped, E2E test with
+fake broker. ATR trailing (`max(trail_factorxdist, atr_kxATR)`) is
+built in 3 engines but **rejected by data** (sweep 18/08: ATR is
+strictly worse than fixed trail 2.0 - gold ATR widens trail and
+gives profit back) - stays off, no strategy sets `atr_k`.
 
-### X.2 SPEC v3 — Promoção para conta REAL (RASCUNHO)
+**Check window (first 10 real trades of the auto on demo):**
 
-> ⚠️ Rascunho de intenção, NÃO um plano aprovado. A conta real só se toca
-> com instrução explícita do utilizador, e o caminho até lá passa
-> OBRIGATORIAMENTE pela Fase 3 (demo) com a janela limpa.
+```text
+Keep it if, on the first 10:
+- same exit call as paper on same signal on >= 9/10;
+- zero spots with no SL; zero duplicate orders; retcodes 10009;
+- signal-to-open lag <= ~2 min; P&L in line with backtest.
 
-**Pré-requisitos absolutos (gate 0):** Fase 3 aprovada (janela de 10 trades
-limpa) · 3–4 semanas de demo (≥ 30 trades) sem rollback · zero alertas de
-risco não explicados · decisão EXPLÍCITA do utilizador (nenhuma automatização
-promove real) · docs + spec revistos com os números reais.
+Auto rollback (back to nova_gestao and reopen window later):
+- PF < 1.0 on first 10; >= 2 structural splits (different exit
+  with no market reason); any spot with no SL; steady 10027.
+```
 
-**Gates de continuidade (revisão a cada 10 trades reais):** PF ≥ 1.5 e
-P&L ≥ 0 na janela deslizante de 20 · DD ≤ 125% do backtest da mesma janela ·
-divergências demo vs real explicadas · kill diário SEMPRE ativo · se PF < 1.0
-em 10 trades consecutivas → voltar a demo e reavaliar.
+**Automated**: `state._check_fase3_validation` calls rollback/keep
+once per window (new promotion writes a fresh snapshot and reopens), notes
+feed/Telegram and stores verdict in `fase3_verdict` (+ history
+`fase3_verdicts`, never erased). The window covers only the first 10 trades
+opened by the strategy after `promoted_at`; keep needs paper-to-MT5 evidence with same exit on at least 9/10 - missing
+pairs also fail. The Phase 3 panel shows gates, ETA
+of 20 signals (`fase3_eta`, last-30-day pace + alert when > 6
+weeks or pace moves >= 50%) and the "🎯 Cut target to 15"
+button (`config fase3_target`) when ETA blows. During Phase 3, paper
+run keeps going in parallel (auto paper is the theory ref of auto
+MT5) and the daily summary shows the 🚀 line of auto MT5 (real N, real P&L).
 
-**Linha vermelha (nunca em real):** arriscar mais do que o aprovado ·
-desligar o kill diário ou o `max_positions` · promover outra estratégia sem
-o mesmo processo · alavancagem/hedging fora do aprovado. O bot continua
-SEMPRE em demo até o utilizador mandar.
+### X.2 SPEC v3 - Promotion to REAL account (DRAFT)
+
+> ⚠️ Draft of intent, NOT an approved plan. Only touch the real account
+> with an explicit user instruction, and the path there runs
+> WITHOUT EXCEPTION through Phase 3 (demo) with a clean window.
+
+**Absolute pre-reqs (gate 0):** Phase 3 passed (clean 10-trade window) · 3-4 demo weeks (>= 30 trades) with no rollback · zero unexplained
+risk alerts · EXPLICIT user call (no automation
+promotes real) · docs + spec reviewed with real numbers.
+
+**Ongoing gates (review each 10 real trades):** PF >= 1.5 and
+P&L >= 0 on rolling 20 window · DD <= 125% of same-window backtest ·
+demo vs real splits explained · daily kill ALWAYS on · if PF < 1.0
+on 10 straight trades -> back to demo and review.
+
+**Red line (never on real):** risk more than approved ·
+turn off daily kill or `max_positions` · promote another strategy with no
+same process · leverage/hedging off approved. The bot stays
+ALWAYS on demo until the user orders.
 
 ---
 
-*Fim do documento — fonte única sobre estratégias (registo, auto-gestão,
-resultados, protocolo de promoção). Histórico das fases concluídas da
-auto-gestão vive no CHANGELOG; a calibração detalhada (mineração, sweep)
-nos scripts `app/mine_management.py` / `app/sweep_auto.py` / `app/sweep_atr.py`
+*End of document - single source on strategies (registry, auto-manage,
+results, promotion path). History of done auto-manage phases
+lives in CHANGELOG; fine tune (mining, sweep)
+in scripts `app/mine_management.py` / `app/sweep_auto.py` / `app/sweep_atr.py`
 / `app/study_consolidation.py`.*

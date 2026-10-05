@@ -1,111 +1,111 @@
-# Project NexGen — Deploy numa VPS Windows
+# Project NexGen - Deploy on a Windows VPS
 
-Guia completo para correr o Project NexGen 24/7 numa VPS Windows e expor a
-dashboard na web com **HTTPS + login**, sem dar acesso remoto (RDP) a mais
-ninguém.
+Complete guide to run Project NexGen 24/7 on a Windows VPS and expose the
+dashboard on the web with **HTTPS + login**, without giving remote (RDP) access
+to anyone else.
 
-> ⚠️ O bot e o MetaTrader 5 **têm de estar na mesma máquina** (o pacote
-> Python `MetaTrader5` liga ao terminal pela porta local). Por isso a VPS é
-> **Windows com RDP** — não serve uma VPS Linux.
+> ⚠️ The bot and MetaTrader 5 **must be on the same machine** (the Python
+> `MetaTrader5` package connects to the terminal through the local port). So the VPS is
+> **Windows with RDP** - a Linux VPS will not work.
 
 ---
 
-## 0. Contratar a VPS (Vultr)
+## 0. Rent the VPS (Vultr)
 
-**Vultr** é a escolha: fiabilidade 99.99%, faturação à hora (cancelas quando
-quiseres), licença **Windows incluída** no preço, snapshots fáceis e
-datacenters na Europa. É a opção mais estável para correr o fluxo de edição
-rápida (8s por defeito) 24/7 — e mais tarde, com dinheiro real.
+**Vultr** is the choice: 99.99% reliability, hourly billing (cancel any time),
+**Windows license included** in the price, easy snapshots and
+datacenters in Europe. It is the most stable option to run the fast edit flow
+(8s by default) 24/7 - and later, with real money.
 
-### Passos na Vultr
+### Steps on Vultr
 
-1. Cria conta em **vultr.com** (email + cartão/PayPal; carrega ~$20 de
-   saldo, gasta-se só o que usares).
+1. Create an account at **vultr.com** (email + card/PayPal; load ~$20 of
+   balance, you only spend what you use).
 2. **Deploy New Server**:
-   - **Type**: `Cloud Compute` → *Regular Performance* (o *High
-     Performance* é opcional — o projeto não precisa);
-   - **Location**: **Frankfurt (`eu-central`) ou Amesterdão (`ams`)** —
-     menor latência ao Telegram e ao MetaQuotes;
-   - **Image**: **Windows** — Server 2019/2022 *with Desktop Experience*
-     (ou Windows 10/11). **A licença está incluída no preço** — Server
-     Core NÃO serve (o MT5 precisa de ambiente gráfico);
-   - **Size**: **2 vCPU · 4 GB RAM · 80 GB NVMe** (~$16/mês) — o mínimo
-     confortável para Windows + MT5 + Python + Caddy. O plano 1 vCPU/1 GB
-     não chega;
-   - **Auto Backups**: ativa (~$1–2/mês extra) ou tira um **Snapshot**
-     manual antes de cada mudança grande.
-3. **Deploy** → a página do servidor mostra o **IP**, o utilizador
-   **Administrator** e a **password** (anota-a — se perderes, usa
-   "Reset Password" na consola).
-4. (Opcional, recomendado) Cria um **Snapshot** da VPS limpa — se algo
-   correr mal, restaura em 2 minutos.
+   - **Type**: `Cloud Compute` -> *Regular Performance* (the *High
+     Performance* plan is optional - the project does not need it);
+   - **Location**: **Frankfurt (`eu-central`) or Amsterdam (`ams`)** -
+     lower latency to Telegram and MetaQuotes;
+   - **Image**: **Windows** - Server 2019/2022 *with Desktop Experience*
+     (or Windows 10/11). **The license is included in the price** - Server
+     Core does NOT work (MT5 needs a graphical environment);
+   - **Size**: **2 vCPU · 4 GB RAM · 80 GB NVMe** (~$16/month) - the minimum
+     comfortable for Windows + MT5 + Python + Caddy. The 1 vCPU/1 GB plan
+     is not enough;
+   - **Auto Backups**: enable (~$1-2/month extra) or take a manual **Snapshot**
+     before each big change.
+3. **Deploy** -> the server page shows the **IP**, the **Administrator** user
+   and the **password** (write it down - if you lose it, use
+   "Reset Password" in the console).
+4. (Optional, recommended) Create a **Snapshot** of the clean VPS - if something
+   goes wrong, restore in 2 minutes.
 
-**Especificação mínima:** 2 vCPU · **4 GB RAM** · 80 GB NVMe · Windows
-Server 2019/2022 (Desktop Experience) · RDP habilitado.
+**Minimum spec:** 2 vCPU · **4 GB RAM** · 80 GB NVMe · Windows
+Server 2019/2022 (Desktop Experience) · RDP enabled.
 
 ---
 
-## 0.1 Alternativa: testar na Azure (período gratuito)
+## 0.1 Alternative: test on Azure (free trial period)
 
-Se tiveres a **Azure em período de teste** (conta gratuita), dá para testar
-sem pagar nada — com duas limitações importantes:
+If you have **Azure on trial** (free account), you can test
+for free - with two important limits:
 
-| Caminho | O que é | Serve para isto? |
+| Path | What it is | Works for this? |
 |---|---|---|
-| **Crédito $200 (30 dias)** | Qualquer serviço Azure, incluindo VMs Windows grandes | ✅ Sim — cria uma `Standard_B2s` (2 vCPU/4 GB, ~$50/mês) e o crédito cobre os 30 dias |
-| **VM gratuita 12 meses** | `B1s` Windows ou Linux, **750 h/mês** | ⚠️ A RAM de **1 GB é demasiado curta** para Windows + MT5 + Python 24/7 — serve só para um teste rápido de 30 min |
+| **$200 credit (30 days)** | Any Azure service, including large Windows VMs | ✅ Yes - create a `Standard_B2s` (2 vCPU/4 GB, ~$50/month) and the credit covers the 30 days |
+| **Free VM 12 months** | `B1s` Windows or Linux, **750 h/month** | ⚠️ **1 GB RAM is too little** for Windows + MT5 + Python 24/7 - only good for a quick 30 min test |
 
-### Criar a VM Windows na Azure (com o crédito)
+### Create the Windows VM on Azure (with the credit)
 
-1. Portal → **Virtual machines** → **Create**.
+1. Portal -> **Virtual machines** -> **Create**.
 2. **Image**: `Windows Server 2022 Datacenter: Azure Edition - x64 Gen2`
-   (tem ambiente gráfico — o MT5 precisa).
+   (has graphical environment - MT5 needs it).
 3. **Size**: `Standard_B2s` (2 vCPU · 4 GB RAM).
-4. **Region**: `West Europe` (Amesterdão).
-5. Cria um utilizador administrador (username + password) — é com ele que
-   entras por RDP. Ativa a porta 3389 de entrada.
-6. **Networking**: cria um *Network Security Group* — regra de entrada
-   **3389 só para o teu IP** e **443 aberto** (para o Caddy). Nunca 8000.
-7. **Review + Create** → aguarda o deploy.
+4. **Region**: `West Europe` (Amsterdam).
+5. Create an admin user (username + password) - you log in
+   by RDP with it. Enable inbound port 3389.
+6. **Networking**: create a *Network Security Group* - inbound rule
+   **3389 only for your IP** and **443 open** (for Caddy). Never 8000.
+7. **Review + Create** -> wait for deploy.
 
-Depois é o mesmo guia: RDP → instalar Python/MT5/Caddy → copiar o projeto →
-`.\start.ps1` (secções 2–7 abaixo).
+Then the guide is the same: RDP -> install Python/MT5/Caddy -> copy the project ->
+`.\start.ps1` (sections 2-7 below).
 
-> ⚠️ **O crédito acaba aos 30 dias.** Quando acabar, a VM é desalocada
-> (para de cobrar compute, mas o disco continua a cobrar uns cêntimos/dia
-> até a apagares). Para correr 24/7 a longo prazo, a **Vultr (~$16/mês)** é
-> muito mais barata que a Azure pay-as-you-go (B2s ≈ $50/mês). A Azure é
-> ótima para testar agora de graça — depois migra para a Vultr.
+> ⚠️ **The credit ends after 30 days.** When it ends, the VM is deallocated
+> (compute billing stops, but the disk keeps billing a few cents/day
+> until you delete it). To run 24/7 long term, **Vultr (~$16/month)** is
+> much cheaper than Azure pay-as-you-go (B2s ≈ $50/month). Azure is
+> great to test now for free - then migrate to Vultr.
 
 ---
 
-## 1. Primeiro login e firewall
+## 1. First login and firewall
 
-1. Liga-te à VPS por **RDP** (o fornecedor envia o IP e a password do
+1. Connect to the VPS by **RDP** (the provider sends the IP and password of
    Windows).
-2. **Muda imediatamente a password do administrador** do Windows para uma
-   password forte (não a padrão do fornecedor).
-3. Abre a firewall do Windows (`wf.msc`) e cria regras de entrada:
-   - ✅ **HTTPS (443)** — aberto para **todos** (é a porta da dashboard);
-   - ✅ **RDP (3389)** — abre **só para o teu IP** (ou usa a VPN do
-     fornecedor); nunca para o mundo;
-   - ❌ **Porta 8000** — **nunca** abrir ao público (o Caddy faz o proxy);
-   - ❌ **22/SSH** — desnecessário (Windows).
+2. **Immediately change the Windows administrator password** to a
+   strong password (not the provider default).
+3. Open the Windows firewall (`wf.msc`) and create inbound rules:
+   - ✅ **HTTPS (443)** - open to **everyone** (it is the dashboard port);
+   - ✅ **RDP (3389)** - open **only for your IP** (or use the provider
+     VPN); never to the world;
+   - ❌ **Port 8000** - **never** open to the public (Caddy proxies it);
+   - ❌ **22/SSH** - not needed (Windows).
 
-   > 💡 Na Vultr podes reforçar com a **Cloud Firewall** da própria
-   > plataforma (Network → Firewall): permite só 443 para o mundo e 3389
-   > para o teu IP — assim, mesmo que o Windows Firewall falhe, a rede
-   > bloqueia. Liga-a à VPS em *Server → Firewall*.
-4. Ativa o Windows Update e deixa instalar tudo antes de continuar.
+    > 💡 On Vultr you can harden with the platform
+    > **Cloud Firewall** (Network -> Firewall): allow only 443 to the world and 3389
+    > for your IP - so even if Windows Firewall fails, the network
+    > blocks. Attach it to the VPS in *Server -> Firewall*.
+4. Enable Windows Update and let it install everything before continuing.
 
 ---
 
-## 2. Instalar Python e git
+## 2. Install Python and git
 
-1. Descarrega o instalador de Python 3.11/3.12 (64-bit) de python.org.
-2. **No instalador, marca ✅ "Add Python to PATH"** e instala.
-3. Instala o git (git-scm.com) — aceita os defaults.
-4. No PowerShell, confirma:
+1. Download the Python 3.11/3.12 installer (64-bit) from python.org.
+2. **In the installer, check ✅ "Add Python to PATH"** and install.
+3. Install git (git-scm.com) - accept the defaults.
+4. In PowerShell, confirm:
 
 ```powershell
 python --version
@@ -114,26 +114,26 @@ git --version
 
 ---
 
-## 3. Instalar e configurar o MetaTrader 5
+## 3. Install and configure MetaTrader 5
 
-1. Descarrega o **MetaTrader 5** (da MetaQuotes ou do teu broker) e instala.
-2. Faz login com a conta de trading:
-   - Login: **5054644473** (demo) · Servidor: **MetaQuotes-Demo**
-   - Password: a que estiver no teu `.env` (`MT5_PASSWORD`)
-3. Na barra de ferramentas, liga o botão **"Algo Trading"** (tem de ficar
-   **verde** — sem ele, as ordens são recusadas).
-4. Em `account_info`, confirma `margin_mode=2` / **RETAIL_HEDGING**. A
-   estratégia de N pernas precisa de posições independentes; o servidor
-   bloqueia contas netting/desconhecidas quando `MT5_DRY_RUN=0`.
-5. **Deixa o terminal aberto** e ligado — o bot precisa dele 24/7.
-   (Dica: configura o Windows para **iniciar sessão automaticamente** com o
-   terminal MT5 no arranque — assim basta a VPS reiniciar para tudo voltar.)
+1. Download **MetaTrader 5** (from MetaQuotes or your broker) and install.
+2. Log in with the trading account:
+   - Login: **5054644473** (demo) · Server: **MetaQuotes-Demo**
+   - Password: the one in your `.env` (`MT5_PASSWORD`)
+3. On the toolbar, enable the **"Algo Trading"** button (it must stay
+   **green** - without it, orders are rejected).
+4. In `account_info`, confirm `margin_mode=2` / **RETAIL_HEDGING**. The
+   N-leg strategy needs independent positions; the server
+   blocks netting/unknown accounts when `MT5_DRY_RUN=0`.
+5. **Leave the terminal open** and connected - the bot needs it 24/7.
+   (Tip: set Windows to **log on automatically** with the
+   MT5 terminal at startup - then a VPS reboot is enough to bring all back.)
 
 ---
 
-## 4. Copiar o projeto para a VPS
+## 4. Copy the project to the VPS
 
-Opção A — git (recomendado para atualizações fáceis):
+Option A - git (recommended for easy updates):
 
 ```powershell
 cd C:\
@@ -141,10 +141,10 @@ git clone <URL-do-teu-repositorio> Project NexGen
 cd Project NexGen
 ```
 
-Opção B — copiar manualmente (zip do projeto, sem a pasta `.venv` nem a BD).
+Option B - manual copy (project zip, without the `.venv` folder or the DB).
 
-Depois, cria o ambiente e instala as dependências (o `requirements.txt` já
-inclui o **MetaTrader5** — pacote Windows-only, liga ao terminal local):
+Then create the environment and install dependencies (the `requirements.txt` already
+includes **MetaTrader5** - Windows-only package, connects to the local terminal):
 
 ```powershell
 python -m venv .venv
@@ -153,36 +153,36 @@ python -m venv .venv
 
 ---
 
-## 5. Criar o `.env` na VPS
+## 5. Create the `.env` on the VPS
 
-Copia o teu `.env` local para a VPS **ou** cria um novo (`notepad .env`)
-com as mesmas chaves. O `.env` na VPS precisa de:
+Copy your local `.env` to the VPS **or** create a new one (`notepad .env`)
+with the same keys. The `.env` on the VPS needs:
 
 ```ini
 EXECUTION_MODE=mt5
 MT5_LOGIN=5054644473
 MT5_SERVER=MetaQuotes-Demo
-MT5_PASSWORD=XXXXXXXX            # senha da conta demo (nunca em git!)
+MT5_PASSWORD=XXXXXXXX            # demo account password (never in git!)
 SIGNALBOT_TG_API_ID=...
 SIGNALBOT_TG_API_HASH=...
 SIGNALBOT_TG_PHONE=+351...
 SIGNALBOT_TG_GROUP=Golden Moves
-SIGNALBOT_DASHBOARD_PASSWORD=<password-forte> # substituir pela password local; nunca guardar no git
-SIGNALBOT_API_TOKEN=...                  # token do listener (gerado)
+SIGNALBOT_DASHBOARD_PASSWORD=<password-forte> # replace with the local password; never store in git
+SIGNALBOT_API_TOKEN=...                  # listener token (generated)
 ```
 
-> 🔒 O `.env` **nunca** entra no git. Cria-o sempre à mão na VPS.
+> 🔒 The `.env` **never** goes into git. Always create it by hand on the VPS.
 
 ---
 
-## 6. Instalar o Caddy (HTTPS automático)
+## 6. Install Caddy (automatic HTTPS)
 
-O Caddy gera e renova certificados HTTPS (Let's Encrypt) sozinho. Não serve
-guardar passwords em HTTP puro.
+Caddy issues and renews HTTPS certificates (Let's Encrypt) on its own. Never
+store passwords over plain HTTP.
 
-1. Descarrega o Caddy para Windows em caddyserver.com (ficheiro único
-   `caddy.exe`).
-2. Coloca `caddy.exe` em `C:\caddy\` e cria `C:\caddy\Caddyfile`:
+1. Download Caddy for Windows at caddyserver.com (single
+   `caddy.exe` file).
+2. Put `caddy.exe` in `C:\caddy\` and create `C:\caddy\Caddyfile`:
 
 ```
 dominio.com {
@@ -190,29 +190,29 @@ dominio.com {
 }
 ```
 
-   (substitui `dominio.com` pelo teu domínio — aponta o DNS do domínio para
-   o IP da VPS antes de arrancar o Caddy).
+   (replace `dominio.com` with your domain - point the domain DNS to
+   the VPS IP before starting Caddy).
 
-3. Arranca o Caddy como **serviço do Windows** (assim sobe sozinho):
+3. Start Caddy as a **Windows service** (so it starts on its own):
 
 ```powershell
 cd C:\caddy
 .\caddy.exe start
-# ou, para correr como serviço sempre ligado:
+# or, to run as an always-on service:
 sc.exe create Caddy binPath= "C:\caddy\caddy.exe run --config C:\caddy\Caddyfile" start= auto
 ```
 
-4. Confirma em https://dominio.com — deve aparecer o **🔐 login** do
-   Project NexGen com cadeado HTTPS válido.
+4. Confirm at https://dominio.com - the **🔐 login** of
+   Project NexGen should appear with a valid HTTPS lock.
 
 ---
 
-## 6.1 Sem domínio — acesso por IP (HTTPS auto-assinado)
+## 6.1 No domain - IP access (self-signed HTTPS)
 
-Se ainda não tens domínio (ex.: teste de 30 dias entre amigos), o Caddy
-serve na mesma por **IP com HTTPS auto-assinado** (`tls internal`): o
-tráfego fica cifrado e os browsers mostram um aviso de "certificado não
-confiável" — aceitar uma vez (Avançado → Continuar) em cada dispositivo.
+If you have no domain yet (e.g. 30-day test between friends), Caddy
+still serves by **IP with self-signed HTTPS** (`tls internal`): the
+traffic stays encrypted and browsers show a "certificate not
+trusted" warning - accept once (Advanced -> Continue) on each device.
 
 ```
 # C:\caddy\Caddyfile
@@ -222,75 +222,75 @@ https://<IP_PUBLICO_DA_VPS> {
 }
 ```
 
-1. Abre as portas 80 e 443 na firewall do Windows (nunca 8000 nem 3389):
+1. Open ports 80 and 443 in the Windows firewall (never 8000 or 3389):
    ```
    netsh advfirewall firewall add rule name="NexGen HTTP 80" dir=in action=allow protocol=TCP localport=80
    netsh advfirewall firewall add rule name="NexGen HTTPS 443" dir=in action=allow protocol=TCP localport=443
    ```
-2. Arranca o Caddy: `cd C:\caddy && .\caddy.exe start` (após um reboot da
-   VPS, repetir este comando — ou criar um serviço/Tarefa Agendada).
-3. Acede a `https://<IP>` — o HTTP redireciona para HTTPS (308).
-4. **Firewall da plataforma (Kamatera)**: se tiveres uma *Cloud Firewall*
-   ativa na consola (Cloud → Firewalls), acrescenta regras TCP para 80/443
-   com origem restrita aos teus IPs — o Windows Firewall sozinho não basta.
+2. Start Caddy: `cd C:\caddy && .\caddy.exe start` (after a VPS reboot,
+   repeat this command - or create a service/Scheduled Task).
+3. Open `https://<IP>` - HTTP redirects to HTTPS (308).
+4. **Platform firewall (Kamatera)**: if you have an active *Cloud Firewall*
+   in the console (Cloud -> Firewalls), add TCP rules for 80/443
+   with source restricted to your IPs - Windows Firewall alone is not enough.
 
-> Quando tiveres domínio: troca o endereço no Caddyfile e remove `tls
-> internal` — o Caddy passa a emitir HTTPS automático (Let's Encrypt).
+> When you have a domain: swap the address in the Caddyfile and remove `tls
+> internal` - Caddy then issues automatic HTTPS (Let's Encrypt).
 
-## 6.2 DuckDNS — domínio grátis (HTTPS confiável, cadeado verde)
+## 6.2 DuckDNS - free domain (trusted HTTPS, green lock)
 
-Sem domínio comprado, o **duckdns.org** dá um subdomínio grátis
-(ex.: `n3xg3n.duckdns.org`) que aponta para o IP da VPS. Com domínio, o
-Caddy emite HTTPS automático da Let's Encrypt (sem aviso no browser).
+Without a bought domain, **duckdns.org** gives a free subdomain
+(e.g. `n3xg3n.duckdns.org`) that points to the VPS IP. With a domain, the
+Caddy issues automatic HTTPS from Let's Encrypt (no browser warning).
 
-1. Cria conta em duckdns.org (login Google/GitHub/Twitter/Reddit) e adiciona
-   o subdomínio com o IP público da VPS.
-2. `C:\caddy\Caddyfile` — troca o endereço e remove `tls internal`:
+1. Create an account at duckdns.org (Google/GitHub/Twitter/Reddit login) and add
+   the subdomain with the public IP of the VPS.
+2. `C:\caddy\Caddyfile` - swap the address and remove `tls internal`:
    ```
    n3xg3n.duckdns.org {
        reverse_proxy 127.0.0.1:8000
    }
    ```
-3. Reinicia o Caddy: `cd C:\caddy && .\caddy.exe stop` + `.\caddy.exe start`
-   (na 1ª vez demora ~30s a emitir o certificado).
-4. **Update automático do IP** (rede de segurança — o IP é fixo): script
-   `C:\caddy\duckdns-update.ps1` chamando
+3. Restart Caddy: `cd C:\caddy && .\caddy.exe stop` + `.\caddy.exe start`
+   (first time takes ~30s to issue the certificate).
+4. **Automatic IP update** (safety net - the IP is fixed): script
+   `C:\caddy\duckdns-update.ps1` calling
    `https://www.duckdns.org/update?domains=<NOME>&token=<TOKEN>&ip=`
-   (sem `ip` o DuckDNS deteta sozinho), agendado por Tarefa Agendada.
+   (without `ip` DuckDNS detects it on its own), scheduled by Scheduled Task.
 
-## 7. Arrancar o bot (um comando)
+## 7. Start the bot (one command)
 
-O `start.ps1` já faz tudo: carrega o `.env`, verifica o MT5 e arranca
-**servidor + listener**. É **idempotente** — deteta se já estão no ar e não
-lança duplicados:
+`start.ps1` already does all: loads `.env`, checks MT5 and starts
+**server + listener**. It is **idempotent** - it detects if they are already up and does not
+launch duplicates:
 
 ```powershell
 cd C:\Project NexGen
 .\start.ps1
 ```
 
-- Se o `MT5_PASSWORD` já estiver no `.env`, não pede nada.
-- Verás no terminal: Terminal ligado · conta/saldo/equity · AutoTrading ·
-  Servidor em http://127.0.0.1:8000 · listener a ouvir o grupo.
-- Para reiniciar de facto: `taskkill //IM python.exe //F` e volta a correr.
+- If `MT5_PASSWORD` is already in `.env`, it asks nothing.
+- You will see in the terminal: Terminal connected · account/balance/equity · AutoTrading ·
+  Server at http://127.0.0.1:8000 · listener listening on the group.
+- To really restart: `taskkill //IM python.exe //F` and run again.
 
-**Após um reboot da VPS** (Tarefa Agendada `NexGen Boot`, AtLogOn, com
-privilégios máximos): o `boot.ps1` arranca o Caddy, o **MetaTrader 5**
-(`terminal64.exe`) e depois o `start.ps1` — todos idempotentes. O servidor
-religa-se ao MT5 automaticamente (retry no arranque + reconexão a cada 10s)
-e autentica-se com `MT5_LOGIN/SERVER/PASSWORD` do `.env`; o **AutoTrading**
-tem de estar ligado no terminal (fica persistido). Para tudo isto subir
-sozinho, configura o **auto-login do Windows** (secção seguinte).
+**After a VPS reboot** (Scheduled Task `NexGen Boot`, AtLogOn, with
+highest privileges): `boot.ps1` starts Caddy, **MetaTrader 5**
+(`terminal64.exe`) and then `start.ps1` - all idempotent. The server
+reconnects to MT5 automatically (retry at startup + reconnect every 10s)
+and logs in with `MT5_LOGIN/SERVER/PASSWORD` from `.env`; **AutoTrading**
+must be on in the terminal (it persists). For all this to come up
+alone, set **Windows auto-login** (next section).
 
 ---
 
-## 7.x Auto-login do Windows (reboot sem intervenção)
+## 7.x Windows auto-login (reboot without intervention)
 
-Sem auto-login, a VPS fica parada no ecrã de login após um reboot e a
-Tarefa `NexGen Boot` (AtLogOn) nunca dispara. Para entrar sozinho:
+Without auto-login, the VPS sits at the login screen after a reboot and the
+`NexGen Boot` task (AtLogOn) never fires. To log in alone:
 
 ```powershell
-# uma vez, como Administrador (substitui <password> pela password real)
+# once, as Administrator (replace <password> with the real password)
 Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' `
   -Name AutoAdminLogon      -Value '1'
 Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' `
@@ -301,148 +301,147 @@ Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlo
   -Name DefaultDomainName   -Value ''
 ```
 
-> ⚠️ A password fica legível no registo (acessível a quem for admin na
-> máquina). É o compromisso padrão para operação unattended numa VPS.
-> Para reverter: põe `AutoAdminLogon=0` e apaga `DefaultPassword`.
+> ⚠️ The password stays readable in the registry (visible to anyone admin on the
+> machine). It is the standard tradeoff for unattended operation on a VPS.
+> To revert: set `AutoAdminLogon=0` and delete `DefaultPassword`.
 
-Depois do auto-login + `NexGen Boot`, o fluxo completo é: Windows entra →
-`boot.ps1` → Caddy + MT5 + servidor/listener → o servidor liga-se ao MT5
-com as credenciais do `.env` (o AutoTrading tem de estar ON no terminal).
-
----
-
-## 8. Verificação final
-
-1. Abre https://dominio.com no telemóvel (dados móveis, sem VPN) → deve
-   pedir login → entra com a password configurada → vês a dashboard com o
-   saldo real do MT5 e o badge **⚡ execução real (demo MT5)**. No Diagnóstico,
-   confirma `hedged=true`, AutoTrading ligado e `blocked_reason` vazio.
-2. Confirma que o listener está a apanhar o grupo: `tail listener.log`
-   (ou `Get-Content listener.log -Tail 20`).
-3. No painel **👻 Shadow-paper**, confirma `ativo` e as estratégias
-   `auto_escada_3` e `auto_escada_5` para acumular evidência forward sem
-   ordens novas. O snapshot deve mostrar
-   `shadow_paper.execution_isolated=true`; isto não altera `EXECUTION_MODE`,
-   `MT5_DRY_RUN` nem a conta demo.
-4. Manda uma mensagem de teste no grupo e vê o fluxo completo na dashboard.
-5. Confirma `GET /api/window`: a janela UTC termina em `2026-08-29T00:00:00+00:00`, mostra trades reais/P&L/ritmo e o gate de promoção da auto-escada 3.
-6. Se o kill switch estiver pausado para esta janela, confirma no `/api/status` que `killswitch_rearm_at` está persistido. O tick reativa a pausa no prazo, envia feed/Telegram e limpa a chave; não é necessário criar uma tarefa agendada separada.
+After auto-login + `NexGen Boot`, the full flow is: Windows logs in ->
+`boot.ps1` -> Caddy + MT5 + server/listener -> the server connects to MT5
+with the `.env` credentials (AutoTrading must be ON in the terminal).
 
 ---
 
-## 9. Manutenção
+## 8. Final check
 
-| Ação | Comando (PowerShell) |
+1. Open https://dominio.com on the phone (mobile data, no VPN) -> it must
+   ask for login -> log in with the set password -> you see the dashboard with the
+   real MT5 balance and the **⚡ real execution (MT5 demo)** badge. In Diagnostics,
+   confirm `hedged=true`, AutoTrading on and empty `blocked_reason`.
+2. Confirm the listener is catching the group: `tail listener.log`
+   (or `Get-Content listener.log -Tail 20`).
+3. In the **👻 Shadow-paper** panel, confirm `active` and the strategies
+   `auto_escada_3` and `auto_escada_5` to collect forward evidence without
+   new orders. The snapshot must show
+   `shadow_paper.execution_isolated=true`; this does not change `EXECUTION_MODE`,
+   `MT5_DRY_RUN` or the demo account.
+4. Send a test message in the group and watch the full flow on the dashboard.
+5. Confirm `GET /api/window`: the UTC window ends at `2026-08-29T00:00:00+00:00`, shows real trades/P&L/pace and the promotion gate of auto-ladder 3.
+6. If the kill switch is paused for this window, confirm in `/api/status` that `killswitch_rearm_at` is persisted. The tick re-arms the pause on time, sends feed/Telegram and clears the key; no need to create a separate scheduled task.
+
+---
+
+## 9. Maintenance
+
+| Action | Command (PowerShell) |
 |---|---|
-| Ver servidor | `Get-Content server.log -Tail 30` |
-| Ver listener | `Get-Content listener.log -Tail 30` |
-| Reiniciar tudo | `.\start.ps1` |
-| Estado rápido | `curl http://127.0.0.1:8000/api/status -H "X-API-Token: <token>"` |
-| Backup da BD | `.\venv\Scripts\python backup_db.py` — cópia consistente para `backups/` + envio ao Telegram (Tarefa `NexGen DB Backup` diária 06:30) |
-| Restore-check | `.\venv\Scripts\python backup_db.py --restore-check` — valida o backup mais recente numa BD temporária |
-| Auditoria da BD | `.\venv\Scripts\python maintenance.py --db-audit` — contagens/taxa mensal/política, read-only |
-| Espaço em disco | `.\venv\Scripts\python maintenance.py --disk-check` — check manual; o servidor repete diariamente |
+| View server | `Get-Content server.log -Tail 30` |
+| View listener | `Get-Content listener.log -Tail 30` |
+| Restart all | `.\start.ps1` |
+| Quick status | `curl http://127.0.0.1:8000/api/status -H "X-API-Token: <token>"` |
+| DB backup | `.\venv\Scripts\python backup_db.py` - consistent copy to `backups/` + send to Telegram (daily `NexGen DB Backup` task 06:30) |
+| Restore-check | `.\venv\Scripts\python backup_db.py --restore-check` - validates the newest backup in a temp DB |
+| DB audit | `.\venv\Scripts\python maintenance.py --db-audit` - counts/monthly rate/policy, read-only |
+| Disk space | `.\venv\Scripts\python maintenance.py --disk-check` - manual check; the server repeats daily |
 
-### 9.2 CI e métricas operacionais (Itens 10 e 17)
+### 9.2 CI and operational metrics (Items 10 and 17)
 
-O ficheiro `.github/workflows/ci.yml` corre `python -m pytest -q` em cada
-push e pull request, e valida novamente `tests/test_docs.py` num job separado.
-O workflow usa Python 3.11, `requirements.txt` e os modos `sim`/`MARKET_PROVIDER=none`,
-por isso nunca precisa de MetaTrader nem envia ordens. No GitHub Actions é
-possível lançar manualmente `failure_probe=true`: o job cria um teste que falha,
-confirma o exit code não-zero e limpa o ficheiro; a execução normal continua a
-ser verde apenas quando a suite passa.
+The `.github/workflows/ci.yml` file runs `python -m pytest -q` on each
+push and pull request, and re-validates `tests/test_docs.py` in a separate job.
+The workflow uses Python 3.11, `requirements.txt` and `sim`/`MARKET_PROVIDER=none` modes,
+so it never needs MetaTrader nor sends orders. On GitHub Actions you
+can manually launch `failure_probe=true`: the job creates a failing test,
+confirms the non-zero exit code and cleans the file; the normal run stays
+green only when the suite passes.
 
-A saúde operacional aparece no Relatório e em `GET /api/operations?days=90`.
-Não é necessário configurar credenciais novas: os dados são gravados na BD
-local nas tabelas de exceções, quotes MT5, reconexões e modifies. Deixa o
-servidor acumular pelo menos duas semanas antes de interpretar tendências.
+Operational health shows in the Report and in `GET /api/operations?days=90`.
+No need to set new credentials: data is written to the local DB
+in the exceptions, MT5 quotes, reconnects and modifies tables. Let the
+server collect at least two weeks before reading trends.
 
-O **shadow-paper** é configurado pela dashboard ou por `POST /api/config` com
-`shadow_paper_enabled` e `shadow_paper_strategies`. As trades ficam nas tabelas
-`paper_*`, com `origin="shadow"`, e a conta/saldo/kill diário dessa origem são
-separados da corrida normal; não passam pelo `MT5Engine`. O histórico
-`historical=True` e sinais `llm_parsed` são ignorados para esta amostra. A fila
-`pending_management` mantém marcadores separados para a execução real, paper
-normal e shadow, para uma correção/saída não desaparecer entre streams. Se o
-modo for desligado, as trades existentes continuam auditáveis e só novas
-aberturas são bloqueadas.
+**shadow-paper** is set from the dashboard or by `POST /api/config` with
+`shadow_paper_enabled` and `shadow_paper_strategies`. Trades stay in the
+`paper_*` tables, with `origin="shadow"`, and the account/balance/daily kill of that origin are
+separate from the normal run; they never pass through `MT5Engine`. The
+`historical=True` history and `llm_parsed` signals are ignored for this sample. The
+`pending_management` queue keeps separate markers for real execution, normal paper
+and shadow, so one fix/exit does not vanish between streams. If the
+mode is off, existing trades stay auditable and only new
+opens are blocked.
 
-**Watchdog simples** (PowerShell, corre a cada minuto via Task Scheduler):
-reinicia o servidor se `server.pid` não responder, e reabre o MT5 se o
-processo `terminal64.exe` não existir. O servidor faz ainda o check diário do
-volume livre (`SIGNALBOT_DISK_FREE_GB`, default 10 GiB) e envia alerta no
+**Simple watchdog** (PowerShell, runs each minute via Task Scheduler):
+restarts the server if `server.pid` stops responding, and reopens MT5 if the
+`terminal64.exe` process is missing. The server also runs the daily free volume check
+(`SIGNALBOT_DISK_FREE_GB`, default 10 GiB) and sends an alert on
 feed/Telegram.
 
-### 9.1 Logs, auditoria e restauração
+### 9.1 Logs, audit and restore
 
-O `start.ps1` usa `app.server_runner` e já não redireciona stdout para um
-ficheiro aberto: o servidor/listener escrevem em `server.log`,
-`server.err.log`, `listener.log` e `listener.err.log` com rotação por tamanho.
-Por defeito cada ficheiro fica limitado a 10 MiB com 5 cópias; configura com:
+`start.ps1` uses `app.server_runner` and no longer redirects stdout to an
+open file: server/listener write to `server.log`,
+`server.err.log`, `listener.log` and `listener.err.log` with size rotation.
+By default each file is capped at 10 MiB with 5 copies; set with:
 
 ```ini
 SIGNALBOT_LOG_MAX_BYTES=10485760
 SIGNALBOT_LOG_BACKUP_COUNT=5
 ```
 
-A auditoria read-only das tabelas (linhas, meses observados, taxa mensal e
-política de retenção) é:
+The read-only audit of tables (rows, months seen, monthly rate and
+retention policy) is:
 
 ```powershell
 .venv\Scripts\python maintenance.py --db-audit
 ```
 
-O backup mensal restaura o ficheiro mais recente para uma BD temporária,
-valida `PRAGMA integrity_check` e contagens das tabelas principais. Para correr
-manualmente e testar uma falha, duplica um backup para uma pasta temporária,
-corrompe essa cópia e chama a função `restore_check` nos testes — nunca
-corrompas o único backup da VPS:
+The monthly backup restores the newest file to a temp DB,
+checks `PRAGMA integrity_check` and counts of the main tables. To run
+manually and test a failure, duplicate a backup to a temp folder,
+corrupt that copy and call the `restore_check` function in tests - never
+corrupt the only VPS backup:
 
 ```powershell
 .venv\Scripts\python backup_db.py --restore-check
 ```
 
-O comando devolve código diferente de zero e envia alerta Telegram se a
-restauração falhar. A Tarefa Agendada recomendada é mensal, por exemplo dia 1
-às 07:00, além da tarefa diária **NexGen DB Backup** às 06:30.
+The command returns a non-zero code and sends a Telegram alert if the
+restore fails. The recommended Scheduled Task is monthly, e.g. day 1
+at 07:00, plus the daily **NexGen DB Backup** task at 06:30.
 
-**Lifecycle do servidor:** os loops de mercado e watchdog pertencem ao
-`app/background.py::BackgroundRuntime`. O `lifespan` cancela e aguarda as
-tasks antes de fechar o provider MT5; ao atualizar Python, o `start.ps1` deve
-ser usado depois de confirmar que o processo uvicorn antigo terminou. Isto
-evita que um restart deixe dois loops a gerir a mesma conta.
+**Server lifecycle:** market and watchdog loops belong to
+`app/background.py::BackgroundRuntime`. `lifespan` cancels and waits for
+tasks before closing the MT5 provider; when updating Python, run
+`start.ps1` after confirming the old uvicorn process ended. This
+stops a restart from leaving two loops managing the same account.
 
-**Estudo Item 2 (read-only):** para repetir o sweep sem abrir trades nem
-alterar a BD, usa `PYTHONIOENCODING=utf-8 .venv/Scripts/python -m
-app.study_consolidation --item2-sweep`. A ferramenta recalcula as 27
-combinações da `auto_escada_5` nas três janelas e só imprime o relatório.
+**Study Item 2 (read-only):** to repeat the sweep without opening trades or
+changing the DB, use `PYTHONIOENCODING=utf-8 .venv/Scripts/python -m
+app.study_consolidation --item2-sweep`. The tool recomputes the 27
+combinations of `auto_escada_5` in the three windows and only prints the report.
 
-**Estudo Item 3 (read-only):** `PYTHONIOENCODING=utf-8 .venv/Scripts/python
--m app.study_consolidation --item3-sweep` compara `confirm_filter=True/False`
-da `auto_escada_3` nas janelas atual/tudo/antiga, sem escrever na BD nem
-abrir trades. O resultado aceito (PF atual 1.27→1.26; DD antiga
-312.9%→278.3%) congelou `True` no registo, mas não promoveu a auto: o
-servidor em produção continua a usar a estratégia configurada e a promoção
-para MT5 demo exige os gates Fase 2/3.
+**Study Item 3 (read-only):** `PYTHONIOENCODING=utf-8 .venv/Scripts/python
+-m app.study_consolidation --item3-sweep` compares `confirm_filter=True/False`
+of `auto_escada_3` in the current/all/old windows, without writing to the DB or
+opening trades. The accepted result (current PF 1.27->1.26; old DD
+312.9%->278.3%) froze `True` in the registry, but did not promote the auto: the
+production server keeps using the set strategy and promotion
+to MT5 demo needs the Phase 2/3 gates.
 
-A promoção de uma auto para a demo só deve ser feita depois dos gates do
-painel Fase 2. A validação Fase 3 tem uma janela fixa das primeiras 10 trades,
-com comparação paper↔MT5 (≥9/10 saídas iguais) e rollback automático para
-`nova_gestao` em caso de falha. O teste de integração usa apenas um broker fake
-e não deve ser substituído por uma ordem manual na conta demo.
+Promotion of an auto to demo must happen only after the Phase 2 panel gates. Phase 3 validation has a fixed window of the first 10 trades,
+with paper-to-MT5 comparison (at least 9/10 same exits) and automatic rollback to
+`nova_gestao` on failure. The integration test uses only a fake broker
+and must not be replaced by a manual order on the demo account.
 
-**Atualizações**: `git pull` + `.\start.ps1` — o `.env` e a BD não são
-tocados pelo git.
+**Updates**: `git pull` + `.\start.ps1` - `.env` and DB are not
+touched by git.
 
 ---
 
-## Checklist de segurança (antes de por em produção real)
+## Security checklist (before real production use)
 
-- [ ] Password do Windows forte + RDP só para o teu IP
-- [ ] Só as portas **443** (web) e **3389** (RDP, restrita) abertas
-- [ ] Caddy com HTTPS obrigatório (HTTP → redireciona para HTTPS)
-- [ ] `SIGNALBOT_DASHBOARD_PASSWORD` definida (login ativo)
-- [ ] `SIGNALBOT_API_TOKEN` definido (o listener autentica sem browser)
-- [ ] Kill switch e limites de risco ativos na dashboard
-- [ ] Backup diário da BD para fora da VPS
+- [ ] Strong Windows password + RDP only for your IP
+- [ ] Only ports **443** (web) and **3389** (RDP, restricted) open
+- [ ] Caddy with mandatory HTTPS (HTTP -> redirects to HTTPS)
+- [ ] `SIGNALBOT_DASHBOARD_PASSWORD` set (login on)
+- [ ] `SIGNALBOT_API_TOKEN` set (listener logs in without browser)
+- [ ] Kill switch and risk limits active on the dashboard
+- [ ] Daily DB backup off the VPS
