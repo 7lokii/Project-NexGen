@@ -3,6 +3,48 @@
 Guide for agents (Codebuff/Freebuff) working in this project. Read this
 before touching code.
 
+## Subagents
+
+Toda a chamada a `subagent` leva `background: true`. Sem excepcao em trabalho
+que demore mais do que alguns segundos.
+
+- `background: true` e o equivalente de agente ao keybind `session.background`.
+  O keybind e `ctrl+b` e e humano: um agente nao o pode carregar. O parametro
+  pode. Nunca pedir `ctrl+b`.
+- Varios subagentes: lanca todos na mesma resposta, todos com `background: true`.
+  Varios em foreground bloqueiam em serie.
+- Depois de os lancar, continua a fazer trabalho e so recolhe o resultado quando
+  a notificacao chegar. Nao fiques em polls nem a dormir a vigiar.
+- Unica excecao: leitura curta de um ficheiro, ou verificacao de tres linhas.
+- Um subagent em foreground e invisivel: o Dispatch continua `in_progress`, o
+  `liveness` continua `live`, nao ha `worker_done` nem erro. Um worker bloqueado
+  e um worker saudavel mostram o mesmo sinal. Nao confies em nenhum dos dois.
+
+## Workspace context
+
+These rules are layered, outer to inner: `E:\Workspace\AGENTS.md`, then the
+reference material in `E:\Workspace\.agents\rules\`, then this file. On
+conflict, the more specific file wins **inside this project**, but the outer
+rules still govern everything outside it.
+
+Two absolute references, and you need both:
+
+- `@E:\Workspace\.agents\rules\workspace-map.md` - where everything lives, which
+  project a request belongs to, one issue per repo, the Orca commands, and the
+  worktree traps. Read it before opening paths, backups, venvs, MCPs or git.
+- `@E:\Workspace\AI-Resources\AI-Vault\index.md` - the compiled knowledge about
+  the agent setup. Start at the index, never at a search, for any question about
+  the harnesses, enforcement, past decisions, or the limits on rule files.
+
+The `@` form resolves the path without inlining the file, so it costs nothing
+until you actually open it.
+
+**This file is not enough on its own.** An Orca worker runs in a standalone clone
+under `C:\Users\imlok\orca\workspaces\`, a tree that never passes
+`E:\Workspace\Projects\`. Nothing from the workspace reaches it: not this file,
+not the root `AGENTS.md`, not the rules. In that context you have only what the
+repo's own `AGENTS.md` says, so read it there.
+
 ## What the project is
 
 **Project NexGen** - semi-automatic copy-trading system in Python (FastAPI +
@@ -10,52 +52,89 @@ vanilla JS). It reads signals from the **Golden Moves** Telegram group, waits ou
 on **MetaTrader 5** (a **demo** account, no real money), and shows everything on a
 web dashboard at `http://127.0.0.1:8000`.
 
-Current state (2026-09-01): server on **MT5-live on the demo account** (`EXECUTION_MODE=mt5`,
-`MT5_DRY_RUN=0`), **auto** mode, main strategy persisted as
-`tp2_protect` (2 legs, exit at TP2) (TP1..TP5 + group management), Telegram listener
-listening to Golden Moves. The **second MT5 demo account (5055369549, 10,000 EUR balance)** is
-connected as lane
-`tp2` (`MT5_2_*` env) and **went live on 01/09** with
-`nova_gestao`; on **02/09 the lane moved to account 5055369549 (10k) with the
-same strategy as the main one - `tp2_protect`** (persisted config
-`lane2_strategy`), **portable** terminal at
-`C:\MT5Portable2\terminal64.exe` (`MT5_2_TERMINAL_PATH`), `LANE2_WORKER_ENABLED=1`
-and `MT5_2_DRY_RUN=0` in `.env` - the **isolated worker** (`app/lane2_worker.py`,
-port 8770, PID in `lane2_worker.pid`) owns the MetaTrader5 connection to
-5055369549 and the server talks to it via `RemoteProvider` (see
-Lanes/architecture section). Main account **5054644473** stays on its own terminal
-(Program Files) - the two terminals/processes NEVER share a connection.
-The **terminal 2 AutoTrading was turned ON on 01/09** (automated click
-on the portable terminal "Algo Trading" toolbar button - last
-button on the right; validated through `terminal_info().trade_allowed` via the
-worker). It is **per-session** - re-enable after every reboot, same as
-terminal 1. While OFF, lane 2 orders are
-rejected with retcode 10027 + alert. **Diagnostics expose the state**
-(`lane2_worker.trade_allowed` - ON/OFF in the "Lane 2" block) and the market_loop
-emits an automatic `risk` alert when the worker is up but AutoTrading
-is OFF (10 min cooldown; `lane2_auto_trading_off` event). **Symbol and null-retcode watchdogs (02/09)**: market_loop checks every 30s that
-XAUUSD has a quote on the lane 2 worker - with no tick, it calls `ensure_symbol`
-(`symbol_select`) to re-add it to Market Watch and emits a `risk` alert
-(episode with 10 min cooldown + recovery notification;
-`lane2_symbol_reselect`/`lane2_symbol_recovered` events); and a **null `retcode`**
-(broker answered with NO retcode - mapped to `?`, e.g. 14:52 on 02/09) on a
-lane 2 order fires a distinct `risk` alert with worker state
-(`reachable`/`connected`/`trade_allowed`/login/last error) - in `_try_execute`
-for opens and in the tick scan (`_check_null_retcode_phantoms`, every 30s,
-last 30 min, once per trade) for phantom closes off the open path.
-The kill switch was **turned off on 20/08 by explicit user
-decision** (the scheduled 29/08 re-arm was cleared) - main `nova_gestao`
-now opens MT5 demo orders in the 28/08 window and the gate reference
-(hybrid race+shadow reference of `nova_gestao`, `min_reference_trades=10`
-threshold) starts accumulating; the daily limit (3%) and auto-kill stay on. Base risk is
-1.0% and the high-watermark was recalibrated to 1,000 EUR; effective risk thus starts
-at 1.0%, without inheriting the old paper account peak. **shadow-paper** is
-on by default for `auto_escada_3`, `auto_escada_5`, `auto_escada_3_hibrida`
-and `nova_gestao` (the last feeds the gate hybrid reference): it receives full live
-signals even with the kill switch on (manual mode was removed in Item
-12) and only uses paper tables, never the MT5 engine. Management pendings carry separate markers for real, paper
-race, and shadow, so one isolated fill cannot consume another. The user
-goal is to run this for days/weeks, tune message recognition, and **later** switch to a live account.
+Current state (2026-10-05): **this desktop runs PAPER ONLY**
+(`EXECUTION_MODE=sim`, `MT5_DRY_RUN=1`), **auto** mode, Telegram listener
+listening to Golden Moves. The bot reads the group, parses signals, runs the
+paper race and fills the dashboard — **it sends no orders and MetaTrader 5 is
+never opened on this machine.**
+
+**Owner decision (05/10): MetaTrader 5 goes to the NoxSec homelab; this
+desktop stays clean.** `mt5.initialize()` *starts* the terminal when it is not
+running, so "don't open MetaQuotes here" is enforced by four independent
+guards, each covered by a test
+(`test_scripts_de_arranque_nao_abrem_o_metatrader`,
+`test_env_local_nao_executa_contra_o_broker`,
+`test_check_terminal_nao_arranca_sem_optin`):
+- `EXECUTION_MODE=sim` in `.env` — the server never opens an MT5 link;
+- `boot.ps1` only starts the terminal under `MT5_AUTOSTART=1` (not set here);
+- `healthcheck.py`'s terminal watchdog only *restarts* the terminal under
+  `MT5_AUTOSTART=1`; without it a missing terminal is logged once and left
+  alone, which is the expected state on this desktop;
+- `start.ps1` has no `mt5.initialize()` at all. `MT5_CHECK=1` validates a
+  terminal that is *already* running and never starts one.
+
+**ONE lane, ONE strategy.** On 05/10 the two lanes were consolidated by owner
+decision: there is a single execution lane (`main`), it runs `tp2_protect`
+(2 legs, exits at TP2, honours group `protect` + `close_all`), and it uses
+account **5055369549** (10,000 EUR, the account that used to be lane `tp2`) on
+the **portable** terminal `C:\MT5Portable2\terminal64.exe` (`MT5_TERMINAL_PATH`).
+The old main account **5054644473** is **out of execution** — its history stays in
+the DB (`account_label` says which account each row came from) but nothing sends
+orders there. Everything that existed only for the second lane was removed:
+`app/lane2_worker.py`, `app/execution/remote2.py`, the `MT5_2_*`/`LANE2_*` env
+vars, `/api/lanes/ab`, `/api/lanes/ab/legs`, the `/segundaria` page and the
+`lane2_*` config keys. `healthcheck.py` now watches the **terminal process**
+instead of the worker.
+
+**Open work: the homelab.** Real execution against 5055369549 needs MetaTrader 5
+running somewhere, and the homelab (NoxSec) is Linux/Proxmox, where MT5 has no
+native build. That is the owner's stated next step and **nothing is implemented
+yet**. Until it is, the honest state is: **paper on the desktop, no broker
+execution anywhere.**
+
+`MAIN_STRATEGY_ID` is `tp2_protect` and the registry has **no other entry**: the
+eight other strategies were removed from the registry on 05/10 (the six from
+01/09 were already gone). See `RETIRED_STRATEGY_IDS` in `app/strategies.py` and
+docs/CHANGELOG.md — `get_strategy` raises `ValueError` for a retired id, so
+studies never silently run with the wrong strategy.
+
+**AutoTrading is per-session**: re-enable "Algo Trading" after every reboot,
+otherwise orders are rejected with retcode 10027. Diagnostics exposes the state
+(`terminal.trade_allowed`) and the market_loop emits a `risk` alert when the
+terminal is up but AutoTrading is OFF (10 min cooldown;
+`terminal_auto_trading_off` event). **Symbol and null-retcode watchdogs**: the
+market_loop checks every 30s that XAUUSD has a quote — with no tick it calls
+`ensure_symbol` (`symbol_select`) to re-add it to Market Watch and emits a `risk`
+alert (10 min cooldown + recovery notification); and a **null `retcode`**
+(broker answered with NO retcode, mapped to `?`) fires a distinct `risk` alert
+with the terminal state — in `_try_execute` for opens and in the tick scan
+(`_check_null_retcode_phantoms`, every 30s, last 30 min, once per trade) for
+phantom closes off the open path.
+
+**shadow-paper is OFF** (`shadow_paper_enabled=0`, empty strategy list): the
+strategies that fed it left the registry with the consolidation. The kill switch
+was turned off on 20/08 by explicit user decision; the daily loss limit and
+auto-kill stay on. Base risk is **1.0%** and the high-watermark is recalibrated
+to the real account balance at boot. The user goal is to run this for
+days/weeks, tune message recognition, and **later** switch to a live account.
+
+**Two accounts, one `lane_id` — keep them apart.** The consolidation merged the
+old `tp2` rows into `main`, so `lane_id` no longer tells you which account a row
+came from. `account_label` / `source_account` are the separator:
+`SimEngine.open_trade` stamps the linked login on every trade and position
+(`DB.stamp_source_account`), `lane_status` reports the live account's P&L as
+`total_pnl` with the old account's as `pnl_outras_contas`, and
+`_realized_today()` filters the daily kill by the same login. **Never sum P&L by
+`lane_id` alone** — that is what mixed +98,43 EUR of a dead account into a
+10.000 EUR card. Reads that must not assume a single account should go through
+`db.pnl_by_source_account()` (it returns `None` when the split is impossible).
+
+**Wrong-account guard.** `MT5Provider.initialize()` refuses when
+`account_info().login != MT5_LOGIN` (sets `execution_block_reason` and drops the
+link). Do not remove it: with `MT5_TERMINAL_PATH` empty the MT5 API links to the
+*default* terminal, which may hold another session, and the hedge check does not
+catch it (both demo accounts are hedged). Diagnostics shows
+`terminal.login_ligado` / `login_bate`.
 
 > ⚠️ The account is **demo** - no real money involved. Never switch to a
 > live account without the user's explicit instruction.
@@ -89,12 +168,13 @@ project alive for weeks and migrates to the VPS/live account without breaks.
 
 1. **Restart the server after touching Python** and confirm with
    `curl /api/status`.
-2. **Run `pytest` before finishing** - the full suite (currently 631 tests, update on growth) is the safety net (parser, classifier, backtest, API, auth, observability, and read-only studies).
+2. **Run `pytest` before finishing** - the full suite (currently 600 tests, update on growth) is the safety net (parser, classifier, backtest, API, auth, observability, and read-only studies).
 3. **Do not create test trades without cleaning up** the artifacts after (trades,
    positions, test signals in the DB).
 4. **Do not store passwords in code files** - they come from `.env`/env vars.
-5. **Never touch the live account** (demo uses `MT5_LOGIN=5054644473` /
-   `MetaQuotes-Demo`).
+5. **Never touch the live account** (demo uses `MT5_LOGIN=5055369549` /
+   `MetaQuotes-Demo`, terminal `C:\MT5Portable2`). Account 5054644473 is
+   historical only: never reintroduce it as an execution account.
 6. After a task: check live processes (server + listener),
    green suite, clean DB state, and **updated docs** (section
    above).
@@ -129,7 +209,7 @@ have not read.
 | File | When to read |
 |---|---|
 | `.agents/rules/operacao-e-vps.md` | start, stop, restart, logs, health check, DB backup, Caddy, firewall, MT5 AutoTrading |
-| `.agents/rules/arquitetura-e-lanes.md` | `app/state.py`, `app/execution/**`, 2nd-account worker, orders, positions, event loop |
+| `.agents/rules/arquitetura-e-lanes.md` | `app/state.py`, `app/execution/**`, orders, positions, event loop |
 | `.agents/rules/reconhecimento-de-mensagens.md` | refine recognition, `failed` or ignored messages, `parser.py`, `manage.py` |
 | `.agents/rules/fluxo-e-gestao-do-sinal.md` | signal pipeline, edit window, guards, group management, BE+, kill switch, journal |
 | `.agents/rules/backtest-e-analise.md` | `analysis.py`, `backtest.py`, studies, MFE, feed offset, defensive risk |
